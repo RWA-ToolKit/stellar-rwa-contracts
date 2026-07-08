@@ -1,0 +1,190 @@
+#![cfg(test)]
+use super::*;
+use asset_token::{AssetTokenContract, AssetTokenContractClient};
+use compliance::{ComplianceContract, ComplianceContractClient};
+use soroban_sdk::{testutils::Address as _, token, Address, Env, String};
+
+struct Ctx {
+    env: Env,
+    dividend: DividendContractClient<'static>,
+    asset_id: Address,
+    pay_id: Address,
+    admin: Address,
+    h1: Address,
+    h2: Address,
+}
+
+fn setup() -> Ctx {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    // Compliance with admin + two holders approved.
+    let comp_id = env.register(ComplianceContract, ());
+    let comp = ComplianceContractClient::new(&env, &comp_id);
+    comp.initialize(&admin);
+    let us = String::from_str(&env, "US");
+    let h1 = Address::generate(&env);
+    let h2 = Address::generate(&env);
+    comp.add_to_allowlist(&admin, &admin, &us, &0);
+    comp.add_to_allowlist(&admin, &h1, &us, &0);
+    comp.add_to_allowlist(&admin, &h2, &us, &0);
+
+    // Asset token: supply 1000 -> admin, then h1=300, h2=200, admin=500.
+    let asset_id = env.register(AssetTokenContract, ());
+    let asset = AssetTokenContractClient::new(&env, &asset_id);
+    asset.initialize(
+        &admin,
+        &String::from_str(&env, "Loft"),
+        &String::from_str(&env, "LFT"),
+        &String::from_str(&env, "real_estate"),
+        &1000i128,
+        &0u32,
+        &comp_id,
+        &String::from_str(&env, "desc"),
+        &1000i128,
+    );
+    asset.transfer(&admin, &h1, &300);
+    asset.transfer(&admin, &h2, &200);
+
+    // Payment token (Stellar Asset Contract), mint 100_000 to admin.
+    let sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let pay_id = sac.address();
+    token::StellarAssetClient::new(&env, &pay_id).mint(&admin, &100_000);
+
+    let div_id = env.register(DividendContract, ());
+    let dividend = DividendContractClient::new(&env, &div_id);
+    dividend.initialize(&admin);
+
+    Ctx {
+        env,
+        dividend,
+        asset_id,
+        pay_id,
+        admin,
+        h1,
+        h2,
+    }
+}
+
+fn pay_balance(ctx: &Ctx, who: &Address) -> i128 {
+    token::TokenClient::new(&ctx.env, &ctx.pay_id).balance(who)
+}
+
+#[test]
+fn test_initialize_admin() {
+    let ctx = setup();
+    assert_eq!(ctx.dividend.get_admin(), ctx.admin);
+}
+
+#[test]
+fn test_create_distribution_escrows_funds() {
+    let ctx = setup();
+    let div_addr = ctx.dividend.address.clone();
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+    assert_eq!(id, 1);
+    assert_eq!(pay_balance(&ctx, &div_addr), 1000);
+    let d = ctx.dividend.get_distribution(&id);
+    assert_eq!(d.total_amount, 1000);
+    assert_eq!(d.distributed, 0);
+    assert!(!d.completed);
+}
+
+#[test]
+fn test_claim_is_proportional() {
+    let ctx = setup();
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+    // h1 holds 300/1000 -> 300; h2 holds 200/1000 -> 200.
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h1), 300);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 200);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.admin), 500);
+
+    ctx.dividend.claim(&id, &ctx.h1);
+    assert_eq!(pay_balance(&ctx, &ctx.h1), 300);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h1), 0);
+    assert_eq!(ctx.dividend.get_distribution(&id).distributed, 300);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_double_claim_rejected() {
+    let ctx = setup();
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+    ctx.dividend.claim(&id, &ctx.h1);
+    ctx.dividend.claim(&id, &ctx.h1);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_nonholder_nothing_to_claim() {
+    let ctx = setup();
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+    let stranger = Address::generate(&ctx.env);
+    ctx.dividend.claim(&id, &stranger);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_create_requires_admin() {
+    let ctx = setup();
+    let impostor = Address::generate(&ctx.env);
+    ctx.dividend
+        .create_distribution(&impostor, &ctx.asset_id, &ctx.pay_id, &1000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_zero_amount_rejected() {
+    let ctx = setup();
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_missing_distribution() {
+    let ctx = setup();
+    ctx.dividend.get_distribution(&99);
+}
+
+#[test]
+fn test_get_distributions_for_asset() {
+    let ctx = setup();
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &500);
+    let other_asset = Address::generate(&ctx.env);
+    assert_eq!(
+        ctx.dividend.get_distributions_for_asset(&ctx.asset_id).len(),
+        2
+    );
+    assert_eq!(
+        ctx.dividend.get_distributions_for_asset(&other_asset).len(),
+        0
+    );
+}
+
+#[test]
+fn test_full_distribution_completes() {
+    let ctx = setup();
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+    ctx.dividend.claim(&id, &ctx.h1); // 300
+    ctx.dividend.claim(&id, &ctx.h2); // 200
+    ctx.dividend.claim(&id, &ctx.admin); // 500
+    let d = ctx.dividend.get_distribution(&id);
+    assert_eq!(d.distributed, 1000);
+    assert!(d.completed);
+    assert_eq!(pay_balance(&ctx, &ctx.h2), 200);
+    assert_eq!(pay_balance(&ctx, &ctx.admin), 100_000 - 1000 + 500);
+}
