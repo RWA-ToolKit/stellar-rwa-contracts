@@ -1,0 +1,21 @@
+# Rust / Cargo
+/target
+**/target
+*.rs.bk
+
+# Soroban / build artifacts
+*.wasm
+.soroban/
+.stellar/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.key
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
