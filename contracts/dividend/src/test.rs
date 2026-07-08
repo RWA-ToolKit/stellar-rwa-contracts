@@ -164,7 +164,9 @@ fn test_get_distributions_for_asset() {
         .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &500);
     let other_asset = Address::generate(&ctx.env);
     assert_eq!(
-        ctx.dividend.get_distributions_for_asset(&ctx.asset_id).len(),
+        ctx.dividend
+            .get_distributions_for_asset(&ctx.asset_id)
+            .len(),
         2
     );
     assert_eq!(

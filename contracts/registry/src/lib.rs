@@ -85,12 +85,7 @@ impl RegistryContract {
         if valuation < 0 {
             panic_err(&env, Error::InvalidValuation);
         }
-        let id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Counter)
-            .unwrap_or(0)
-            + 1;
+        let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
         let entry = AssetEntry {
             id,
             token_contract,
@@ -181,10 +176,7 @@ impl RegistryContract {
 
     /// Number of registered assets (active or not).
     pub fn asset_count(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Counter)
-            .unwrap_or(0)
+        env.storage().instance().get(&DataKey::Counter).unwrap_or(0)
     }
 
     /// Configured admin.

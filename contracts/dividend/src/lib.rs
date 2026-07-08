@@ -105,12 +105,7 @@ impl DividendContract {
         let this = env.current_contract_address();
         TokenClient::new(&env, &payment_token).transfer(&admin, &this, &total_amount);
 
-        let id: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Counter)
-            .unwrap_or(0)
-            + 1;
+        let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
         let dist = Distribution {
             id,
             asset_token,
