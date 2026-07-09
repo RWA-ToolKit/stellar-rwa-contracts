@@ -36,6 +36,41 @@ jurisdiction), the transfer reverts. The asset token knows only the compliance
 *interface* (`#[contractclient]`), so the concrete compliance contract can be
 swapped with `set_compliance`.
 
+## Stellar integration
+
+These contracts are native **Soroban** programs — Stellar's Rust/WASM smart-contract
+platform — and lean directly on Stellar primitives:
+
+- **Addresses** are Stellar accounts (`G…`) and contracts (`C…`); auth is enforced
+  with `require_auth()` so only the account that signed the transaction can act.
+- **Cross-contract calls** wire the system together: the asset token holds only the
+  compliance *interface* (`#[contractclient]`) and calls `is_allowed` on the live
+  compliance contract on every transfer/mint (the gate shown above).
+- **Events** are published on every state change (`register`, `transfer`, `approved`,
+  `created`, `claim`, …) so off-chain indexers can follow activity over Soroban RPC.
+- **Persistent + instance storage** with TTL bumping keeps asset, KYC and
+  distribution state alive on-ledger.
+- **Value scaling:** valuations are stored as USD cents (`i128`); token amounts are
+  integers in each token's own `decimals` base.
+
+### Network & deployment (Testnet)
+
+Network passphrase: `Test SDF Network ; September 2015` · Soroban RPC:
+`https://soroban-testnet.stellar.org`
+
+Deployed contract ids are in the [Contracts](#contracts) table above and in
+[DEPLOYMENTS.md](DEPLOYMENTS.md); each links to its record on
+[Stellar Expert](https://stellar.expert/explorer/testnet). Build to WASM and deploy
+with the [Stellar CLI](https://developers.stellar.org/docs/tools/cli) via
+`scripts/deploy.sh`.
+
+### How the rest of the toolkit consumes these contracts
+
+- The **[web app](https://github.com/RWA-ToolKit/stellar-rwa-web)** reads state by
+  simulating view calls over Soroban RPC and signs writes with **Freighter**.
+- The **[API](https://github.com/RWA-ToolKit/stellar-rwa-api-docs)** indexes on-chain
+  state by polling Soroban RPC — read-only, holding no keys.
+
 ## Tech stack
 
 - Rust + [Soroban SDK](https://soroban.stellar.org) 26
