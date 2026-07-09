@@ -40,7 +40,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Stellar CLI
-        run: cargo install --locked stellar-cli
-      - name: Build contracts
-        run: stellar contract build
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-wasm-${{ hashFiles('**/Cargo.lock') }}
+
+      # Build the contracts to Wasm directly with cargo. This verifies the same
+      # artifacts as `stellar contract build` without compiling the full Stellar
+      # CLI from source (which needs the libdbus system library and is slow).
+      - name: Build contracts (wasm)
+        run: cargo build --workspace --release --target wasm32v1-none
