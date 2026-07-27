@@ -123,6 +123,9 @@ impl AssetTokenContract {
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
         Self::check_amount(&env, amount);
+        if from == to {
+            panic_err(&env, Error::InvalidAmount);
+        }
         let meta = Self::metadata(&env);
         if meta.paused {
             panic_err(&env, Error::Paused);
