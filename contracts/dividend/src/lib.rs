@@ -169,7 +169,11 @@ impl DividendContract {
         let this = env.current_contract_address();
         TokenClient::new(&env, &dist.payment_token).transfer(&this, &holder, &amount);
 
-        dist.distributed += amount;
+        dist.distributed = dist
+            .distributed
+            .checked_add(amount)
+            .unwrap_or_else(|| panic_err(&env, Error::InvalidAmount));
+        assert!(dist.distributed <= dist.total_amount);
         if dist.distributed >= dist.total_amount {
             dist.completed = true;
         }
