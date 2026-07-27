@@ -231,9 +231,13 @@ impl ComplianceContract {
     /// blocked jurisdiction fail `is_allowed`.
     pub fn block_jurisdiction(env: Env, admin: Address, jurisdiction: String) {
         Self::require_admin(&env, &admin);
+        let key = DataKey::Blocked(jurisdiction.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Blocked(jurisdiction.clone()), &true);
+            .set(&key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Self::bump_instance(&env);
         env.events()
             .publish((symbol_short!("blockjur"),), jurisdiction);
@@ -252,10 +256,15 @@ impl ComplianceContract {
 
     /// Whether a jurisdiction is currently blocked.
     pub fn is_jurisdiction_blocked(env: Env, jurisdiction: String) -> bool {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Blocked(jurisdiction))
-            .unwrap_or(false)
+        let key = DataKey::Blocked(jurisdiction);
+        if let Some(_) = env.storage().persistent().get::<_, bool>(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            true
+        } else {
+            false
+        }
     }
 
     /// Return the configured admin address.
