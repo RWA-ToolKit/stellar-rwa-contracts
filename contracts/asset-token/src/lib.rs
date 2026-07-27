@@ -172,6 +172,9 @@ impl AssetTokenContract {
         from.require_auth();
         Self::check_amount(&env, amount);
         let mut meta = Self::metadata(&env);
+        if meta.paused {
+            panic_err(&env, Error::Paused);
+        }
         let from_bal = Self::balance(env.clone(), from.clone());
         if from_bal < amount {
             panic_err(&env, Error::InsufficientBalance);
