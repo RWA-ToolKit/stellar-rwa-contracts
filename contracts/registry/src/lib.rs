@@ -33,6 +33,7 @@ enum DataKey {
     Counter,
     Ids,
     Asset(u64),
+    Tvl,
 }
 
 #[contracterror]
@@ -63,6 +64,7 @@ impl RegistryContract {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Counter, &0u64);
+        env.storage().instance().set(&DataKey::Tvl, &0i128);
         env.storage()
             .instance()
             .set(&DataKey::Ids, &Vec::<u64>::new(&env));
@@ -98,6 +100,9 @@ impl RegistryContract {
         };
         env.storage().persistent().set(&DataKey::Asset(id), &entry);
         env.storage().instance().set(&DataKey::Counter, &id);
+        let mut tvl: i128 = env.storage().instance().get(&DataKey::Tvl).unwrap_or(0);
+        tvl += valuation;
+        env.storage().instance().set(&DataKey::Tvl, &tvl);
         let mut ids: Vec<u64> = env
             .storage()
             .instance()
@@ -117,6 +122,26 @@ impl RegistryContract {
             .persistent()
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound))
+    }
+
+    /// Fetch assets with pagination (start index, maximum limit).
+    pub fn get_assets(env: Env, start: u32, limit: u32) -> Vec<AssetEntry> {
+        let ids: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Ids)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut out = Vec::new(&env);
+        let len = ids.len();
+        let end = (start + limit).min(len);
+        for i in start..end {
+            if let Some(id) = ids.get(i) {
+                if let Some(entry) = env.storage().persistent().get(&DataKey::Asset(id)) {
+                    out.push_back(entry);
+                }
+            }
+        }
+        out
     }
 
     /// All assets registered by a given issuer.
@@ -154,24 +179,23 @@ impl RegistryContract {
             .persistent()
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
-        entry.active = false;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Asset(asset_id), &entry);
+        if entry.active {
+            entry.active = false;
+            let mut tvl: i128 = env.storage().instance().get(&DataKey::Tvl).unwrap_or(0);
+            tvl = tvl.saturating_sub(entry.valuation);
+            env.storage().instance().set(&DataKey::Tvl, &tvl);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Asset(asset_id), &entry);
+        }
         bump(&env);
         env.events()
             .publish((symbol_short!("deactvate"),), asset_id);
     }
 
-    /// Sum of valuations across all active assets, in USD cents.
+    /// Sum of valuations across all active assets, in USD cents. Calculated in O(1) time.
     pub fn total_value_locked(env: Env) -> i128 {
-        let mut tvl: i128 = 0;
-        for entry in Self::iter_assets(&env) {
-            if entry.active {
-                tvl += entry.valuation;
-            }
-        }
-        tvl
+        env.storage().instance().get(&DataKey::Tvl).unwrap_or(0)
     }
 
     /// Number of registered assets (active or not).

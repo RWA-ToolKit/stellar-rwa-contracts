@@ -42,7 +42,9 @@ pub struct KycRecord {
 #[derive(Clone)]
 enum DataKey {
     Admin,
-    Allowlist,
+    AllowlistCount,
+    AllowlistIndex(u32),
+    AllowlistMember(Address),
     Record(Address),
     Blocked(String),
 }
@@ -76,9 +78,7 @@ impl ComplianceContract {
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::Allowlist, &Vec::<Address>::new(&env));
+        env.storage().instance().set(&DataKey::AllowlistCount, &0u32);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -109,14 +109,25 @@ impl ComplianceContract {
             .persistent()
             .set(&DataKey::Record(address.clone()), &record);
 
-        let mut list: Vec<Address> = env
+        if !env
             .storage()
-            .instance()
-            .get(&DataKey::Allowlist)
-            .unwrap_or_else(|| Vec::new(&env));
-        if !list.contains(&address) {
-            list.push_back(address.clone());
-            env.storage().instance().set(&DataKey::Allowlist, &list);
+            .persistent()
+            .has(&DataKey::AllowlistMember(address.clone()))
+        {
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::AllowlistCount)
+                .unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&DataKey::AllowlistIndex(count), &address);
+            env.storage()
+                .persistent()
+                .set(&DataKey::AllowlistMember(address.clone()), &count);
+            env.storage()
+                .instance()
+                .set(&DataKey::AllowlistCount, &(count + 1));
         }
         Self::bump_instance(&env);
         env.events().publish(
@@ -153,18 +164,43 @@ impl ComplianceContract {
             .persistent()
             .remove(&DataKey::Record(address.clone()));
 
-        let list: Vec<Address> = env
+        if let Some(idx) = env
             .storage()
-            .instance()
-            .get(&DataKey::Allowlist)
-            .unwrap_or_else(|| Vec::new(&env));
-        let mut next = Vec::new(&env);
-        for a in list.iter() {
-            if a != address {
-                next.push_back(a);
+            .persistent()
+            .get::<_, u32>(&DataKey::AllowlistMember(address.clone()))
+        {
+            let count: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::AllowlistCount)
+                .unwrap_or(0);
+            if count > 0 {
+                let last_idx = count - 1;
+                if idx != last_idx {
+                    if let Some(last_addr) = env
+                        .storage()
+                        .persistent()
+                        .get::<_, Address>(&DataKey::AllowlistIndex(last_idx))
+                    {
+                        env.storage()
+                            .persistent()
+                            .set(&DataKey::AllowlistIndex(idx), &last_addr);
+                        env.storage()
+                            .persistent()
+                            .set(&DataKey::AllowlistMember(last_addr), &idx);
+                    }
+                }
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::AllowlistIndex(last_idx));
+                env.storage()
+                    .instance()
+                    .set(&DataKey::AllowlistCount, &(last_idx));
             }
+            env.storage()
+                .persistent()
+                .remove(&DataKey::AllowlistMember(address.clone()));
         }
-        env.storage().instance().set(&DataKey::Allowlist, &next);
         Self::bump_instance(&env);
         env.events()
             .publish((symbol_short!("removed"), address), ());
@@ -197,12 +233,35 @@ impl ComplianceContract {
         env.storage().persistent().get(&DataKey::Record(address))
     }
 
+    /// Fetch addresses on the allowlist with pagination.
+    pub fn get_allowlist_paginated(env: Env, start: u32, limit: u32) -> Vec<Address> {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistCount)
+            .unwrap_or(0);
+        let mut out = Vec::new(&env);
+        let end = (start + limit).min(count);
+        for i in start..end {
+            if let Some(addr) = env
+                .storage()
+                .persistent()
+                .get::<_, Address>(&DataKey::AllowlistIndex(i))
+            {
+                out.push_back(addr);
+            }
+        }
+        out
+    }
+
     /// Return every address currently on the allowlist.
     pub fn get_allowlist(env: Env) -> Vec<Address> {
-        env.storage()
+        let count: u32 = env
+            .storage()
             .instance()
-            .get(&DataKey::Allowlist)
-            .unwrap_or_else(|| Vec::new(&env))
+            .get(&DataKey::AllowlistCount)
+            .unwrap_or(0);
+        Self::get_allowlist_paginated(env, 0, count)
     }
 
     /// Block an entire jurisdiction (country code). Approved addresses in a

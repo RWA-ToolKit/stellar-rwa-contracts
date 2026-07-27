@@ -145,6 +145,59 @@ impl AssetTokenContract {
             .publish((symbol_short!("transfer"), from, to), amount);
     }
 
+    /// Transfer `amount` from `from` to `to` with an optional memo string for
+    /// off-chain reconciliation. Both parties must be compliance-approved.
+    pub fn transfer_with_memo(
+        env: Env,
+        from: Address,
+        to: Address,
+        amount: i128,
+        memo: String,
+    ) {
+        from.require_auth();
+        Self::check_amount(&env, amount);
+        let meta = Self::metadata(&env);
+        if meta.paused {
+            panic_err(&env, Error::Paused);
+        }
+        if !Self::compliant(&env, &meta.compliance_contract, &from) {
+            panic_err(&env, Error::SenderNotCompliant);
+        }
+        if !Self::compliant(&env, &meta.compliance_contract, &to) {
+            panic_err(&env, Error::RecipientNotCompliant);
+        }
+        let from_bal = Self::balance(env.clone(), from.clone());
+        if from_bal < amount {
+            panic_err(&env, Error::InsufficientBalance);
+        }
+        let to_bal = Self::balance(env.clone(), to.clone());
+        Self::set_balance(&env, &from, from_bal - amount);
+        Self::set_balance(&env, &to, to_bal + amount);
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("transfer"), from, to), (amount, memo));
+    }
+
+    /// Admin forced-transfer / clawback mechanism for regulatory recovery scenarios.
+    /// Transfers `amount` from `from` to `to`. Admin only.
+    pub fn clawback(env: Env, admin: Address, from: Address, to: Address, amount: i128) {
+        let meta = Self::require_admin(&env, &admin);
+        Self::check_amount(&env, amount);
+        if !Self::compliant(&env, &meta.compliance_contract, &to) {
+            panic_err(&env, Error::RecipientNotCompliant);
+        }
+        let from_bal = Self::balance(env.clone(), from.clone());
+        if from_bal < amount {
+            panic_err(&env, Error::InsufficientBalance);
+        }
+        let to_bal = Self::balance(env.clone(), to.clone());
+        Self::set_balance(&env, &from, from_bal - amount);
+        Self::set_balance(&env, &to, to_bal + amount);
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("clawback"), admin, from, to), amount);
+    }
+
     /// Mint new tokens to a compliance-approved recipient. Admin only.
     pub fn mint(env: Env, admin: Address, to: Address, amount: i128) {
         let mut meta = Self::require_admin(&env, &admin);
