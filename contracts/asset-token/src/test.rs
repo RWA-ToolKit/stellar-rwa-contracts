@@ -192,3 +192,33 @@ fn env_register_empty_compliance(env: &Env, admin: &Address) -> Address {
     c.initialize(admin);
     id
 }
+
+#[test]
+fn test_admin_handover_success() {
+    let s = setup(1_000);
+    let new_admin = Address::generate(&s.env);
+    s.token.propose_admin(&s.admin, &new_admin);
+    assert_eq!(s.token.get_pending_admin(), Some(new_admin.clone()));
+    s.token.accept_admin(&new_admin);
+    assert_eq!(s.token.get_admin(), new_admin);
+    assert_eq!(s.token.get_pending_admin(), None);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_unauthorized_propose_admin_fails() {
+    let s = setup(1_000);
+    let impostor = Address::generate(&s.env);
+    let new_admin = Address::generate(&s.env);
+    s.token.propose_admin(&impostor, &new_admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_unauthorized_accept_admin_fails() {
+    let s = setup(1_000);
+    let new_admin = Address::generate(&s.env);
+    let impostor = Address::generate(&s.env);
+    s.token.propose_admin(&s.admin, &new_admin);
+    s.token.accept_admin(&impostor);
+}

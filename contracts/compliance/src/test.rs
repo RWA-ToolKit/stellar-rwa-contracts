@@ -149,3 +149,33 @@ fn test_suspend_missing_record_rejected() {
     let ghost = Address::generate(&env);
     client.suspend(&admin, &ghost);
 }
+
+#[test]
+fn test_admin_handover_success() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&admin, &new_admin);
+    assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
+    client.accept_admin(&new_admin);
+    assert_eq!(client.get_admin(), new_admin);
+    assert_eq!(client.get_pending_admin(), None);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_unauthorized_propose_admin_fails() {
+    let (env, client, _admin) = setup();
+    let impostor = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&impostor, &new_admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_unauthorized_accept_admin_fails() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+    let impostor = Address::generate(&env);
+    client.propose_admin(&admin, &new_admin);
+    client.accept_admin(&impostor);
+}

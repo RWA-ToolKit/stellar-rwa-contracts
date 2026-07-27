@@ -146,3 +146,33 @@ fn test_negative_valuation_rejected() {
     let issuer = Address::generate(&env);
     register(&env, &client, &issuer, "real_estate", -1);
 }
+
+#[test]
+fn test_admin_handover_success() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&admin, &new_admin);
+    assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
+    client.accept_admin(&new_admin);
+    assert_eq!(client.get_admin(), new_admin);
+    assert_eq!(client.get_pending_admin(), None);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_unauthorized_propose_admin_fails() {
+    let (env, client, _admin) = setup();
+    let impostor = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    client.propose_admin(&impostor, &new_admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_unauthorized_accept_admin_fails() {
+    let (env, client, admin) = setup();
+    let new_admin = Address::generate(&env);
+    let impostor = Address::generate(&env);
+    client.propose_admin(&admin, &new_admin);
+    client.accept_admin(&impostor);
+}

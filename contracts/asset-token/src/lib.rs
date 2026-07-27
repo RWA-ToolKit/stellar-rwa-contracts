@@ -44,6 +44,7 @@ pub struct AssetMetadata {
 #[derive(Clone)]
 enum DataKey {
     Metadata,
+    PendingAdmin,
     Balance(Address),
 }
 
@@ -60,6 +61,7 @@ pub enum Error {
     SenderNotCompliant = 7,
     RecipientNotCompliant = 8,
     Overflow = 9,
+    NoPendingAdmin = 10,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -240,6 +242,56 @@ impl AssetTokenContract {
         Self::bump(&env);
         env.events()
             .publish((symbol_short!("setcomp"),), compliance);
+    }
+
+    /// Return current admin address.
+    pub fn get_admin(env: Env) -> Address {
+        Self::metadata(&env).admin
+    }
+
+    /// Return pending admin address, if set.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Propose a new admin address. Current admin only.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
+        Self::require_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("prop_adm"), admin), new_admin);
+    }
+
+    /// Accept admin handover. Must be called by the proposed pending admin.
+    pub fn accept_admin(env: Env, new_admin: Address) {
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_err(&env, Error::NoPendingAdmin));
+        if pending != new_admin {
+            panic_err(&env, Error::Unauthorized);
+        }
+        let mut meta = Self::metadata(&env);
+        meta.admin = new_admin.clone();
+        env.storage().instance().set(&DataKey::Metadata, &meta);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("acc_adm"),), new_admin);
+    }
+
+    /// Upgrade contract WASM code. Admin only.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("upgrade"), admin), new_wasm_hash);
     }
 
     // ---- internal helpers ----

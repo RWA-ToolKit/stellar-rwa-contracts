@@ -30,6 +30,7 @@ pub struct AssetEntry {
 #[derive(Clone)]
 enum DataKey {
     Admin,
+    PendingAdmin,
     Counter,
     Ids,
     Asset(u64),
@@ -44,6 +45,7 @@ pub enum Error {
     Unauthorized = 3,
     AssetNotFound = 4,
     InvalidValuation = 5,
+    NoPendingAdmin = 6,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -185,6 +187,49 @@ impl RegistryContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_err(&env, Error::NotInitialized))
+    }
+
+    /// Return pending admin address, if set.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Propose a new admin address. Current admin only.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
+        Self::require_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("prop_adm"), admin), new_admin);
+    }
+
+    /// Accept admin handover. Must be called by the proposed pending admin.
+    pub fn accept_admin(env: Env, new_admin: Address) {
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_err(&env, Error::NoPendingAdmin));
+        if pending != new_admin {
+            panic_err(&env, Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("acc_adm"),), new_admin);
+    }
+
+    /// Upgrade contract WASM code. Admin only.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: soroban_sdk::BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        env.deployer().update_current_contract_wasm(new_wasm_hash.clone());
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("upgrade"), admin), new_wasm_hash);
     }
 
     // ---- internal helpers ----

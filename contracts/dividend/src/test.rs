@@ -190,3 +190,33 @@ fn test_full_distribution_completes() {
     assert_eq!(pay_balance(&ctx, &ctx.h2), 200);
     assert_eq!(pay_balance(&ctx, &ctx.admin), 100_000 - 1000 + 500);
 }
+
+#[test]
+fn test_admin_handover_success() {
+    let ctx = setup();
+    let new_admin = Address::generate(&ctx.env);
+    ctx.dividend.propose_admin(&ctx.admin, &new_admin);
+    assert_eq!(ctx.dividend.get_pending_admin(), Some(new_admin.clone()));
+    ctx.dividend.accept_admin(&new_admin);
+    assert_eq!(ctx.dividend.get_admin(), new_admin);
+    assert_eq!(ctx.dividend.get_pending_admin(), None);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_unauthorized_propose_admin_fails() {
+    let ctx = setup();
+    let impostor = Address::generate(&ctx.env);
+    let new_admin = Address::generate(&ctx.env);
+    ctx.dividend.propose_admin(&impostor, &new_admin);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_unauthorized_accept_admin_fails() {
+    let ctx = setup();
+    let new_admin = Address::generate(&ctx.env);
+    let impostor = Address::generate(&ctx.env);
+    ctx.dividend.propose_admin(&ctx.admin, &new_admin);
+    ctx.dividend.accept_admin(&impostor);
+}
