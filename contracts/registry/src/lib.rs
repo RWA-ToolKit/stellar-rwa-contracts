@@ -44,6 +44,7 @@ pub enum Error {
     Unauthorized = 3,
     AssetNotFound = 4,
     InvalidValuation = 5,
+    Overflow = 6,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -168,7 +169,9 @@ impl RegistryContract {
         let mut tvl: i128 = 0;
         for entry in Self::iter_assets(&env) {
             if entry.active {
-                tvl += entry.valuation;
+                tvl = tvl
+                    .checked_add(entry.valuation)
+                    .unwrap_or_else(|| panic_err(&env, Error::Overflow));
             }
         }
         tvl
