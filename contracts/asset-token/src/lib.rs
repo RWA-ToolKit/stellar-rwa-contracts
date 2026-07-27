@@ -188,9 +188,13 @@ impl AssetTokenContract {
 
     /// Current balance of `id`.
     pub fn balance(env: Env, id: Address) -> i128 {
+        let key = DataKey::Balance(id);
         env.storage()
             .persistent()
-            .get(&DataKey::Balance(id))
+            .extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .persistent()
+            .get(&key)
             .unwrap_or(0)
     }
 
@@ -274,9 +278,13 @@ impl AssetTokenContract {
     }
 
     fn set_balance(env: &Env, id: &Address, amount: i128) {
+        let key = DataKey::Balance(id.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Balance(id.clone()), &amount);
+            .set(&key, &amount);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     fn bump(env: &Env) {
