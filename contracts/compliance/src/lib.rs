@@ -105,9 +105,13 @@ impl ComplianceContract {
             verified_at: now,
             expires_at,
         };
+        let key = DataKey::Record(address.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Record(address.clone()), &record);
+            .set(&key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         let mut list: Vec<Address> = env
             .storage()
@@ -131,9 +135,13 @@ impl ComplianceContract {
         Self::require_admin(&env, &admin);
         let mut record = Self::load_record(&env, &address);
         record.status = ComplianceStatus::Suspended;
+        let key = DataKey::Record(address.clone());
         env.storage()
             .persistent()
-            .set(&DataKey::Record(address.clone()), &record);
+            .set(&key, &record);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Self::bump_instance(&env);
         env.events()
             .publish((symbol_short!("suspend"), address), ());
@@ -174,9 +182,15 @@ impl ComplianceContract {
     /// Returns `true` only if the address is Approved, not expired, and its
     /// jurisdiction is not blocked.
     pub fn is_allowed(env: Env, address: Address) -> bool {
-        let record: Option<KycRecord> = env.storage().persistent().get(&DataKey::Record(address));
+        let key = DataKey::Record(address);
+        let record: Option<KycRecord> = env.storage().persistent().get(&key);
         let record = match record {
-            Some(r) => r,
+            Some(r) => {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+                r
+            },
             None => return false,
         };
         if record.status != ComplianceStatus::Approved {
@@ -194,7 +208,15 @@ impl ComplianceContract {
 
     /// Fetch the raw KYC record for an address, if any.
     pub fn get_record(env: Env, address: Address) -> Option<KycRecord> {
-        env.storage().persistent().get(&DataKey::Record(address))
+        let key = DataKey::Record(address);
+        if let Some(record) = env.storage().persistent().get(&key) {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            Some(record)
+        } else {
+            None
+        }
     }
 
     /// Return every address currently on the allowlist.
