@@ -98,6 +98,15 @@ impl ComplianceContract {
         if expires_at != 0 && expires_at <= now {
             panic_with_error(&env, Error::InvalidExpiry);
         }
+        // Normalize jurisdiction: uppercase and trim whitespace.
+        let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
+
+        // Capture previous state for audit trail (issue #20).
+        let prev: Option<KycRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Record(address.clone()));
+
         let record = KycRecord {
             address: address.clone(),
             status: ComplianceStatus::Approved,
@@ -119,9 +128,26 @@ impl ComplianceContract {
             env.storage().instance().set(&DataKey::Allowlist, &list);
         }
         Self::bump_instance(&env);
+
+        // Emit before/after state so off-chain systems can distinguish a fresh
+        // approval from a re-classification or reinstatement (issue #20).
+        let (prev_jurisdiction, prev_expires_at, was_suspended) = match prev {
+            Some(ref r) => (
+                r.jurisdiction.clone(),
+                r.expires_at,
+                r.status == ComplianceStatus::Suspended,
+            ),
+            None => (jurisdiction.clone(), 0u32, false),
+        };
         env.events().publish(
             (symbol_short!("approved"), address),
-            (jurisdiction, expires_at),
+            (
+                jurisdiction,
+                expires_at,
+                prev_jurisdiction,
+                prev_expires_at,
+                was_suspended,
+            ),
         );
     }
 
@@ -174,7 +200,7 @@ impl ComplianceContract {
     /// Returns `true` only if the address is Approved, not expired, and its
     /// jurisdiction is not blocked.
     pub fn is_allowed(env: Env, address: Address) -> bool {
-        let record: Option<KycRecord> = env.storage().persistent().get(&DataKey::Record(address));
+        let record: Option<KycRecord> = env.storage().persistent().get(&DataKey::Record(address.clone()));
         let record = match record {
             Some(r) => r,
             None => return false,
@@ -184,6 +210,9 @@ impl ComplianceContract {
         }
         let now = env.ledger().sequence();
         if record.expires_at != 0 && now >= record.expires_at {
+            // Emit an expiry event so indexers can track the transition (issue #21).
+            env.events()
+                .publish((symbol_short!("expired"), address), record.expires_at);
             return false;
         }
         if Self::is_jurisdiction_blocked(env.clone(), record.jurisdiction) {
@@ -209,6 +238,7 @@ impl ComplianceContract {
     /// blocked jurisdiction fail `is_allowed`.
     pub fn block_jurisdiction(env: Env, admin: Address, jurisdiction: String) {
         Self::require_admin(&env, &admin);
+        let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
         env.storage()
             .persistent()
             .set(&DataKey::Blocked(jurisdiction.clone()), &true);
@@ -220,6 +250,7 @@ impl ComplianceContract {
     /// Un-block a previously blocked jurisdiction.
     pub fn unblock_jurisdiction(env: Env, admin: Address, jurisdiction: String) {
         Self::require_admin(&env, &admin);
+        let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
         env.storage()
             .persistent()
             .remove(&DataKey::Blocked(jurisdiction.clone()));
@@ -230,10 +261,52 @@ impl ComplianceContract {
 
     /// Whether a jurisdiction is currently blocked.
     pub fn is_jurisdiction_blocked(env: Env, jurisdiction: String) -> bool {
+        let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
         env.storage()
             .persistent()
             .get(&DataKey::Blocked(jurisdiction))
             .unwrap_or(false)
+    }
+
+    /// Prune all expired records from the allowlist. Admin only (issue #21).
+    /// Removes expired entries from persistent storage and the allowlist vector
+    /// so indexers and `get_allowlist` no longer count them as Approved.
+    pub fn prune_expired(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        let now = env.ledger().sequence();
+        let list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Allowlist)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut next = Vec::new(&env);
+        for addr in list.iter() {
+            let record: Option<KycRecord> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Record(addr.clone()));
+            let keep = match record {
+                Some(ref r) => {
+                    if r.expires_at != 0 && now >= r.expires_at {
+                        // Remove the expired persistent record.
+                        env.storage()
+                            .persistent()
+                            .remove(&DataKey::Record(addr.clone()));
+                        env.events()
+                            .publish((symbol_short!("expired"), addr.clone()), r.expires_at);
+                        false
+                    } else {
+                        true
+                    }
+                }
+                None => false,
+            };
+            if keep {
+                next.push_back(addr);
+            }
+        }
+        env.storage().instance().set(&DataKey::Allowlist, &next);
+        Self::bump_instance(&env);
     }
 
     /// Return the configured admin address.
@@ -276,6 +349,24 @@ impl ComplianceContract {
 /// Small wrapper so call sites read cleanly and never use `unwrap`/`expect`.
 fn panic_with_error(env: &Env, error: Error) -> ! {
     soroban_sdk::panic_with_error!(env, error)
+}
+
+/// Normalize a jurisdiction code: uppercase and trim leading/trailing spaces
+/// so that "us", "Us", " US " all map to the canonical "US" (issue #19).
+fn normalize_jurisdiction(env: &Env, jurisdiction: &String) -> String {
+    let raw = jurisdiction.to_bytes();
+    let len = raw.len();
+    // Fixed-size stack buffer; jurisdiction codes are short (≤ 16 bytes).
+    let mut buf = [0u8; 16];
+    let mut out_len: usize = 0;
+    for i in 0..len {
+        let b = raw.get(i).unwrap_or(0);
+        if b != b' ' && out_len < 16 {
+            buf[out_len] = b.to_ascii_uppercase();
+            out_len += 1;
+        }
+    }
+    String::from_bytes(env, &buf[..out_len])
 }
 
 #[cfg(test)]
