@@ -29,7 +29,7 @@ local setup, testing, deployment, the compliance model, and how to extend it.
 # compile all contracts to wasm
 stellar contract build
 
-# run the full workspace test suite (48 tests)
+# run the full workspace test suite (63 tests)
 cargo test
 
 # run a single contract's tests

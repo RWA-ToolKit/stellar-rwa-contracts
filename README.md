@@ -75,7 +75,7 @@ with the [Stellar CLI](https://developers.stellar.org/docs/tools/cli) via
 
 - Rust + [Soroban SDK](https://soroban.stellar.org) 26
 - Cargo workspace, one member per contract
-- 48 unit tests including the cross-contract compliance checks
+- 63 unit tests including the cross-contract compliance checks
 
 ## Quick start
 
@@ -83,7 +83,7 @@ with the [Stellar CLI](https://developers.stellar.org/docs/tools/cli) via
 # build all contracts to wasm
 stellar contract build
 
-# run the full test suite (48 tests)
+# run the full test suite (63 tests)
 cargo test
 
 # deploy + initialize everything on Testnet
