@@ -146,3 +146,13 @@ fn test_negative_valuation_rejected() {
     let issuer = Address::generate(&env);
     register(&env, &client, &issuer, "real_estate", -1);
 }
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_non_admin_rejected() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "real_estate", 100);
+    let impostor = Address::generate(&env);
+    client.deactivate_asset(&impostor, &id);
+}

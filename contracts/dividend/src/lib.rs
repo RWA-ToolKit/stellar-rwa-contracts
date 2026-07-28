@@ -8,6 +8,14 @@
 //!
 //! Balances are read at claim time from the asset token. `snapshot_ledger`
 //! records the ledger at which the distribution was created for reference.
+//!
+//! ## Auth Model
+//! Admin-only functions use `require_admin`, which first calls `admin.require_auth()`
+//! to verify the caller's signature, then compares the caller address against the
+//! stored admin. If the caller is not the stored admin, the transaction panics with
+//! `Error::Unauthorized`. A non-admin who signs a call to an admin-only function will
+//! always get `Unauthorized`; there is no separate error for "wrong admin" vs "not
+//! signed by admin". Clients can call `get_admin` to pre-check before signing.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,

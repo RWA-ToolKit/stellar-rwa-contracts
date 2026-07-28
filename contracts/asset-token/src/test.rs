@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
 use compliance::{ComplianceContract, ComplianceContractClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env, String};
 
 struct Setup {
     env: Env,
@@ -33,6 +33,7 @@ fn setup(supply: i128) -> Setup {
         &compliance_id,
         &String::from_str(&env, "A tokenized NYC loft"),
         &50_000_000i128,
+        &-1i128,
     );
 
     Setup {
@@ -184,6 +185,77 @@ fn test_set_compliance_switches_gate() {
     // Sanity: original compliance still knows the admin.
     assert!(s.compliance.is_allowed(&s.admin));
     let _ = &s.compliance_id;
+}
+
+#[test]
+fn test_name_symbol_decimals() {
+    let s = setup(1_000);
+    assert_eq!(s.token.name(), String::from_str(&s.env, "Manhattan Loft"));
+    assert_eq!(s.token.symbol(), String::from_str(&s.env, "MLOFT"));
+    assert_eq!(s.token.decimals(), 2u32);
+}
+
+#[test]
+fn test_approve_allowance() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.approve(&s.admin, &bob, &100, &0);
+    assert_eq!(s.token.allowance(&s.admin, &bob), 100);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_approve_expires_in_past_rejected() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.env.ledger().with_mut(|l| l.sequence_number = 100);
+    s.token.approve(&s.admin, &bob, &100, &50);
+}
+
+#[test]
+fn test_transfer_from() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    let carol = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    approve(&s.env, &s.compliance, &s.admin, &carol);
+    s.token.approve(&s.admin, &bob, &200, &0);
+    s.token.transfer_from(&bob, &s.admin, &carol, &200);
+    assert_eq!(s.token.balance(&s.admin), 800);
+    assert_eq!(s.token.balance(&carol), 200);
+    assert_eq!(s.token.allowance(&s.admin, &bob), 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_mint_exceeds_max_supply() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    let capped_id = env_register_capped_token(&s.env, &s.admin, &s.compliance_id);
+    let capped = AssetTokenContractClient::new(&s.env, &capped_id);
+    capped.mint(&s.admin, &bob, &1);
+}
+
+fn env_register_capped_token(env: &Env, admin: &Address, compliance_id: &Address) -> Address {
+    let _comp = ComplianceContractClient::new(env, compliance_id);
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(env, &token_id);
+    token.initialize(
+        admin,
+        &String::from_str(env, "Capped"),
+        &String::from_str(env, "CAP"),
+        &String::from_str(env, "real_estate"),
+        &1000i128,
+        &2u32,
+        compliance_id,
+        &String::from_str(env, "Capped token"),
+        &100i128,
+        &1000i128,
+    );
+    token_id
 }
 
 fn env_register_empty_compliance(env: &Env, admin: &Address) -> Address {

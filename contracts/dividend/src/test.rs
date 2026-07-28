@@ -43,6 +43,7 @@ fn setup() -> Ctx {
         &comp_id,
         &String::from_str(&env, "desc"),
         &1000i128,
+        &-1i128,
     );
     asset.transfer(&admin, &h1, &300);
     asset.transfer(&admin, &h2, &200);

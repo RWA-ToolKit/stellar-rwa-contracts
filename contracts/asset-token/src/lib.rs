@@ -38,6 +38,16 @@ pub struct AssetMetadata {
     /// Asset value in USD cents.
     pub valuation: i128,
     pub paused: bool,
+    /// Maximum total supply. `-1` means no cap.
+    pub max_supply: i128,
+}
+
+/// SEP-41 allowance record for a spender authorized by an owner.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Allowance {
+    pub amount: i128,
+    pub expires_at: u32,
 }
 
 #[contracttype]
@@ -45,6 +55,7 @@ pub struct AssetMetadata {
 enum DataKey {
     Metadata,
     Balance(Address),
+    Allowance(Address, Address),
 }
 
 #[contracterror]
@@ -60,6 +71,7 @@ pub enum Error {
     SenderNotCompliant = 7,
     RecipientNotCompliant = 8,
     Overflow = 9,
+    MaxSupplyExceeded = 10,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -73,6 +85,7 @@ pub struct AssetTokenContract;
 impl AssetTokenContract {
     /// Initialize the token and mint the full `total_supply` to the admin.
     /// The admin must already be compliance-approved to hold the asset.
+    /// `max_supply` sets the maximum total supply; use `-1` for unlimited.
     #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
@@ -85,12 +98,16 @@ impl AssetTokenContract {
         compliance_contract: Address,
         asset_description: String,
         valuation: i128,
+        max_supply: i128,
     ) {
         if env.storage().instance().has(&DataKey::Metadata) {
             panic_err(&env, Error::AlreadyInitialized);
         }
         admin.require_auth();
         if total_supply < 0 || valuation < 0 {
+            panic_err(&env, Error::InvalidAmount);
+        }
+        if max_supply >= 0 && total_supply > max_supply {
             panic_err(&env, Error::InvalidAmount);
         }
         // The admin must be allowed to hold the initial supply.
@@ -108,6 +125,7 @@ impl AssetTokenContract {
             asset_description,
             valuation,
             paused: false,
+            max_supply,
         };
         env.storage().instance().set(&DataKey::Metadata, &metadata);
         env.storage()
@@ -155,13 +173,26 @@ impl AssetTokenContract {
         if !Self::compliant(&env, &meta.compliance_contract, &to) {
             panic_err(&env, Error::RecipientNotCompliant);
         }
-        let new_supply = meta
-            .total_supply
-            .checked_add(amount)
-            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
-        let to_bal = Self::balance(env.clone(), to.clone());
-        Self::set_balance(&env, &to, to_bal + amount);
-        meta.total_supply = new_supply;
+        if meta.max_supply >= 0 {
+            let new_supply = meta
+                .total_supply
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+            if new_supply > meta.max_supply {
+                panic_err(&env, Error::MaxSupplyExceeded);
+            }
+            let to_bal = Self::balance(env.clone(), to.clone());
+            Self::set_balance(&env, &to, to_bal + amount);
+            meta.total_supply = new_supply;
+        } else {
+            let new_supply = meta
+                .total_supply
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+            let to_bal = Self::balance(env.clone(), to.clone());
+            Self::set_balance(&env, &to, to_bal + amount);
+            meta.total_supply = new_supply;
+        }
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);
         env.events().publish((symbol_short!("mint"), to), amount);
@@ -217,6 +248,106 @@ impl AssetTokenContract {
     /// Full asset metadata.
     pub fn get_metadata(env: Env) -> AssetMetadata {
         Self::metadata(&env)
+    }
+
+    /// Token name (SEP-41).
+    pub fn name(env: Env) -> String {
+        Self::metadata(&env).name
+    }
+
+    /// Token symbol (SEP-41).
+    pub fn symbol(env: Env) -> String {
+        Self::metadata(&env).symbol
+    }
+
+    /// Token decimals (SEP-41).
+    pub fn decimals(env: Env) -> u32 {
+        Self::metadata(&env).decimals
+    }
+
+    /// Approve `spender` to spend `amount` tokens on behalf of `owner`.
+    /// Owner must authorize the call.
+    pub fn approve(env: Env, owner: Address, spender: Address, amount: i128, expires_at: u32) {
+        owner.require_auth();
+        if amount < 0 {
+            panic_err(&env, Error::InvalidAmount);
+        }
+        let now = env.ledger().sequence();
+        if expires_at != 0 && expires_at <= now {
+            panic_err(&env, Error::InvalidAmount);
+        }
+        let allowance = Allowance { amount, expires_at };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Allowance(owner.clone(), spender.clone()), &allowance);
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("approve"), owner, spender), amount);
+    }
+
+    /// Returns the remaining allowance that `spender` is allowed to spend
+    /// on behalf of `owner`.
+    pub fn allowance(env: Env, owner: Address, spender: Address) -> i128 {
+        let allowance: Option<Allowance> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Allowance(owner, spender));
+        match allowance {
+            Some(a) => {
+                if a.expires_at != 0 && env.ledger().sequence() >= a.expires_at {
+                    0
+                } else {
+                    a.amount
+                }
+            }
+            None => 0,
+        }
+    }
+
+    /// Transfer `amount` from `from` to `to` using an allowance.
+    /// The spender must authorize the call and must have a valid allowance.
+    pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
+        spender.require_auth();
+        Self::check_amount(&env, amount);
+        let meta = Self::metadata(&env);
+        if meta.paused {
+            panic_err(&env, Error::Paused);
+        }
+        if !Self::compliant(&env, &meta.compliance_contract, &from) {
+            panic_err(&env, Error::SenderNotCompliant);
+        }
+        if !Self::compliant(&env, &meta.compliance_contract, &to) {
+            panic_err(&env, Error::RecipientNotCompliant);
+        }
+        let from_bal = Self::balance(env.clone(), from.clone());
+        if from_bal < amount {
+            panic_err(&env, Error::InsufficientBalance);
+        }
+        let current_allowance = Self::allowance(env.clone(), from.clone(), spender.clone());
+        if current_allowance < amount {
+            panic_err(&env, Error::InsufficientBalance);
+        }
+        Self::set_balance(&env, &from, from_bal - amount);
+        let to_bal = Self::balance(env.clone(), to.clone());
+        Self::set_balance(&env, &to, to_bal + amount);
+        let new_allowance = current_allowance - amount;
+        if new_allowance == 0 {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Allowance(from.clone(), spender.clone()));
+        } else {
+            let existing: Option<Allowance> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Allowance(from.clone(), spender.clone()));
+            let expires_at = existing.map(|a| a.expires_at).unwrap_or(0);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Allowance(from.clone(), spender.clone()), &Allowance { amount: new_allowance, expires_at });
+        }
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("xfer_from"), spender, from, to), amount);
     }
 
     /// Update the recorded USD-cents valuation. Admin only.

@@ -8,6 +8,14 @@
 //!
 //! Time is expressed in ledger sequence numbers (`u32`), not wall-clock dates.
 //! An `expires_at` of `0` means the KYC approval never expires.
+//!
+//! ## Auth Model
+//! Admin-only functions use `require_admin`, which first calls `admin.require_auth()`
+//! to verify the caller's signature, then compares the caller address against the
+//! stored admin. If the caller is not the stored admin, the transaction panics with
+//! `Error::Unauthorized`. A non-admin who signs a call to an admin-only function will
+//! always get `Unauthorized`; there is no separate error for "wrong admin" vs "not
+//! signed by admin". Clients can call `get_admin` to pre-check before signing.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
