@@ -139,7 +139,10 @@ impl AssetTokenContract {
         }
         let to_bal = Self::balance(env.clone(), to.clone());
         Self::set_balance(&env, &from, from_bal - amount);
-        Self::set_balance(&env, &to, to_bal + amount);
+        let new_to_bal = to_bal
+            .checked_add(amount)
+            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+        Self::set_balance(&env, &to, new_to_bal);
         Self::bump(&env);
         env.events()
             .publish((symbol_short!("transfer"), from, to), amount);
@@ -160,7 +163,10 @@ impl AssetTokenContract {
             .checked_add(amount)
             .unwrap_or_else(|| panic_err(&env, Error::Overflow));
         let to_bal = Self::balance(env.clone(), to.clone());
-        Self::set_balance(&env, &to, to_bal + amount);
+        let new_to_bal = to_bal
+            .checked_add(amount)
+            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+        Self::set_balance(&env, &to, new_to_bal);
         meta.total_supply = new_supply;
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);
@@ -177,7 +183,10 @@ impl AssetTokenContract {
             panic_err(&env, Error::InsufficientBalance);
         }
         Self::set_balance(&env, &from, from_bal - amount);
-        meta.total_supply -= amount;
+        meta.total_supply = meta
+            .total_supply
+            .checked_sub(amount)
+            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);
         env.events().publish((symbol_short!("burn"), from), amount);
