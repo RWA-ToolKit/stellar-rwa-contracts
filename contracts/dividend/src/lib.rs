@@ -49,6 +49,8 @@ enum DataKey {
     Ids,
     Dist(u64),
     Claimed(u64, Address),
+    /// Per-asset index: maps an asset_token Address -> Vec<u64> of distribution ids.
+    AssetDists(Address),
 }
 
 #[contracterror]
@@ -125,6 +127,16 @@ impl DividendContract {
             .unwrap_or_else(|| Vec::new(&env));
         ids.push_back(id);
         env.storage().instance().set(&DataKey::Ids, &ids);
+        // Maintain per-asset index for O(per-asset) lookups.
+        let mut asset_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AssetDists(dist.asset_token.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        asset_ids.push_back(id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AssetDists(dist.asset_token.clone()), &asset_ids);
         bump(&env);
         env.events()
             .publish((symbol_short!("created"), admin), (id, total_amount));
@@ -187,22 +199,22 @@ impl DividendContract {
     }
 
     /// All distributions created for a given asset token.
+    /// Uses a per-asset index so the scan is O(distributions for that asset)
+    /// rather than O(total distributions across all assets).
     pub fn get_distributions_for_asset(env: Env, asset_token: Address) -> Vec<Distribution> {
-        let ids: Vec<u64> = env
+        let asset_ids: Vec<u64> = env
             .storage()
-            .instance()
-            .get(&DataKey::Ids)
+            .persistent()
+            .get(&DataKey::AssetDists(asset_token))
             .unwrap_or_else(|| Vec::new(&env));
         let mut out = Vec::new(&env);
-        for id in ids.iter() {
+        for id in asset_ids.iter() {
             if let Some(d) = env
                 .storage()
                 .persistent()
                 .get::<DataKey, Distribution>(&DataKey::Dist(id))
             {
-                if d.asset_token == asset_token {
-                    out.push_back(d);
-                }
+                out.push_back(d);
             }
         }
         out
