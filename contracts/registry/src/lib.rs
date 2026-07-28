@@ -97,6 +97,9 @@ impl RegistryContract {
             active: true,
         };
         env.storage().persistent().set(&DataKey::Asset(id), &entry);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Asset(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         env.storage().instance().set(&DataKey::Counter, &id);
         let mut ids: Vec<u64> = env
             .storage()
@@ -113,10 +116,14 @@ impl RegistryContract {
 
     /// Fetch a single asset by id.
     pub fn get_asset(env: Env, asset_id: u64) -> AssetEntry {
-        env.storage()
+        let entry = env.storage()
             .persistent()
             .get(&DataKey::Asset(asset_id))
-            .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound))
+            .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Asset(asset_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        entry
     }
 
     /// All assets registered by a given issuer.
@@ -158,6 +165,9 @@ impl RegistryContract {
         env.storage()
             .persistent()
             .set(&DataKey::Asset(asset_id), &entry);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Asset(asset_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         bump(&env);
         env.events()
             .publish((symbol_short!("deactvate"),), asset_id);
@@ -198,6 +208,9 @@ impl RegistryContract {
         let mut out = Vec::new(env);
         for id in ids.iter() {
             if let Some(entry) = env.storage().persistent().get(&DataKey::Asset(id)) {
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&DataKey::Asset(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
                 out.push_back(entry);
             }
         }
