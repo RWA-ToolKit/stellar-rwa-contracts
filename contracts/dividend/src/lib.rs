@@ -81,9 +81,6 @@ impl DividendContract {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Counter, &0u64);
-        env.storage()
-            .instance()
-            .set(&DataKey::Ids, &Vec::<u64>::new(&env));
         bump(&env);
         env.events().publish((symbol_short!("init"),), admin);
     }
@@ -121,13 +118,6 @@ impl DividendContract {
             .persistent()
             .extend_ttl(&DataKey::Dist(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         env.storage().instance().set(&DataKey::Counter, &id);
-        let mut ids: Vec<u64> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Ids)
-            .unwrap_or_else(|| Vec::new(&env));
-        ids.push_back(id);
-        env.storage().instance().set(&DataKey::Ids, &ids);
         bump(&env);
         env.events()
             .publish((symbol_short!("created"), admin), (id, total_amount));
@@ -197,14 +187,16 @@ impl DividendContract {
     }
 
     /// All distributions created for a given asset token.
+    /// Iterates via the monotonic Counter so the global Ids vector is never
+    /// re-serialised; per-id keys are O(1) reads.
     pub fn get_distributions_for_asset(env: Env, asset_token: Address) -> Vec<Distribution> {
-        let ids: Vec<u64> = env
+        let counter: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::Ids)
-            .unwrap_or_else(|| Vec::new(&env));
+            .get(&DataKey::Counter)
+            .unwrap_or(0);
         let mut out = Vec::new(&env);
-        for id in ids.iter() {
+        for id in 1..=counter {
             if let Some(d) = env
                 .storage()
                 .persistent()

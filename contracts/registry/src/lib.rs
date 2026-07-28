@@ -10,6 +10,10 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
 };
 
+// NOTE: The `Ids` instance-storage key is retained in the enum only for
+// forward-compatibility reads of contracts already deployed; it is no longer
+// written. New registrations are enumerated via the monotonic Counter alone.
+
 /// A single registered asset.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,9 +68,6 @@ impl RegistryContract {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Counter, &0u64);
-        env.storage()
-            .instance()
-            .set(&DataKey::Ids, &Vec::<u64>::new(&env));
         bump(&env);
         env.events().publish((symbol_short!("init"),), admin);
     }
@@ -102,13 +103,6 @@ impl RegistryContract {
             .persistent()
             .extend_ttl(&DataKey::Asset(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         env.storage().instance().set(&DataKey::Counter, &id);
-        let mut ids: Vec<u64> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Ids)
-            .unwrap_or_else(|| Vec::new(&env));
-        ids.push_back(id);
-        env.storage().instance().set(&DataKey::Ids, &ids);
         bump(&env);
         env.events()
             .publish((symbol_short!("register"), issuer), id);
@@ -203,13 +197,13 @@ impl RegistryContract {
     // ---- internal helpers ----
 
     fn iter_assets(env: &Env) -> Vec<AssetEntry> {
-        let ids: Vec<u64> = env
+        let counter: u64 = env
             .storage()
             .instance()
-            .get(&DataKey::Ids)
-            .unwrap_or_else(|| Vec::new(env));
+            .get(&DataKey::Counter)
+            .unwrap_or(0);
         let mut out = Vec::new(env);
-        for id in ids.iter() {
+        for id in 1..=counter {
             if let Some(entry) = env.storage().persistent().get(&DataKey::Asset(id)) {
                 env.storage()
                     .persistent()
