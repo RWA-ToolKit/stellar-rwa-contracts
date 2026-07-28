@@ -12,7 +12,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
-    Env, String,
+    Env, String, Vec,
 };
 
 /// Cross-contract client for the compliance contract. Only the method the asset
@@ -171,6 +171,32 @@ impl AssetTokenContract {
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);
         env.events().publish((symbol_short!("mint"), to), amount);
+    }
+
+    /// Batch-mint to multiple compliance-approved recipients in a single call.
+    /// Admin only. Each `(recipient, amount)` pair is checked individually;
+    /// if any recipient fails compliance the entire call reverts.
+    pub fn mint_batch(env: Env, admin: Address, recipients: Vec<(Address, i128)>) {
+        let mut meta = Self::require_admin(&env, &admin);
+        if meta.paused {
+            panic_err(&env, Error::Paused);
+        }
+        let mut new_supply = meta.total_supply;
+        for (to, amount) in recipients.iter() {
+            Self::check_amount(&env, amount);
+            if !Self::compliant(&env, &meta.compliance_contract, &to) {
+                panic_err(&env, Error::RecipientNotCompliant);
+            }
+            new_supply = new_supply
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+            let to_bal = Self::balance(env.clone(), to.clone());
+            Self::set_balance(&env, &to, to_bal + amount);
+            env.events().publish((symbol_short!("mint"), to), amount);
+        }
+        meta.total_supply = new_supply;
+        env.storage().instance().set(&DataKey::Metadata, &meta);
+        Self::bump(&env);
     }
 
     /// Burn `amount` of the caller's own tokens.
