@@ -190,3 +190,34 @@ fn test_full_distribution_completes() {
     assert_eq!(pay_balance(&ctx, &ctx.h2), 200);
     assert_eq!(pay_balance(&ctx, &ctx.admin), 100_000 - 1000 + 500);
 }
+
+// ---- issue #49: reject zero-supply asset token ----
+
+#[test]
+#[should_panic(expected = "Error(Contract, #8)")]
+fn test_create_distribution_zero_supply_rejected() {
+    let ctx = setup();
+    // Register an asset token with supply=0; no holders can ever claim.
+    let env = &ctx.env;
+    let comp_id = env.register(ComplianceContract, ());
+    let comp = ComplianceContractClient::new(env, &comp_id);
+    comp.initialize(&ctx.admin);
+    comp.add_to_allowlist(&ctx.admin, &ctx.admin, &String::from_str(env, "US"), &0);
+
+    let zero_asset_id = env.register(AssetTokenContract, ());
+    let zero_asset = AssetTokenContractClient::new(env, &zero_asset_id);
+    zero_asset.initialize(
+        &ctx.admin,
+        &String::from_str(env, "Empty"),
+        &String::from_str(env, "EMPT"),
+        &String::from_str(env, "commodity"),
+        &0i128, // zero supply
+        &0u32,
+        &comp_id,
+        &String::from_str(env, "empty asset"),
+        &0i128,
+    );
+
+    ctx.dividend
+        .create_distribution(&ctx.admin, &zero_asset_id, &ctx.pay_id, &1000);
+}

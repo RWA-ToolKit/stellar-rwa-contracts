@@ -60,7 +60,14 @@ pub enum Error {
     SenderNotCompliant = 7,
     RecipientNotCompliant = 8,
     Overflow = 9,
+    InvalidInput = 10,
 }
+
+/// Maximum byte lengths for string metadata fields (issue #46).
+const MAX_NAME_LEN: u32 = 64;
+const MAX_SYMBOL_LEN: u32 = 16;
+const MAX_ASSET_TYPE_LEN: u32 = 32;
+const MAX_DESC_LEN: u32 = 256;
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
@@ -93,6 +100,11 @@ impl AssetTokenContract {
         if total_supply < 0 || valuation < 0 {
             panic_err(&env, Error::InvalidAmount);
         }
+        // Validate string metadata: non-empty and within max lengths (issue #46).
+        check_str(&env, &name, 1, MAX_NAME_LEN);
+        check_str(&env, &symbol, 1, MAX_SYMBOL_LEN);
+        check_str(&env, &asset_type, 1, MAX_ASSET_TYPE_LEN);
+        check_str(&env, &asset_description, 1, MAX_DESC_LEN);
         // The admin must be allowed to hold the initial supply.
         if !Self::compliant(&env, &compliance_contract, &admin) {
             panic_err(&env, Error::RecipientNotCompliant);
@@ -323,6 +335,14 @@ impl AssetTokenContract {
 
 fn panic_err(env: &Env, error: Error) -> ! {
     soroban_sdk::panic_with_error!(env, error)
+}
+
+/// Reject strings that are empty or exceed `max_len` bytes (issue #46).
+fn check_str(env: &Env, s: &String, min_len: u32, max_len: u32) {
+    let len = s.len();
+    if len < min_len || len > max_len {
+        panic_err(env, Error::InvalidInput);
+    }
 }
 
 #[cfg(test)]

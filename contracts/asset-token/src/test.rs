@@ -192,3 +192,89 @@ fn env_register_empty_compliance(env: &Env, admin: &Address) -> Address {
     c.initialize(admin);
     id
 }
+
+// ---- issue #46: string validation tests ----
+
+fn make_string(env: &Env, n: usize) -> String {
+    // Build a string of `n` 'a' bytes using repeated from_str calls isn't ideal
+    // in no_std, but the test environment allows it via a pre-built literal slice.
+    // We build via bytes instead.
+    let bytes: soroban_sdk::Bytes = soroban_sdk::Bytes::from_slice(env, &b"a".repeat(n));
+    String::from_bytes(env, &bytes)
+}
+
+fn init_with_name(s: &Setup, name: String) {
+    let env = &s.env;
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(env, &token_id);
+    token.initialize(
+        &s.admin,
+        &name,
+        &String::from_str(env, "SYM"),
+        &String::from_str(env, "real_estate"),
+        &1000i128,
+        &0u32,
+        &s.compliance_id,
+        &String::from_str(env, "desc"),
+        &1000i128,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_empty_name_rejected() {
+    let s = setup(1_000);
+    init_with_name(&s, String::from_str(&s.env, ""));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_name_too_long_rejected() {
+    let s = setup(1_000);
+    init_with_name(&s, make_string(&s.env, 65));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_empty_symbol_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let comp_id = env.register(ComplianceContract, ());
+    let comp = ComplianceContractClient::new(&env, &comp_id);
+    let admin = Address::generate(&env);
+    comp.initialize(&admin);
+    comp.add_to_allowlist(&admin, &admin, &String::from_str(&env, "US"), &0);
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(&env, &token_id);
+    token.initialize(
+        &admin,
+        &String::from_str(&env, "ValidName"),
+        &String::from_str(&env, ""),
+        &String::from_str(&env, "real_estate"),
+        &1000i128,
+        &0u32,
+        &comp_id,
+        &String::from_str(&env, "desc"),
+        &1000i128,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_symbol_too_long_rejected() {
+    let s = setup(1_000);
+    let env = &s.env;
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(env, &token_id);
+    token.initialize(
+        &s.admin,
+        &String::from_str(env, "Name"),
+        &make_string(env, 17), // MAX_SYMBOL_LEN is 16
+        &String::from_str(env, "real_estate"),
+        &1000i128,
+        &0u32,
+        &s.compliance_id,
+        &String::from_str(env, "desc"),
+        &1000i128,
+    );
+}
