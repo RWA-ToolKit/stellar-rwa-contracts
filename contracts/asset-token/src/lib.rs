@@ -9,6 +9,13 @@
 //!
 //! Valuation is stored in USD cents (`i128`). Amounts are integer token units in
 //! the token's own `decimals` base.
+//!
+//! Fallible entrypoints signal errors via `panic_with_error!` (host trap),
+//! decodable by clients as `Error(Contract, #N)`, rather than returning
+//! `Result<_, Error>`. This is a deliberate, deterministic style: a failure
+//! aborts the whole transaction, including the cross-contract call into the
+//! compliance contract, so a compliance rejection surfaces here as a trap,
+//! not a returned `Err`.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,

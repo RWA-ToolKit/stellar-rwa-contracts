@@ -8,6 +8,13 @@
 //!
 //! Time is expressed in ledger sequence numbers (`u32`), not wall-clock dates.
 //! An `expires_at` of `0` means the KYC approval never expires.
+//!
+//! Fallible entrypoints signal errors via `panic_with_error!` (host trap)
+//! rather than returning `Result<_, Error>` — see the [`Error`] enum below.
+//! Note that `is_allowed`, called cross-contract from the asset token on
+//! every transfer/mint, deliberately returns `bool` instead of panicking, so
+//! that a non-compliant address fails the call cleanly without trapping the
+//! caller.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,

@@ -8,6 +8,13 @@
 //!
 //! Balances are read at claim time from the asset token. `snapshot_ledger`
 //! records the ledger at which the distribution was created for reference.
+//!
+//! Fallible entrypoints signal errors via `panic_with_error!` (host trap),
+//! decodable by clients as `Error(Contract, #N)`, rather than returning
+//! `Result<_, Error>`. This is a deliberate, deterministic style: a failure
+//! aborts the whole transaction, including the cross-contract calls into the
+//! asset and payment token contracts, so callers should expect a trap rather
+//! than an `Err` on the failure path.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,

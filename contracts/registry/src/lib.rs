@@ -5,6 +5,13 @@
 //! issuer registers their asset-token contract here; the registry assigns a
 //! monotonically increasing id and tracks issuer, type, valuation and active
 //! status. It also reports total value locked (TVL) across active assets.
+//!
+//! Fallible entrypoints signal errors via `panic_with_error!` (host trap),
+//! decodable by clients as `Error(Contract, #N)`, rather than returning
+//! `Result<_, Error>`. This is a deliberate, deterministic style: a failure
+//! aborts the whole transaction, including any in-flight cross-contract
+//! calls into this contract, so callers composing with the registry should
+//! expect a trap rather than an `Err` on the failure path.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
