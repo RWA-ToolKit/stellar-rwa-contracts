@@ -23,3 +23,6 @@ clean:
 # Deploy + initialize everything on Testnet.
 deploy:
 	NETWORK=$(or $(NETWORK),testnet) IDENTITY=$(or $(IDENTITY),rwa-admin) ./scripts/deploy.sh
+
+update-doc-addresses:
+	python3 scripts/generate_addresses.py
