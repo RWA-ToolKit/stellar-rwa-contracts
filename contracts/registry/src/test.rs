@@ -146,3 +146,35 @@ fn test_negative_valuation_rejected() {
     let issuer = Address::generate(&env);
     register(&env, &client, &issuer, "real_estate", -1);
 }
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_empty_name_rejected() {
+    // Issue #48: empty asset name must panic InvalidInput (#7).
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_asset(
+        &issuer,
+        &token,
+        &String::from_str(&env, ""),
+        &String::from_str(&env, "real_estate"),
+        &100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_invalid_asset_type_rejected() {
+    // Issue #48: unknown asset_type must panic InvalidInput (#7).
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_asset(
+        &issuer,
+        &token,
+        &String::from_str(&env, "My Asset"),
+        &String::from_str(&env, "garbage"),
+        &100,
+    );
+}
