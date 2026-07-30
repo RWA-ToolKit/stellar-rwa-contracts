@@ -30,6 +30,12 @@ fn register(
 }
 
 #[test]
+fn test_version() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.version(), VERSION);
+}
+
+#[test]
 fn test_initialize_admin() {
     let (_env, client, admin) = setup();
     assert_eq!(client.get_admin(), admin);
@@ -62,9 +68,11 @@ fn test_ids_increment() {
     let issuer = Address::generate(&env);
     let a = register(&env, &client, &issuer, "invoice", 1);
     let b = register(&env, &client, &issuer, "invoice", 1);
+    let c = register(&env, &client, &issuer, "invoice", 1);
     assert_eq!(a, 1);
     assert_eq!(b, 2);
-    assert_eq!(client.asset_count(), 2);
+    assert_eq!(c, 3);
+    assert_eq!(client.asset_count(), 3);
 }
 
 #[test]
@@ -130,6 +138,27 @@ fn test_deactivate_excludes_from_tvl() {
 }
 
 #[test]
+fn test_tvl_sums_only_active() {
+    let (env, client, admin) = setup();
+    assert_eq!(client.total_value_locked(), 0);
+
+    let issuer = Address::generate(&env);
+    let a = register(&env, &client, &issuer, "real_estate", 100);
+    let b = register(&env, &client, &issuer, "invoice", 250);
+    let c = register(&env, &client, &issuer, "commodity", 40);
+    assert_eq!(client.total_value_locked(), 390);
+
+    client.deactivate_asset(&admin, &a);
+    assert_eq!(client.total_value_locked(), 290);
+
+    client.deactivate_asset(&admin, &c);
+    assert_eq!(client.total_value_locked(), 250);
+
+    client.deactivate_asset(&admin, &b);
+    assert_eq!(client.total_value_locked(), 0);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_deactivate_requires_admin() {
     let (env, client, _admin) = setup();
@@ -140,9 +169,54 @@ fn test_deactivate_requires_admin() {
 }
 
 #[test]
+fn test_active_count_excludes_deactivated() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let a = register(&env, &client, &issuer, "real_estate", 100);
+    register(&env, &client, &issuer, "invoice", 250);
+    assert_eq!(client.active_count(), 2);
+    assert_eq!(client.asset_count(), 2);
+    client.deactivate_asset(&admin, &a);
+    assert_eq!(client.active_count(), 1);
+    assert_eq!(client.asset_count(), 2);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #5)")]
 fn test_negative_valuation_rejected() {
     let (env, client, _admin) = setup();
     let issuer = Address::generate(&env);
     register(&env, &client, &issuer, "real_estate", -1);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_empty_name_rejected() {
+    // Issue #48: empty asset name must panic InvalidInput (#7).
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_asset(
+        &issuer,
+        &token,
+        &String::from_str(&env, ""),
+        &String::from_str(&env, "real_estate"),
+        &100,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_invalid_asset_type_rejected() {
+    // Issue #48: unknown asset_type must panic InvalidInput (#7).
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_asset(
+        &issuer,
+        &token,
+        &String::from_str(&env, "My Asset"),
+        &String::from_str(&env, "garbage"),
+        &100,
+    );
 }

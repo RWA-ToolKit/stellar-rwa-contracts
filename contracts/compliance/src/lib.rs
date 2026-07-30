@@ -58,17 +58,27 @@ pub enum Error {
     RecordNotFound = 3,
     InvalidExpiry = 4,
     Unauthorized = 5,
+    InvalidJurisdiction = 6,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280; // ~5s ledgers
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
+/// Contract ABI/behavior version. Bump on any change to storage layout or
+/// externally observable behavior so clients and the indexer can detect it.
+pub const VERSION: u32 = 1;
+
 #[contract]
 pub struct ComplianceContract;
 
 #[contractimpl]
 impl ComplianceContract {
+    /// Current contract version.
+    pub fn version(_env: Env) -> u32 {
+        VERSION
+    }
+
     /// Initialize the contract with an admin. Callable exactly once.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
@@ -351,22 +361,29 @@ fn panic_with_error(env: &Env, error: Error) -> ! {
     soroban_sdk::panic_with_error!(env, error)
 }
 
-/// Normalize a jurisdiction code: uppercase and trim leading/trailing spaces
-/// so that "us", "Us", " US " all map to the canonical "US" (issue #19).
+/// Normalize and validate a jurisdiction code (issue #47).
+/// Strips spaces, uppercases, then enforces exactly 2 ASCII alpha characters
+/// so only real ISO-3166-1 alpha-2 codes (e.g. "US", "KE") are accepted.
 fn normalize_jurisdiction(env: &Env, jurisdiction: &String) -> String {
     let raw = jurisdiction.to_bytes();
     let len = raw.len();
-    // Fixed-size stack buffer; jurisdiction codes are short (≤ 16 bytes).
-    let mut buf = [0u8; 16];
+    let mut buf = [0u8; 2];
     let mut out_len: usize = 0;
     for i in 0..len {
         let b = raw.get(i).unwrap_or(0);
-        if b != b' ' && out_len < 16 {
-            buf[out_len] = b.to_ascii_uppercase();
-            out_len += 1;
+        if b == b' ' {
+            continue;
         }
+        if out_len >= 2 || !b.is_ascii_alphabetic() {
+            panic_with_error(env, Error::InvalidJurisdiction);
+        }
+        buf[out_len] = b.to_ascii_uppercase();
+        out_len += 1;
     }
-    String::from_bytes(env, &buf[..out_len])
+    if out_len != 2 {
+        panic_with_error(env, Error::InvalidJurisdiction);
+    }
+    String::from_bytes(env, &buf[..2])
 }
 
 #[cfg(test)]

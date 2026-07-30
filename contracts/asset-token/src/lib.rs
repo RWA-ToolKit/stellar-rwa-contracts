@@ -61,6 +61,7 @@ pub enum Error {
     RecipientNotCompliant = 8,
     Overflow = 9,
     InvalidInput = 10,
+    InvalidCompliance = 11,
 }
 
 /// Maximum byte lengths for string metadata fields (issue #46).
@@ -73,11 +74,20 @@ const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
+/// Contract ABI/behavior version. Bump on any change to storage layout or
+/// externally observable behavior so clients and the indexer can detect it.
+pub const VERSION: u32 = 1;
+
 #[contract]
 pub struct AssetTokenContract;
 
 #[contractimpl]
 impl AssetTokenContract {
+    /// Current contract version.
+    pub fn version(_env: Env) -> u32 {
+        VERSION
+    }
+
     /// Initialize the token and mint the full `total_supply` to the admin.
     /// The admin must already be compliance-approved to hold the asset.
     #[allow(clippy::too_many_arguments)]
@@ -127,7 +137,7 @@ impl AssetTokenContract {
             .set(&DataKey::Balance(admin.clone()), &total_supply);
         Self::bump(&env);
         env.events()
-            .publish((symbol_short!("mint"), admin), total_supply);
+            .publish((symbol_short!("genesis"), admin.clone()), (total_supply, total_supply));
     }
 
     /// Transfer `amount` from `from` to `to`. Both parties must be
@@ -149,15 +159,27 @@ impl AssetTokenContract {
         if from_bal < amount {
             panic_err(&env, Error::InsufficientBalance);
         }
+        // A self-transfer is a no-op: reading `to_bal` and writing it back after
+        // the `from` write would otherwise overwrite the debit and inflate the
+        // balance. Skip the balance moves entirely once funds/compliance checks
+        // have passed.
+        if from == to {
+            Self::bump(&env);
+            env.events()
+                .publish((symbol_short!("transfer"), from, to), amount);
+            return;
+        }
         let to_bal = Self::balance(env.clone(), to.clone());
-        Self::set_balance(&env, &from, from_bal - amount);
+        let new_from_bal = from_bal - amount;
+        Self::set_balance(&env, &from, new_from_bal);
         let new_to_bal = to_bal
             .checked_add(amount)
             .unwrap_or_else(|| panic_err(&env, Error::Overflow));
         Self::set_balance(&env, &to, new_to_bal);
         Self::bump(&env);
+        // Include post-balances so indexers don't need to re-read state (issue #41).
         env.events()
-            .publish((symbol_short!("transfer"), from, to), amount);
+            .publish((symbol_short!("transfer"), from, to), (amount, new_from_bal, new_to_bal));
     }
 
     /// Mint new tokens to a compliance-approved recipient. Admin only.
@@ -218,6 +240,9 @@ impl AssetTokenContract {
         let mut meta = Self::metadata(&env);
         if meta.paused {
             panic_err(&env, Error::Paused);
+        }
+        if !Self::compliant(&env, &meta.compliance_contract, &from) {
+            panic_err(&env, Error::SenderNotCompliant);
         }
         let from_bal = Self::balance(env.clone(), from.clone());
         if from_bal < amount {
@@ -283,8 +308,17 @@ impl AssetTokenContract {
     }
 
     /// Point the token at a different compliance contract. Admin only.
+    ///
+    /// This does not re-validate existing holders against the new gate: a
+    /// holder approved under the old contract keeps their balance even if
+    /// the new contract would reject them. It only checks that `compliance`
+    /// implements `is_allowed` and approves the admin, to catch a
+    /// misconfigured address before it bricks every transfer.
     pub fn set_compliance(env: Env, admin: Address, compliance: Address) {
         let mut meta = Self::require_admin(&env, &admin);
+        if !Self::compliant(&env, &compliance, &admin) {
+            panic_err(&env, Error::InvalidCompliance);
+        }
         meta.compliance_contract = compliance.clone();
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);

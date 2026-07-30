@@ -20,6 +20,12 @@ fn test_initialize_sets_admin() {
 }
 
 #[test]
+fn test_version() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.version(), VERSION);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #1)")]
 fn test_double_initialize_fails() {
     let (env, client, _admin) = setup();
@@ -143,6 +149,24 @@ fn test_expiry_in_past_rejected() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_non_admin_add_to_allowlist_is_unauthorized() {
+    // Issue #52: a non-admin caller must receive Unauthorized, not silently succeed.
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(ComplianceContract, ());
+    let client = ComplianceContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let non_admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    // non_admin is not the stored admin → must panic Unauthorized (#5).
+    client.add_to_allowlist(&non_admin, &user, &us, &0);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_suspend_missing_record_rejected() {
     let (env, client, admin) = setup();
@@ -159,4 +183,43 @@ fn test_get_admin_before_init_panics_not_initialized() {
     let client = ComplianceContractClient::new(&env, &contract_id);
     // Contract is not initialized — get_admin must panic with NotInitialized (#2).
     client.get_admin();
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_invalid_jurisdiction_rejected() {
+    // Issue #47: non-ISO-3166 jurisdiction codes must panic InvalidJurisdiction (#6).
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    // "United States" is not a valid 2-letter code.
+    client.add_to_allowlist(&admin, &user, &String::from_str(&env, "United States"), &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_empty_jurisdiction_rejected() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    client.add_to_allowlist(&admin, &user, &String::from_str(&env, ""), &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_single_char_jurisdiction_rejected() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    client.add_to_allowlist(&admin, &user, &String::from_str(&env, "U"), &0);
+}
+
+#[test]
+fn test_lowercase_jurisdiction_normalized() {
+    // Issue #47: lowercase input "us" must be normalised to "US" and accepted.
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    client.add_to_allowlist(&admin, &user, &String::from_str(&env, "us"), &0);
+    assert!(client.is_allowed(&user));
+    assert_eq!(
+        client.get_record(&user).unwrap().jurisdiction,
+        String::from_str(&env, "US")
+    );
 }

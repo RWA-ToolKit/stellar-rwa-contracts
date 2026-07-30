@@ -93,6 +93,17 @@ The configured admin. Errors: `NotInitialized (#2)`.
 | `blockjur`   | jurisdiction                  | jurisdiction blocked       |
 | `unblkjur`   | jurisdiction                  | jurisdiction unblocked     |
 
+## Storage / TTL
+
+Listing of the contract `DataKey` variants and their storage behaviour.
+
+| Key | Payload | Storage | TTL / Notes |
+|-----|---------|---------|-------------|
+| `Admin` | - | instance | - |
+| `Allowlist` | - | instance | - |
+| `Record` | Address | persistent | per-key TTL |
+| `Blocked` | String | unknown | - |
+
 ## Security considerations
 
 - All state-changing functions require the **stored admin** to both authorize

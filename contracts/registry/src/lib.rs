@@ -37,6 +37,7 @@ enum DataKey {
     Counter,
     Ids,
     Asset(u64),
+    ActiveCount,
 }
 
 #[contracterror]
@@ -49,17 +50,27 @@ pub enum Error {
     AssetNotFound = 4,
     InvalidValuation = 5,
     Overflow = 6,
+    InvalidInput = 7,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
+/// Contract ABI/behavior version. Bump on any change to storage layout or
+/// externally observable behavior so clients and the indexer can detect it.
+pub const VERSION: u32 = 1;
+
 #[contract]
 pub struct RegistryContract;
 
 #[contractimpl]
 impl RegistryContract {
+    /// Current contract version.
+    pub fn version(_env: Env) -> u32 {
+        VERSION
+    }
+
     /// Initialize with an admin. Callable once.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
@@ -68,6 +79,7 @@ impl RegistryContract {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Counter, &0u64);
+        env.storage().instance().set(&DataKey::ActiveCount, &0u64);
         bump(&env);
         env.events().publish((symbol_short!("init"),), admin);
     }
@@ -87,6 +99,11 @@ impl RegistryContract {
         if valuation < 0 {
             panic_err(&env, Error::InvalidValuation);
         }
+        // Require non-empty name and a recognised asset type (issue #48).
+        if name.len() == 0 {
+            panic_err(&env, Error::InvalidInput);
+        }
+        validate_asset_type(&env, &asset_type);
         let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
         let entry = AssetEntry {
             id,
@@ -103,6 +120,15 @@ impl RegistryContract {
             .persistent()
             .extend_ttl(&DataKey::Asset(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         env.storage().instance().set(&DataKey::Counter, &id);
+        let active_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveCount)
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveCount, &active_count);
         bump(&env);
         env.events()
             .publish((symbol_short!("register"), issuer), id);
@@ -156,6 +182,7 @@ impl RegistryContract {
             .persistent()
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
+        let was_active = entry.active;
         entry.active = false;
         env.storage()
             .persistent()
@@ -163,6 +190,17 @@ impl RegistryContract {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Asset(asset_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        if was_active {
+            let active_count: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::ActiveCount)
+                .unwrap_or(0u64)
+                .saturating_sub(1);
+            env.storage()
+                .instance()
+                .set(&DataKey::ActiveCount, &active_count);
+        }
         bump(&env);
         env.events()
             .publish((symbol_short!("deactvate"),), asset_id);
@@ -184,6 +222,14 @@ impl RegistryContract {
     /// Number of registered assets (active or not).
     pub fn asset_count(env: Env) -> u64 {
         env.storage().instance().get(&DataKey::Counter).unwrap_or(0)
+    }
+
+    /// Number of assets that are currently active (excludes deactivated ones).
+    pub fn active_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ActiveCount)
+            .unwrap_or(0)
     }
 
     /// Configured admin.
@@ -241,6 +287,29 @@ fn bump(env: &Env) {
 
 fn panic_err(env: &Env, error: Error) -> ! {
     soroban_sdk::panic_with_error!(env, error)
+}
+
+/// Allowed asset types (issue #48). Any type outside this list is rejected.
+const VALID_ASSET_TYPES: &[&str] = &["real_estate", "invoice", "commodity", "bond", "equity", "fund"];
+
+fn validate_asset_type(env: &Env, asset_type: &String) {
+    let bytes = asset_type.to_bytes();
+    for &valid in VALID_ASSET_TYPES {
+        let v = valid.as_bytes();
+        if bytes.len() as usize == v.len() {
+            let mut matches = true;
+            for i in 0..v.len() {
+                if bytes.get(i as u32).unwrap_or(0) != v[i] {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                return;
+            }
+        }
+    }
+    panic_err(env, Error::InvalidInput);
 }
 
 #[cfg(test)]

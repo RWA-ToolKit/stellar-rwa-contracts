@@ -1,7 +1,10 @@
 #![cfg(test)]
 use super::*;
 use compliance::{ComplianceContract, ComplianceContractClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, AuthorizedFunction},
+    Address, Env, String, Symbol,
+};
 
 struct Setup {
     env: Env,
@@ -46,6 +49,12 @@ fn setup(supply: i128) -> Setup {
 
 fn approve(env: &Env, compliance: &ComplianceContractClient, admin: &Address, who: &Address) {
     compliance.add_to_allowlist(admin, who, &String::from_str(env, "US"), &0);
+}
+
+#[test]
+fn test_version() {
+    let s = setup(1_000);
+    assert_eq!(s.token.version(), VERSION);
 }
 
 #[test]
@@ -196,8 +205,10 @@ fn test_update_valuation() {
 #[test]
 fn test_set_compliance_switches_gate() {
     let s = setup(1_000);
-    // A fresh compliance contract where nobody is approved.
+    // A fresh compliance contract where the admin is approved.
     let comp2_id = env_register_empty_compliance(&s.env, &s.admin);
+    let comp2 = ComplianceContractClient::new(&s.env, &comp2_id);
+    approve(&s.env, &comp2, &s.admin, &s.admin);
     s.token.set_compliance(&s.admin, &comp2_id);
     assert_eq!(s.token.get_metadata().compliance_contract, comp2_id);
     // Sanity: original compliance still knows the admin.
@@ -206,10 +217,31 @@ fn test_set_compliance_switches_gate() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_set_compliance_rejects_contract_that_blocks_admin() {
+    let s = setup(1_000);
+    // A fresh compliance contract where nobody, including the admin, is approved.
+    let comp2_id = env_register_empty_compliance(&s.env, &s.admin);
+    s.token.set_compliance(&s.admin, &comp2_id);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #4)")]
 fn test_burn_more_than_balance_fails() {
     let s = setup(1_000);
     s.token.burn(&s.admin, &2000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_burn_blocked_when_holder_not_compliant() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.transfer(&s.admin, &bob, &200);
+    // Bob now holds tokens; revoke his approval.
+    s.compliance.remove(&s.admin, &bob);
+    s.token.burn(&bob, &100);
 }
 
 #[test]
@@ -304,6 +336,32 @@ fn test_transfer_to_unapproved_recipient_panics_recipient_not_compliant() {
     // `eve` is never added to the allowlist — transfer must panic RecipientNotCompliant.
     let eve = Address::generate(&s.env);
     s.token.transfer(&s.admin, &eve, &100);
+}
+
+// ---- issue #120: cross-contract auth propagation ----
+
+#[test]
+fn test_transfer_requires_only_sender_auth() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    s.token.transfer(&s.admin, &bob, &400);
+
+    let auths = s.env.auths();
+    assert_eq!(auths.len(), 1);
+    let (authorizer, invocation) = &auths[0];
+    assert_eq!(*authorizer, s.admin);
+    match &invocation.function {
+        AuthorizedFunction::Contract((contract, fn_name, _)) => {
+            assert_eq!(*contract, s.token.address);
+            assert_eq!(*fn_name, Symbol::new(&s.env, "transfer"));
+        }
+        _ => panic!("expected a contract invocation"),
+    }
+    // Compliance gating only reads `is_allowed`, which requires no auth, so
+    // there must be no sub-invocation beyond the sender's own transfer.
+    assert_eq!(invocation.sub_invocations.len(), 0);
 }
 
 #[test]

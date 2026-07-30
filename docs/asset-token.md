@@ -86,6 +86,15 @@ in metadata and can be swapped with `set_compliance`.
 | `valuation` | new valuation           | valuation up |
 | `setcomp`   | compliance address      | gate changed |
 
+## Storage / TTL
+
+Listing of the contract `DataKey` variants and their storage behaviour.
+
+| Key | Payload | Storage | TTL / Notes |
+|-----|---------|---------|-------------|
+| `Metadata` | - | instance | - |
+| `Balance` | Address | unknown | - |
+
 ## Security considerations
 
 - Compliance is enforced **inside** `transfer`/`mint`; it cannot be bypassed by
