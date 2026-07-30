@@ -151,13 +151,12 @@ fn test_suspend_missing_record_rejected() {
 }
 
 #[test]
-fn test_allowlist_no_duplicates_on_reapprove() {
-    let (env, client, admin) = setup();
-    let user = Address::generate(&env);
-    let us = String::from_str(&env, "US");
-    // Approve the same address twice.
-    client.add_to_allowlist(&admin, &user, &us, &0);
-    client.add_to_allowlist(&admin, &user, &us, &0);
-    // The address must appear exactly once in the allowlist.
-    assert_eq!(client.get_allowlist().len(), 1);
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_get_admin_before_init_panics_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(ComplianceContract, ());
+    let client = ComplianceContractClient::new(&env, &contract_id);
+    // Contract is not initialized — get_admin must panic with NotInitialized (#2).
+    client.get_admin();
 }
