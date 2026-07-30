@@ -1,7 +1,10 @@
 #![cfg(test)]
 use super::*;
 use compliance::{ComplianceContract, ComplianceContractClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, AuthorizedFunction},
+    Address, Env, String, Symbol,
+};
 
 struct Setup {
     env: Env,
@@ -310,6 +313,32 @@ fn test_transfer_to_unapproved_recipient_panics_recipient_not_compliant() {
     // `eve` is never added to the allowlist — transfer must panic RecipientNotCompliant.
     let eve = Address::generate(&s.env);
     s.token.transfer(&s.admin, &eve, &100);
+}
+
+// ---- issue #120: cross-contract auth propagation ----
+
+#[test]
+fn test_transfer_requires_only_sender_auth() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    s.token.transfer(&s.admin, &bob, &400);
+
+    let auths = s.env.auths();
+    assert_eq!(auths.len(), 1);
+    let (authorizer, invocation) = &auths[0];
+    assert_eq!(*authorizer, s.admin);
+    match &invocation.function {
+        AuthorizedFunction::Contract((contract, fn_name, _)) => {
+            assert_eq!(*contract, s.token.address);
+            assert_eq!(*fn_name, Symbol::new(&s.env, "transfer"));
+        }
+        _ => panic!("expected a contract invocation"),
+    }
+    // Compliance gating only reads `is_allowed`, which requires no auth, so
+    // there must be no sub-invocation beyond the sender's own transfer.
+    assert_eq!(invocation.sub_invocations.len(), 0);
 }
 
 #[test]

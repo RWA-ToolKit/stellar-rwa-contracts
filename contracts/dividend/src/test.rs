@@ -2,7 +2,10 @@
 use super::*;
 use asset_token::{AssetTokenContract, AssetTokenContractClient};
 use compliance::{ComplianceContract, ComplianceContractClient};
-use soroban_sdk::{testutils::Address as _, token, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, AuthorizedFunction},
+    token, Address, Env, String, Symbol,
+};
 
 struct Ctx {
     env: Env,
@@ -226,4 +229,60 @@ fn test_create_distribution_zero_supply_rejected() {
 
     ctx.dividend
         .create_distribution(&ctx.admin, &zero_asset_id, &ctx.pay_id, &1000);
+}
+
+// ---- issue #120: cross-contract auth propagation ----
+
+#[test]
+fn test_create_distribution_auth_tree() {
+    let ctx = setup();
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+
+    let auths = ctx.env.auths();
+    assert_eq!(auths.len(), 1);
+    let (authorizer, invocation) = &auths[0];
+    assert_eq!(*authorizer, ctx.admin);
+    match &invocation.function {
+        AuthorizedFunction::Contract((contract, fn_name, _)) => {
+            assert_eq!(*contract, ctx.dividend.address);
+            assert_eq!(*fn_name, Symbol::new(&ctx.env, "create_distribution"));
+        }
+        _ => panic!("expected a contract invocation"),
+    }
+    // Escrowing the payment token is a cross-contract call made `from` the
+    // admin, so it must appear as a sub-invocation authorized by the admin.
+    assert_eq!(invocation.sub_invocations.len(), 1);
+    match &invocation.sub_invocations[0].function {
+        AuthorizedFunction::Contract((contract, fn_name, _)) => {
+            assert_eq!(*contract, ctx.pay_id);
+            assert_eq!(*fn_name, Symbol::new(&ctx.env, "transfer"));
+        }
+        _ => panic!("expected a contract invocation"),
+    }
+}
+
+#[test]
+fn test_claim_requires_only_holder_auth() {
+    let ctx = setup();
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+
+    ctx.dividend.claim(&id, &ctx.h1);
+
+    let auths = ctx.env.auths();
+    assert_eq!(auths.len(), 1);
+    let (authorizer, invocation) = &auths[0];
+    assert_eq!(*authorizer, ctx.h1);
+    match &invocation.function {
+        AuthorizedFunction::Contract((contract, fn_name, _)) => {
+            assert_eq!(*contract, ctx.dividend.address);
+            assert_eq!(*fn_name, Symbol::new(&ctx.env, "claim"));
+        }
+        _ => panic!("expected a contract invocation"),
+    }
+    // The payout transfer moves funds `from` the dividend contract's own
+    // escrow, so it is self-authorized and needs no separate sub-invocation.
+    assert_eq!(invocation.sub_invocations.len(), 0);
 }
