@@ -82,6 +82,18 @@ pub trait TokenInterface {
 | `created` | (admin) → (id, total)      | distribution funded |
 | `claim`   | (holder) → (id, amount)    | holder claims       |
 
+## Storage / TTL
+
+Listing of the contract `DataKey` variants and their storage behaviour.
+
+| Key | Payload | Storage | TTL / Notes |
+|-----|---------|---------|-------------|
+| `Admin` | - | instance | - |
+| `Counter` | - | instance | - |
+| `Ids` | - | unknown | - |
+| `Dist` | u64 | persistent | extended via instance() |
+| `Claimed` | u64, Address | unknown | per-key TTL |
+
 ## Security considerations
 
 - Funds are **escrowed** in the contract at creation, so payouts can't exceed
