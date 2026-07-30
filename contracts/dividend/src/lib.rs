@@ -9,6 +9,7 @@
 //! Balances are read at claim time from the asset token. `snapshot_ledger`
 //! records the ledger at which the distribution was created for reference.
 
+use common::{bump_instance as bump_instance_common, bump_persistent as bump_persistent_common};
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, Vec,
@@ -66,10 +67,6 @@ pub enum Error {
     ZeroSupply = 8,
 }
 
-const DAY_IN_LEDGERS: u32 = 17_280;
-const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
-
 #[contract]
 pub struct DividendContract;
 
@@ -126,9 +123,7 @@ impl DividendContract {
             completed: false,
         };
         env.storage().persistent().set(&DataKey::Dist(id), &dist);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Dist(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        bump_persistent_common(&env, &DataKey::Dist(id));
         env.storage().instance().set(&DataKey::Counter, &id);
         bump(&env);
         env.events()
@@ -185,9 +180,7 @@ impl DividendContract {
         env.storage()
             .persistent()
             .set(&DataKey::Dist(distribution_id), &dist);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Dist(distribution_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        bump_persistent_common(&env, &DataKey::Dist(distribution_id));
         bump(&env);
         env.events()
             .publish((symbol_short!("claim"), holder), (distribution_id, amount));
@@ -214,9 +207,7 @@ impl DividendContract {
                 .persistent()
                 .get::<DataKey, Distribution>(&DataKey::Dist(id))
             {
-                env.storage()
-                    .persistent()
-                    .extend_ttl(&DataKey::Dist(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+                bump_persistent_common(&env, &DataKey::Dist(id));
                 if d.asset_token == asset_token {
                     out.push_back(d);
                 }
@@ -248,9 +239,7 @@ impl DividendContract {
             .persistent()
             .get(&DataKey::Dist(id))
             .unwrap_or_else(|| panic_err(env, Error::DistributionNotFound));
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Dist(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        bump_persistent_common(&env, &DataKey::Dist(id));
         dist
     }
 
@@ -268,9 +257,7 @@ impl DividendContract {
 }
 
 fn bump(env: &Env) {
-    env.storage()
-        .instance()
-        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    bump_instance_common(env);
 }
 
 fn panic_err(env: &Env, error: Error) -> ! {

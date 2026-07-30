@@ -6,6 +6,7 @@
 //! monotonically increasing id and tracks issuer, type, valuation and active
 //! status. It also reports total value locked (TVL) across active assets.
 
+use common::{bump_instance as bump_instance_common, bump_persistent as bump_persistent_common};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
 };
@@ -51,10 +52,6 @@ pub enum Error {
     Overflow = 6,
 }
 
-const DAY_IN_LEDGERS: u32 = 17_280;
-const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
-
 #[contract]
 pub struct RegistryContract;
 
@@ -99,9 +96,7 @@ impl RegistryContract {
             active: true,
         };
         env.storage().persistent().set(&DataKey::Asset(id), &entry);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Asset(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        bump_persistent_common(&env, &DataKey::Asset(id));
         env.storage().instance().set(&DataKey::Counter, &id);
         bump(&env);
         env.events()
@@ -115,9 +110,7 @@ impl RegistryContract {
             .persistent()
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Asset(asset_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        bump_persistent_common(&env, &DataKey::Asset(asset_id));
         entry
     }
 
@@ -160,9 +153,7 @@ impl RegistryContract {
         env.storage()
             .persistent()
             .set(&DataKey::Asset(asset_id), &entry);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Asset(asset_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        bump_persistent_common(&env, &DataKey::Asset(asset_id));
         bump(&env);
         env.events()
             .publish((symbol_short!("deactvate"),), asset_id);
@@ -205,9 +196,7 @@ impl RegistryContract {
         let mut out = Vec::new(env);
         for id in 1..=counter {
             if let Some(entry) = env.storage().persistent().get(&DataKey::Asset(id)) {
-                env.storage()
-                    .persistent()
-                    .extend_ttl(&DataKey::Asset(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+                bump_persistent_common(&env, &DataKey::Asset(id));
                 out.push_back(entry);
             }
         }
@@ -234,9 +223,7 @@ impl RegistryContract {
 }
 
 fn bump(env: &Env) {
-    env.storage()
-        .instance()
-        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    bump_instance_common(env);
 }
 
 fn panic_err(env: &Env, error: Error) -> ! {
