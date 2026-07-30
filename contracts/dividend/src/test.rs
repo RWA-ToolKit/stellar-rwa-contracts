@@ -175,6 +175,61 @@ fn test_get_distributions_for_asset() {
     );
 }
 
+/// #13 – claimable must return an explicit Overflow error rather than a host
+/// trap when `total_amount * balance` overflows i128.
+///
+/// We force overflow by setting total_amount = i128::MAX and then minting a
+/// holder balance of 2, so the multiplication wraps.
+#[test]
+#[should_panic(expected = "Error(Contract, #8)")]
+fn test_claimable_overflow_is_explicit_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    // Compliance
+    let comp_id = env.register(ComplianceContract, ());
+    let comp = ComplianceContractClient::new(&env, &comp_id);
+    comp.initialize(&admin);
+    let us = String::from_str(&env, "US");
+    let holder = Address::generate(&env);
+    comp.add_to_allowlist(&admin, &admin, &us, &0);
+    comp.add_to_allowlist(&admin, &holder, &us, &0);
+
+    // Asset token: supply i128::MAX, then transfer 2 to holder.
+    // We use i128::MAX as total supply to make total_amount * balance overflow.
+    let asset_id = env.register(AssetTokenContract, ());
+    let asset = AssetTokenContractClient::new(&env, &asset_id);
+    asset.initialize(
+        &admin,
+        &String::from_str(&env, "Big"),
+        &String::from_str(&env, "BIG"),
+        &String::from_str(&env, "commodity"),
+        &i128::MAX,
+        &0u32,
+        &comp_id,
+        &String::from_str(&env, "desc"),
+        &1i128,
+    );
+    asset.transfer(&admin, &holder, &2);
+
+    // Payment token
+    let sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let pay_id = sac.address();
+    token::StellarAssetClient::new(&env, &pay_id).mint(&admin, &i128::MAX);
+
+    let div_id = env.register(DividendContract, ());
+    let dividend = DividendContractClient::new(&env, &div_id);
+    dividend.initialize(&admin);
+
+    // Create a distribution with total_amount = i128::MAX.
+    let dist_id =
+        dividend.create_distribution(&admin, &asset_id, &pay_id, &i128::MAX);
+
+    // claimable: i128::MAX * 2 overflows — must panic with Error(Contract, #8).
+    dividend.claimable(&dist_id, &holder);
+}
+
 #[test]
 fn test_full_distribution_completes() {
     let ctx = setup();
