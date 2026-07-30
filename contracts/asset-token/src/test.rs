@@ -196,13 +196,24 @@ fn test_update_valuation() {
 #[test]
 fn test_set_compliance_switches_gate() {
     let s = setup(1_000);
-    // A fresh compliance contract where nobody is approved.
+    // A fresh compliance contract where the admin is approved.
     let comp2_id = env_register_empty_compliance(&s.env, &s.admin);
+    let comp2 = ComplianceContractClient::new(&s.env, &comp2_id);
+    approve(&s.env, &comp2, &s.admin, &s.admin);
     s.token.set_compliance(&s.admin, &comp2_id);
     assert_eq!(s.token.get_metadata().compliance_contract, comp2_id);
     // Sanity: original compliance still knows the admin.
     assert!(s.compliance.is_allowed(&s.admin));
     let _ = &s.compliance_id;
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_set_compliance_rejects_contract_that_blocks_admin() {
+    let s = setup(1_000);
+    // A fresh compliance contract where nobody, including the admin, is approved.
+    let comp2_id = env_register_empty_compliance(&s.env, &s.admin);
+    s.token.set_compliance(&s.admin, &comp2_id);
 }
 
 #[test]
