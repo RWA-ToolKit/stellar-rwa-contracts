@@ -219,6 +219,9 @@ impl AssetTokenContract {
         if meta.paused {
             panic_err(&env, Error::Paused);
         }
+        if !Self::compliant(&env, &meta.compliance_contract, &from) {
+            panic_err(&env, Error::SenderNotCompliant);
+        }
         let from_bal = Self::balance(env.clone(), from.clone());
         if from_bal < amount {
             panic_err(&env, Error::InsufficientBalance);
