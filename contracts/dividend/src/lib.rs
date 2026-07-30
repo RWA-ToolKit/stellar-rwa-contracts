@@ -6,8 +6,9 @@
 //! then claims `total_amount * balance / total_supply`, paid from the escrow
 //! this contract holds. Each holder can claim a given distribution once.
 //!
-//! Balances are read at claim time from the asset token. `snapshot_ledger`
-//! records the ledger at which the distribution was created for reference.
+//! Balances are read at claim time from the asset token; there is no balance
+//! snapshot. `created_at` records the ledger at which the distribution was
+//! created for reference.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
@@ -36,7 +37,6 @@ pub struct Distribution {
     pub payment_token: Address,
     pub total_amount: i128,
     pub distributed: i128,
-    pub snapshot_ledger: u32,
     pub created_at: u32,
     pub completed: bool,
 }
@@ -70,11 +70,20 @@ const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
+/// Contract ABI/behavior version. Bump on any change to storage layout or
+/// externally observable behavior so clients and the indexer can detect it.
+pub const VERSION: u32 = 1;
+
 #[contract]
 pub struct DividendContract;
 
 #[contractimpl]
 impl DividendContract {
+    /// Current contract version.
+    pub fn version(_env: Env) -> u32 {
+        VERSION
+    }
+
     /// Initialize with an admin. Callable once.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
@@ -121,7 +130,6 @@ impl DividendContract {
             payment_token,
             total_amount,
             distributed: 0,
-            snapshot_ledger: env.ledger().sequence(),
             created_at: env.ledger().sequence(),
             completed: false,
         };

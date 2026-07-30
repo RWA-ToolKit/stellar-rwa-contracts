@@ -20,6 +20,12 @@ fn test_initialize_sets_admin() {
 }
 
 #[test]
+fn test_version() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.version(), VERSION);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #1)")]
 fn test_double_initialize_fails() {
     let (env, client, _admin) = setup();

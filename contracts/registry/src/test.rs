@@ -30,6 +30,12 @@ fn register(
 }
 
 #[test]
+fn test_version() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.version(), VERSION);
+}
+
+#[test]
 fn test_initialize_admin() {
     let (_env, client, admin) = setup();
     assert_eq!(client.get_admin(), admin);
@@ -137,6 +143,19 @@ fn test_deactivate_requires_admin() {
     let id = register(&env, &client, &issuer, "real_estate", 100);
     let impostor = Address::generate(&env);
     client.deactivate_asset(&impostor, &id);
+}
+
+#[test]
+fn test_active_count_excludes_deactivated() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let a = register(&env, &client, &issuer, "real_estate", 100);
+    register(&env, &client, &issuer, "invoice", 250);
+    assert_eq!(client.active_count(), 2);
+    assert_eq!(client.asset_count(), 2);
+    client.deactivate_asset(&admin, &a);
+    assert_eq!(client.active_count(), 1);
+    assert_eq!(client.asset_count(), 2);
 }
 
 #[test]

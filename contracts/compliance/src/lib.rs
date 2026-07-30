@@ -64,11 +64,20 @@ const DAY_IN_LEDGERS: u32 = 17_280; // ~5s ledgers
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
+/// Contract ABI/behavior version. Bump on any change to storage layout or
+/// externally observable behavior so clients and the indexer can detect it.
+pub const VERSION: u32 = 1;
+
 #[contract]
 pub struct ComplianceContract;
 
 #[contractimpl]
 impl ComplianceContract {
+    /// Current contract version.
+    pub fn version(_env: Env) -> u32 {
+        VERSION
+    }
+
     /// Initialize the contract with an admin. Callable exactly once.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
