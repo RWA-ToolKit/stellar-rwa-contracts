@@ -61,6 +61,7 @@ pub enum Error {
     RecipientNotCompliant = 8,
     Overflow = 9,
     InvalidInput = 10,
+    InvalidCompliance = 11,
 }
 
 /// Maximum byte lengths for string metadata fields (issue #46).
@@ -307,8 +308,17 @@ impl AssetTokenContract {
     }
 
     /// Point the token at a different compliance contract. Admin only.
+    ///
+    /// This does not re-validate existing holders against the new gate: a
+    /// holder approved under the old contract keeps their balance even if
+    /// the new contract would reject them. It only checks that `compliance`
+    /// implements `is_allowed` and approves the admin, to catch a
+    /// misconfigured address before it bricks every transfer.
     pub fn set_compliance(env: Env, admin: Address, compliance: Address) {
         let mut meta = Self::require_admin(&env, &admin);
+        if !Self::compliant(&env, &compliance, &admin) {
+            panic_err(&env, Error::InvalidCompliance);
+        }
         meta.compliance_contract = compliance.clone();
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);
