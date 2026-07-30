@@ -10,6 +10,7 @@
 //! Valuation is stored in USD cents (`i128`). Amounts are integer token units in
 //! the token's own `decimals` base.
 
+use common::{bump_instance as bump_instance_common};
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, String, Vec,
@@ -68,10 +69,6 @@ const MAX_NAME_LEN: u32 = 64;
 const MAX_SYMBOL_LEN: u32 = 16;
 const MAX_ASSET_TYPE_LEN: u32 = 32;
 const MAX_DESC_LEN: u32 = 256;
-
-const DAY_IN_LEDGERS: u32 = 17_280;
-const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 #[contract]
 pub struct AssetTokenContract;
@@ -327,9 +324,7 @@ impl AssetTokenContract {
     }
 
     fn bump(env: &Env) {
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        bump_instance_common(env);
     }
 }
 
