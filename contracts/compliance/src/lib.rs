@@ -9,6 +9,7 @@
 //! Time is expressed in ledger sequence numbers (`u32`), not wall-clock dates.
 //! An `expires_at` of `0` means the KYC approval never expires.
 
+use common::{bump_instance as bump_instance_common};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
 };
@@ -60,10 +61,6 @@ pub enum Error {
     Unauthorized = 5,
 }
 
-const DAY_IN_LEDGERS: u32 = 17_280; // ~5s ledgers
-const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
-
 #[contract]
 pub struct ComplianceContract;
 
@@ -79,9 +76,7 @@ impl ComplianceContract {
         env.storage()
             .instance()
             .set(&DataKey::Allowlist, &Vec::<Address>::new(&env));
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        bump_instance_common(&env);
         env.events().publish((symbol_short!("init"),), admin);
     }
 
@@ -340,9 +335,7 @@ impl ComplianceContract {
     }
 
     fn bump_instance(env: &Env) {
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        bump_instance_common(env);
     }
 }
 
