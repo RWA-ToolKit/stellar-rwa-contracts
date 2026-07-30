@@ -136,6 +136,27 @@ fn test_deactivate_excludes_from_tvl() {
 }
 
 #[test]
+fn test_tvl_sums_only_active() {
+    let (env, client, admin) = setup();
+    assert_eq!(client.total_value_locked(), 0);
+
+    let issuer = Address::generate(&env);
+    let a = register(&env, &client, &issuer, "real_estate", 100);
+    let b = register(&env, &client, &issuer, "invoice", 250);
+    let c = register(&env, &client, &issuer, "commodity", 40);
+    assert_eq!(client.total_value_locked(), 390);
+
+    client.deactivate_asset(&admin, &a);
+    assert_eq!(client.total_value_locked(), 290);
+
+    client.deactivate_asset(&admin, &c);
+    assert_eq!(client.total_value_locked(), 250);
+
+    client.deactivate_asset(&admin, &b);
+    assert_eq!(client.total_value_locked(), 0);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_deactivate_requires_admin() {
     let (env, client, _admin) = setup();
