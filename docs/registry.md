@@ -51,6 +51,17 @@ and reports total value locked (TVL).
 | `register`  | (issuer) → id     | asset registered  |
 | `deactvate` | asset_id          | asset deactivated |
 
+## Storage / TTL
+
+Listing of the contract `DataKey` variants and their storage behaviour.
+
+| Key | Payload | Storage | TTL / Notes |
+|-----|---------|---------|-------------|
+| `Admin` | - | instance | - |
+| `Counter` | - | instance | - |
+| `Ids` | - | unknown | - |
+| `Asset` | u64 | persistent | extended via instance() |
+
 ## Security considerations
 
 - Registration requires the **issuer** to authorize; anyone can register their
