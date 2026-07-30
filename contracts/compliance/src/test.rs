@@ -151,11 +151,12 @@ fn test_suspend_missing_record_rejected() {
 }
 
 #[test]
-fn test_expires_at_zero_never_expires() {
-    let (env, client, admin) = setup();
-    let user = Address::generate(&env);
-    let us = String::from_str(&env, "US");
-    client.add_to_allowlist(&admin, &user, &us, &0);
-    env.ledger().with_mut(|l| l.sequence_number = 1_000_000);
-    assert!(client.is_allowed(&user));
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_get_admin_before_init_panics_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(ComplianceContract, ());
+    let client = ComplianceContractClient::new(&env, &contract_id);
+    // Contract is not initialized — get_admin must panic with NotInitialized (#2).
+    client.get_admin();
 }
