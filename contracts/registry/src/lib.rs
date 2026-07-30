@@ -104,8 +104,10 @@ impl RegistryContract {
             .extend_ttl(&DataKey::Asset(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         env.storage().instance().set(&DataKey::Counter, &id);
         bump(&env);
-        env.events()
-            .publish((symbol_short!("register"), issuer), id);
+        env.events().publish(
+            (symbol_short!("register"), issuer),
+            (id, entry.token_contract.clone(), entry.asset_type.clone(), entry.valuation),
+        );
         id
     }
 
@@ -164,8 +166,10 @@ impl RegistryContract {
             .persistent()
             .extend_ttl(&DataKey::Asset(asset_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         bump(&env);
-        env.events()
-            .publish((symbol_short!("deactvate"),), asset_id);
+        env.events().publish(
+            (symbol_short!("deactvate"),),
+            (asset_id, entry.token_contract, entry.asset_type, entry.valuation),
+        );
     }
 
     /// Sum of valuations across all active assets, in USD cents.
