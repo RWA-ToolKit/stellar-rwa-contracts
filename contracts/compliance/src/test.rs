@@ -160,3 +160,54 @@ fn test_get_admin_before_init_panics_not_initialized() {
     // Contract is not initialized — get_admin must panic with NotInitialized (#2).
     client.get_admin();
 }
+
+#[test]
+fn test_propose_then_accept_admin_completes_handover() {
+    let (env, client, admin) = setup();
+    let successor = Address::generate(&env);
+    client.propose_admin(&admin, &successor);
+    assert_eq!(client.get_pending_admin(), Some(successor.clone()));
+    client.accept_admin(&successor);
+    assert_eq!(client.get_admin(), successor);
+    assert_eq!(client.get_pending_admin(), None);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_propose_admin_rejects_non_admin_caller() {
+    let (env, client, _admin) = setup();
+    let impostor = Address::generate(&env);
+    let successor = Address::generate(&env);
+    client.propose_admin(&impostor, &successor);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_accept_admin_rejects_non_proposed_caller() {
+    let (env, client, admin) = setup();
+    let successor = Address::generate(&env);
+    let impostor = Address::generate(&env);
+    client.propose_admin(&admin, &successor);
+    client.accept_admin(&impostor);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_accept_admin_without_proposal_fails() {
+    let (env, client, _admin) = setup();
+    let successor = Address::generate(&env);
+    client.accept_admin(&successor);
+}
+
+#[test]
+fn test_old_admin_loses_access_after_handover() {
+    let (env, client, admin) = setup();
+    let successor = Address::generate(&env);
+    client.propose_admin(&admin, &successor);
+    client.accept_admin(&successor);
+    // Old admin can no longer perform admin actions.
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    let result = client.try_add_to_allowlist(&admin, &user, &us, &0);
+    assert!(result.is_err());
+}

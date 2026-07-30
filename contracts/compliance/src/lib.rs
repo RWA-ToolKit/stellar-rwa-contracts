@@ -42,6 +42,7 @@ pub struct KycRecord {
 #[derive(Clone)]
 enum DataKey {
     Admin,
+    PendingAdmin,
     Allowlist,
     Record(Address),
     Blocked(String),
@@ -58,6 +59,7 @@ pub enum Error {
     RecordNotFound = 3,
     InvalidExpiry = 4,
     Unauthorized = 5,
+    NoPendingAdmin = 6,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280; // ~5s ledgers
@@ -315,6 +317,43 @@ impl ComplianceContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error(&env, Error::NotInitialized))
+    }
+
+    /// Propose a new admin. Takes effect only once `new_admin` calls
+    /// `accept_admin`, so a typo'd or unreachable address can never brick
+    /// the contract. Current admin only.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
+        Self::require_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("propadmin"),), new_admin);
+    }
+
+    /// Accept a pending admin handover. Must be called by the proposed
+    /// address itself, completing the 2-step transfer.
+    pub fn accept_admin(env: Env, new_admin: Address) {
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_with_error(&env, Error::NoPendingAdmin));
+        if pending != new_admin {
+            panic_with_error(&env, Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("newadmin"),), new_admin);
+    }
+
+    /// Return the pending admin proposed via `propose_admin`, if any.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     // ---- internal helpers ----
