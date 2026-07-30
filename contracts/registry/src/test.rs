@@ -30,6 +30,12 @@ fn register(
 }
 
 #[test]
+fn test_version() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.version(), VERSION);
+}
+
+#[test]
 fn test_initialize_admin() {
     let (_env, client, admin) = setup();
     assert_eq!(client.get_admin(), admin);

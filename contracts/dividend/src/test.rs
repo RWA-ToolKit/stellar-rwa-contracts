@@ -78,6 +78,12 @@ fn test_initialize_admin() {
 }
 
 #[test]
+fn test_version() {
+    let ctx = setup();
+    assert_eq!(ctx.dividend.version(), VERSION);
+}
+
+#[test]
 fn test_create_distribution_escrows_funds() {
     let ctx = setup();
     let div_addr = ctx.dividend.address.clone();

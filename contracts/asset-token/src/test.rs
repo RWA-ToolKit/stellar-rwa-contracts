@@ -49,6 +49,12 @@ fn approve(env: &Env, compliance: &ComplianceContractClient, admin: &Address, wh
 }
 
 #[test]
+fn test_version() {
+    let s = setup(1_000);
+    assert_eq!(s.token.version(), VERSION);
+}
+
+#[test]
 fn test_initialize_mints_full_supply_to_admin() {
     let s = setup(1_000);
     assert_eq!(s.token.balance(&s.admin), 1_000);
