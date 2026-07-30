@@ -62,6 +62,8 @@ pub enum Error {
     InvalidAmount = 5,
     NothingToClaim = 6,
     AlreadyClaimed = 7,
+    /// `asset_token` has zero total supply; no holder can ever claim (issue #49).
+    ZeroSupply = 8,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -87,6 +89,11 @@ impl DividendContract {
 
     /// Create and fund a distribution. Pulls `total_amount` of `payment_token`
     /// from the admin into this contract's escrow. Admin only.
+    ///
+    /// `asset_token` must expose `total_supply()` and `balance()` (the
+    /// asset-token interface defined in this crate). `payment_token` must
+    /// implement the standard SAC / SEP-41 token interface; in particular its
+    /// `transfer` must not trap on the outbound leg when holders claim (issue #50).
     pub fn create_distribution(
         env: Env,
         admin: Address,
@@ -97,6 +104,11 @@ impl DividendContract {
         Self::require_admin(&env, &admin);
         if total_amount <= 0 {
             panic_err(&env, Error::InvalidAmount);
+        }
+        // Reject distributions where no holder can ever claim (issue #49).
+        let supply = AssetClient::new(&env, &asset_token).total_supply();
+        if supply <= 0 {
+            panic_err(&env, Error::ZeroSupply);
         }
         // Escrow the funds in this contract.
         let this = env.current_contract_address();
