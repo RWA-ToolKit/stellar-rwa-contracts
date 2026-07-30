@@ -158,6 +158,16 @@ impl AssetTokenContract {
         if from_bal < amount {
             panic_err(&env, Error::InsufficientBalance);
         }
+        // A self-transfer is a no-op: reading `to_bal` and writing it back after
+        // the `from` write would otherwise overwrite the debit and inflate the
+        // balance. Skip the balance moves entirely once funds/compliance checks
+        // have passed.
+        if from == to {
+            Self::bump(&env);
+            env.events()
+                .publish((symbol_short!("transfer"), from, to), amount);
+            return;
+        }
         let to_bal = Self::balance(env.clone(), to.clone());
         Self::set_balance(&env, &from, from_bal - amount);
         let new_to_bal = to_bal

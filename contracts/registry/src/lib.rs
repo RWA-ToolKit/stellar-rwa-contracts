@@ -189,7 +189,7 @@ impl RegistryContract {
                 .storage()
                 .instance()
                 .get(&DataKey::ActiveCount)
-                .unwrap_or(0)
+                .unwrap_or(0u64)
                 .saturating_sub(1);
             env.storage()
                 .instance()
