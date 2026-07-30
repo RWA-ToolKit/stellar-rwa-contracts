@@ -140,6 +140,19 @@ fn test_deactivate_requires_admin() {
 }
 
 #[test]
+fn test_active_count_excludes_deactivated() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let a = register(&env, &client, &issuer, "real_estate", 100);
+    register(&env, &client, &issuer, "invoice", 250);
+    assert_eq!(client.active_count(), 2);
+    assert_eq!(client.asset_count(), 2);
+    client.deactivate_asset(&admin, &a);
+    assert_eq!(client.active_count(), 1);
+    assert_eq!(client.asset_count(), 2);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #5)")]
 fn test_negative_valuation_rejected() {
     let (env, client, _admin) = setup();

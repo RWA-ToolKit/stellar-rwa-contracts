@@ -37,6 +37,7 @@ enum DataKey {
     Counter,
     Ids,
     Asset(u64),
+    ActiveCount,
 }
 
 #[contracterror]
@@ -68,6 +69,7 @@ impl RegistryContract {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Counter, &0u64);
+        env.storage().instance().set(&DataKey::ActiveCount, &0u64);
         bump(&env);
         env.events().publish((symbol_short!("init"),), admin);
     }
@@ -103,6 +105,15 @@ impl RegistryContract {
             .persistent()
             .extend_ttl(&DataKey::Asset(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         env.storage().instance().set(&DataKey::Counter, &id);
+        let active_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveCount)
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveCount, &active_count);
         bump(&env);
         env.events()
             .publish((symbol_short!("register"), issuer), id);
@@ -156,6 +167,7 @@ impl RegistryContract {
             .persistent()
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
+        let was_active = entry.active;
         entry.active = false;
         env.storage()
             .persistent()
@@ -163,6 +175,17 @@ impl RegistryContract {
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::Asset(asset_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        if was_active {
+            let active_count: u64 = env
+                .storage()
+                .instance()
+                .get(&DataKey::ActiveCount)
+                .unwrap_or(0)
+                .saturating_sub(1);
+            env.storage()
+                .instance()
+                .set(&DataKey::ActiveCount, &active_count);
+        }
         bump(&env);
         env.events()
             .publish((symbol_short!("deactvate"),), asset_id);
@@ -184,6 +207,14 @@ impl RegistryContract {
     /// Number of registered assets (active or not).
     pub fn asset_count(env: Env) -> u64 {
         env.storage().instance().get(&DataKey::Counter).unwrap_or(0)
+    }
+
+    /// Number of assets that are currently active (excludes deactivated ones).
+    pub fn active_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ActiveCount)
+            .unwrap_or(0)
     }
 
     /// Configured admin.
