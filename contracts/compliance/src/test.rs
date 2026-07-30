@@ -149,3 +149,14 @@ fn test_suspend_missing_record_rejected() {
     let ghost = Address::generate(&env);
     client.suspend(&admin, &ghost);
 }
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_get_admin_before_init_panics_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(ComplianceContract, ());
+    let client = ComplianceContractClient::new(&env, &contract_id);
+    // Contract is not initialized — get_admin must panic with NotInitialized (#2).
+    client.get_admin();
+}

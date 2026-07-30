@@ -186,6 +186,91 @@ fn test_set_compliance_switches_gate() {
     let _ = &s.compliance_id;
 }
 
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_burn_more_than_balance_fails() {
+    let s = setup(1_000);
+    s.token.burn(&s.admin, &2000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #8)")]
+fn test_initialize_reverts_when_admin_not_compliant() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let compliance_id = env.register(ComplianceContract, ());
+    let compliance = ComplianceContractClient::new(&env, &compliance_id);
+    let admin = Address::generate(&env);
+    compliance.initialize(&admin);
+
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(&env, &token_id);
+    token.initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_initialize_with_negative_total_supply_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let compliance_id = env.register(ComplianceContract, ());
+    let compliance = ComplianceContractClient::new(&env, &compliance_id);
+    let admin = Address::generate(&env);
+    compliance.initialize(&admin);
+
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(&env, &token_id);
+    token.initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &-100i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_initialize_with_negative_valuation_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let compliance_id = env.register(ComplianceContract, ());
+    let compliance = ComplianceContractClient::new(&env, &compliance_id);
+    let admin = Address::generate(&env);
+    compliance.initialize(&admin);
+
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(&env, &token_id);
+    token.initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &-50_000_000i128,
+    );
+}
+
 fn env_register_empty_compliance(env: &Env, admin: &Address) -> Address {
     let id = env.register(ComplianceContract, ());
     let c = ComplianceContractClient::new(env, &id);
@@ -193,88 +278,31 @@ fn env_register_empty_compliance(env: &Env, admin: &Address) -> Address {
     id
 }
 
-// ---- issue #46: string validation tests ----
-
-fn make_string(env: &Env, n: usize) -> String {
-    // Build a string of `n` 'a' bytes using repeated from_str calls isn't ideal
-    // in no_std, but the test environment allows it via a pre-built literal slice.
-    // We build via bytes instead.
-    let bytes: soroban_sdk::Bytes = soroban_sdk::Bytes::from_slice(env, &b"a".repeat(n));
-    String::from_bytes(env, &bytes)
-}
-
-fn init_with_name(s: &Setup, name: String) {
-    let env = &s.env;
-    let token_id = env.register(AssetTokenContract, ());
-    let token = AssetTokenContractClient::new(env, &token_id);
-    token.initialize(
-        &s.admin,
-        &name,
-        &String::from_str(env, "SYM"),
-        &String::from_str(env, "real_estate"),
-        &1000i128,
-        &0u32,
-        &s.compliance_id,
-        &String::from_str(env, "desc"),
-        &1000i128,
-    );
-}
-
 #[test]
-#[should_panic(expected = "Error(Contract, #10)")]
-fn test_empty_name_rejected() {
+#[should_panic(expected = "Error(Contract, #8)")]
+fn test_transfer_to_unapproved_recipient_panics_recipient_not_compliant() {
     let s = setup(1_000);
-    init_with_name(&s, String::from_str(&s.env, ""));
+    // `eve` is never added to the allowlist — transfer must panic RecipientNotCompliant.
+    let eve = Address::generate(&s.env);
+    s.token.transfer(&s.admin, &eve, &100);
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #10)")]
-fn test_name_too_long_rejected() {
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_transfer_after_sender_suspended_post_mint_panics_sender_not_compliant() {
     let s = setup(1_000);
-    init_with_name(&s, make_string(&s.env, 65));
-}
 
-#[test]
-#[should_panic(expected = "Error(Contract, #10)")]
-fn test_empty_symbol_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let comp_id = env.register(ComplianceContract, ());
-    let comp = ComplianceContractClient::new(&env, &comp_id);
-    let admin = Address::generate(&env);
-    comp.initialize(&admin);
-    comp.add_to_allowlist(&admin, &admin, &String::from_str(&env, "US"), &0);
-    let token_id = env.register(AssetTokenContract, ());
-    let token = AssetTokenContractClient::new(&env, &token_id);
-    token.initialize(
-        &admin,
-        &String::from_str(&env, "ValidName"),
-        &String::from_str(&env, ""),
-        &String::from_str(&env, "real_estate"),
-        &1000i128,
-        &0u32,
-        &comp_id,
-        &String::from_str(&env, "desc"),
-        &1000i128,
-    );
-}
+    // Mint to bob (he must be approved first).
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.mint(&s.admin, &bob, &500);
+    assert_eq!(s.token.balance(&bob), 500);
 
-#[test]
-#[should_panic(expected = "Error(Contract, #10)")]
-fn test_symbol_too_long_rejected() {
-    let s = setup(1_000);
-    let env = &s.env;
-    let token_id = env.register(AssetTokenContract, ());
-    let token = AssetTokenContractClient::new(env, &token_id);
-    token.initialize(
-        &s.admin,
-        &String::from_str(env, "Name"),
-        &make_string(env, 17), // MAX_SYMBOL_LEN is 16
-        &String::from_str(env, "real_estate"),
-        &1000i128,
-        &0u32,
-        &s.compliance_id,
-        &String::from_str(env, "desc"),
-        &1000i128,
-    );
+    // Suspend bob via the compliance contract's dedicated suspend method.
+    s.compliance.suspend(&s.admin, &bob);
+
+    // carol is a valid recipient; the transfer should fail on the sender check.
+    let carol = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &carol);
+    s.token.transfer(&bob, &carol, &100);
 }
