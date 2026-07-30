@@ -226,12 +226,31 @@ impl ComplianceContract {
         env.storage().persistent().get(&DataKey::Record(address))
     }
 
-    /// Return every address currently on the allowlist.
+    /// Return every address ever added to the allowlist, regardless of current
+    /// status (includes suspended, expired, and blocked-jurisdiction entries).
+    /// Use [`Self::get_allowed`] for addresses that currently pass `is_allowed`.
     pub fn get_allowlist(env: Env) -> Vec<Address> {
         env.storage()
             .instance()
             .get(&DataKey::Allowlist)
             .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Return only the addresses that currently pass `is_allowed` (Approved,
+    /// not expired, and not in a blocked jurisdiction).
+    pub fn get_allowed(env: Env) -> Vec<Address> {
+        let list: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Allowlist)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut out = Vec::new(&env);
+        for addr in list.iter() {
+            if Self::is_allowed(env.clone(), addr.clone()) {
+                out.push_back(addr);
+            }
+        }
+        out
     }
 
     /// Block an entire jurisdiction (country code). Approved addresses in a
