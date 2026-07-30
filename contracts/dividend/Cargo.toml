@@ -17,3 +17,5 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 # the compliance contract it depends on.
 compliance = { path = "../compliance", features = ["testutils"] }
 asset-token = { path = "../asset-token", features = ["testutils"] }
+# Property tests for the proportional dividend math (issue #109).
+proptest = "1"

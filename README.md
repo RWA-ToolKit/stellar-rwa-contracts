@@ -62,7 +62,9 @@ Deployed contract ids are in the [Contracts](#contracts) table above and in
 [DEPLOYMENTS.md](DEPLOYMENTS.md); each links to its record on
 [Stellar Expert](https://stellar.expert/explorer/testnet). Build to WASM and deploy
 with the [Stellar CLI](https://developers.stellar.org/docs/tools/cli) via
-`scripts/deploy.sh`.
+`scripts/deploy.sh`, which is idempotent (reruns reuse existing ids unless
+`FORCE_REDEPLOY=1`) and writes machine-readable ids to `deployments.json` for
+the web and API repos to consume.
 
 ### How the rest of the toolkit consumes these contracts
 

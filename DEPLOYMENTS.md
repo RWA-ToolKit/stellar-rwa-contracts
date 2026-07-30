@@ -2,6 +2,7 @@
 
 Live contract addresses for the Stellar RWA Toolkit contracts.
 
+<!-- deployments:testnet:start -->
 ## Testnet
 
 Network: `Test SDF Network ; September 2015`
@@ -26,6 +27,7 @@ The deployment script registers one sample asset for demonstration:
 - **Valuation:** 500,000,000 USD cents ($5,000,000)
 - **Compliance:** gated by the compliance contract above; the admin/issuer is
   the only KYC-approved holder at deploy time.
+<!-- deployments:testnet:end -->
 
 ## Reproducing
 
@@ -35,9 +37,12 @@ NETWORK=testnet IDENTITY=rwa-admin ./scripts/deploy.sh
 
 The script funds a fresh identity via friendbot, builds the wasm, deploys and
 initializes all four contracts, approves the issuer on the compliance contract,
-deploys a sample asset token, and registers it in the registry. It prints the
-resulting contract ids; paste them into this file.
+deploys a sample asset token, and registers it in the registry. Ids are
+written to `deployments.json` and this file is updated automatically; re-run
+the script to reuse the existing ids, or set `FORCE_REDEPLOY=1` for fresh ones.
 
+<!-- deployments:mainnet:start -->
 ## Mainnet
 
 Not yet deployed.
+<!-- deployments:mainnet:end -->

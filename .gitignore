@@ -8,6 +8,12 @@
 .soroban/
 .stellar/
 
+# Test artifacts
+**/proptest-regressions/
+*.snap.new
+*.pending-snap
+*.profraw
+
 # Env / secrets
 .env
 .env.*

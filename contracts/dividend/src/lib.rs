@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 //! # Dividend Contract
 //!
 //! Distributes yield/dividends to asset-token holders in proportion to their
@@ -152,8 +152,7 @@ impl DividendContract {
         if balance <= 0 {
             return 0;
         }
-        // Proportional share, floored by integer division.
-        (dist.total_amount * balance) / supply
+        proportional_share(dist.total_amount, balance, supply)
     }
 
     /// Claim a holder's proportional share, paid from escrow. Holder-authorized.
@@ -267,6 +266,14 @@ impl DividendContract {
     }
 }
 
+/// Proportional share, floored by integer division: `total_amount * balance / supply`.
+/// Pulled out as a standalone pure function so its invariants (no overflow
+/// for bounded inputs, sum-of-shares across holders <= total_amount) can be
+/// property-tested directly (issue #109).
+fn proportional_share(total_amount: i128, balance: i128, supply: i128) -> i128 {
+    (total_amount * balance) / supply
+}
+
 fn bump(env: &Env) {
     env.storage()
         .instance()
@@ -279,3 +286,6 @@ fn panic_err(env: &Env, error: Error) -> ! {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod proptest_tests;

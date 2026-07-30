@@ -60,3 +60,68 @@ jobs:
       # CLI from source (which needs the libdbus system library and is slow).
       - name: Build contracts (wasm)
         run: cargo build --workspace --release --target wasm32v1-none
+
+      - name: Report wasm sizes
+        run: |
+          echo "## Wasm artifact sizes" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "| Contract | Bytes | KiB |" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|" | tee -a "$GITHUB_STEP_SUMMARY"
+          for f in target/wasm32v1-none/release/*.wasm; do
+            name="$(basename "$f" .wasm)"
+            bytes="$(stat -c%s "$f")"
+            kib="$(( (bytes + 1023) / 1024 ))"
+            echo "| $name | $bytes | $kib |" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+
+  # Optional: verify the actual `stellar contract build` pipeline (not just
+  # plain `cargo build`) still produces valid wasm, since the CLI's optimizer
+  # pass can differ from a bare cargo build. Slow (compiles stellar-cli from
+  # source) so it never blocks the required jobs above (issue #98).
+  stellar-contract-build:
+    name: stellar contract build (optional)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target
+          key: ${{ runner.os }}-stellar-cli-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install system deps for stellar-cli
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install stellar CLI
+        run: command -v stellar >/dev/null 2>&1 || cargo install --locked stellar-cli
+
+      - name: stellar contract build
+        run: stellar contract build
+
+      - name: Report wasm sizes (stellar contract build)
+        run: |
+          echo "## stellar contract build wasm sizes" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "| Contract | Bytes |" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" | tee -a "$GITHUB_STEP_SUMMARY"
+          for f in target/wasm32v1-none/release/*.wasm; do
+            echo "| $(basename "$f" .wasm) | $(stat -c%s "$f") |" | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+
+  cargo-deny:
+    name: cargo deny (advisories, bans, licenses)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
