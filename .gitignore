@@ -8,6 +8,10 @@
 .soroban/
 .stellar/
 
+# Soroban test snapshots (regenerated per test run)
+test_snapshots/
+**/test_snapshots/
+
 # Env / secrets
 .env
 .env.*

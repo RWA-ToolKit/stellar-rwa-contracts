@@ -62,9 +62,11 @@ fn test_ids_increment() {
     let issuer = Address::generate(&env);
     let a = register(&env, &client, &issuer, "invoice", 1);
     let b = register(&env, &client, &issuer, "invoice", 1);
+    let c = register(&env, &client, &issuer, "invoice", 1);
     assert_eq!(a, 1);
     assert_eq!(b, 2);
-    assert_eq!(client.asset_count(), 2);
+    assert_eq!(c, 3);
+    assert_eq!(client.asset_count(), 3);
 }
 
 #[test]
