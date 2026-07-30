@@ -50,6 +50,7 @@ pub enum Error {
     AssetNotFound = 4,
     InvalidValuation = 5,
     Overflow = 6,
+    InvalidInput = 7,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -98,6 +99,11 @@ impl RegistryContract {
         if valuation < 0 {
             panic_err(&env, Error::InvalidValuation);
         }
+        // Require non-empty name and a recognised asset type (issue #48).
+        if name.len() == 0 {
+            panic_err(&env, Error::InvalidInput);
+        }
+        validate_asset_type(&env, &asset_type);
         let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
         let entry = AssetEntry {
             id,
@@ -281,6 +287,29 @@ fn bump(env: &Env) {
 
 fn panic_err(env: &Env, error: Error) -> ! {
     soroban_sdk::panic_with_error!(env, error)
+}
+
+/// Allowed asset types (issue #48). Any type outside this list is rejected.
+const VALID_ASSET_TYPES: &[&str] = &["real_estate", "invoice", "commodity", "bond", "equity", "fund"];
+
+fn validate_asset_type(env: &Env, asset_type: &String) {
+    let bytes = asset_type.to_bytes();
+    for &valid in VALID_ASSET_TYPES {
+        let v = valid.as_bytes();
+        if bytes.len() as usize == v.len() {
+            let mut matches = true;
+            for i in 0..v.len() {
+                if bytes.get(i as u32).unwrap_or(0) != v[i] {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                return;
+            }
+        }
+    }
+    panic_err(env, Error::InvalidInput);
 }
 
 #[cfg(test)]
