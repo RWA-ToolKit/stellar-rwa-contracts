@@ -168,6 +168,27 @@ impl RegistryContract {
             .publish((symbol_short!("deactvate"),), asset_id);
     }
 
+    /// Reactivate a previously deactivated asset. Admin only. Restored
+    /// to TVL reporting.
+    pub fn reactivate_asset(env: Env, admin: Address, asset_id: u64) {
+        Self::require_admin(&env, &admin);
+        let mut entry: AssetEntry = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Asset(asset_id))
+            .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
+        entry.active = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Asset(asset_id), &entry);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Asset(asset_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("reactivate"),), asset_id);
+    }
+
     /// Sum of valuations across all active assets, in USD cents.
     pub fn total_value_locked(env: Env) -> i128 {
         let mut tvl: i128 = 0;

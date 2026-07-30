@@ -49,6 +49,7 @@ enum DataKey {
     Ids,
     Dist(u64),
     Claimed(u64, Address),
+    Cancelled(u64),
 }
 
 #[contracterror]
@@ -64,11 +65,13 @@ pub enum Error {
     AlreadyClaimed = 7,
     /// `asset_token` has zero total supply; no holder can ever claim (issue #49).
     ZeroSupply = 8,
+    DistributionCancelled = 9,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
+const CANCEL_LOCK_PERIOD_LEDGERS: u32 = 7 * DAY_IN_LEDGERS;
 
 #[contract]
 pub struct DividendContract;
@@ -137,10 +140,14 @@ impl DividendContract {
     }
 
     /// Amount a holder can still claim from a distribution (0 if already
-    /// claimed, holds nothing, or the distribution is empty).
+    /// claimed, holds nothing, the distribution is empty, or the
+    /// distribution has been cancelled).
     pub fn claimable(env: Env, distribution_id: u64, holder: Address) -> i128 {
         let dist = Self::load(&env, distribution_id);
         if Self::has_claimed(env.clone(), distribution_id, holder.clone()) {
+            return 0;
+        }
+        if Self::is_cancelled(env.clone(), distribution_id) {
             return 0;
         }
         let asset = AssetClient::new(&env, &dist.asset_token);
@@ -157,21 +164,33 @@ impl DividendContract {
     }
 
     /// Claim a holder's proportional share, paid from escrow. Holder-authorized.
+    ///
+    /// SECURITY: This function uses checks-effects-interactions (CEI) ordering.
+    /// The "effects" (marking the claim as recorded) MUST happen before the
+    /// "interactions" (external token transfer). Reversing this order would
+    /// allow a malicious payment token to re-enter claim before the state is
+    /// updated, enabling double-claim attacks. This ordering is load-bearing
+    /// because the payment token is an arbitrary external contract.
     pub fn claim(env: Env, distribution_id: u64, holder: Address) {
         holder.require_auth();
         let mut dist = Self::load(&env, distribution_id);
         if Self::has_claimed(env.clone(), distribution_id, holder.clone()) {
             panic_err(&env, Error::AlreadyClaimed);
         }
+        if Self::is_cancelled(env.clone(), distribution_id) {
+            panic_err(&env, Error::DistributionCancelled);
+        }
         let amount = Self::claimable(env.clone(), distribution_id, holder.clone());
         if amount <= 0 {
             panic_err(&env, Error::NothingToClaim);
         }
+        // Effects: mark as claimed BEFORE the external transfer.
         env.storage()
             .persistent()
             .set(&DataKey::Claimed(distribution_id, holder.clone()), &true);
 
         let this = env.current_contract_address();
+        // Interactions: external call to the payment token contract.
         TokenClient::new(&env, &dist.payment_token).transfer(&this, &holder, &amount);
 
         dist.distributed = dist
@@ -196,6 +215,44 @@ impl DividendContract {
     /// Fetch a distribution by id.
     pub fn get_distribution(env: Env, distribution_id: u64) -> Distribution {
         Self::load(&env, distribution_id)
+    }
+
+    /// Cancel a distribution and refund the unclaimed remainder to the
+    /// admin. Admin only. The distribution must be at least
+    /// CANCEL_LOCK_PERIOD_LEDGERS old and must not already be completed
+    /// or cancelled. Once cancelled, no further claims are possible.
+    pub fn cancel_distribution(env: Env, admin: Address, distribution_id: u64) {
+        Self::require_admin(&env, &admin);
+        let mut dist = Self::load(&env, distribution_id);
+        if dist.completed {
+            panic_err(&env, Error::InvalidAmount);
+        }
+        if Self::is_cancelled(env.clone(), distribution_id) {
+            panic_err(&env, Error::DistributionCancelled);
+        }
+        let ledger = env.ledger().sequence();
+        if ledger < dist.created_at + CANCEL_LOCK_PERIOD_LEDGERS {
+            panic_err(&env, Error::InvalidAmount);
+        }
+        let unclaimed = dist.total_amount - dist.distributed;
+        if unclaimed <= 0 {
+            panic_err(&env, Error::NothingToClaim);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Cancelled(distribution_id), &true);
+        dist.completed = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dist(distribution_id), &dist);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::Dist(distribution_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        let this = env.current_contract_address();
+        TokenClient::new(&env, &dist.payment_token).transfer(&this, &admin, &unclaimed);
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("cancelled"), admin), (distribution_id, unclaimed));
     }
 
     /// All distributions created for a given asset token.
@@ -252,6 +309,13 @@ impl DividendContract {
             .persistent()
             .extend_ttl(&DataKey::Dist(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         dist
+    }
+
+    fn is_cancelled(env: &Env, id: u64) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Cancelled(id))
+            .unwrap_or(false)
     }
 
     fn require_admin(env: &Env, admin: &Address) {

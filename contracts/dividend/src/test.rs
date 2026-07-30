@@ -221,3 +221,43 @@ fn test_create_distribution_zero_supply_rejected() {
     ctx.dividend
         .create_distribution(&ctx.admin, &zero_asset_id, &ctx.pay_id, &1000);
 }
+
+// ---- issue #110: CEI ordering is security-critical ----
+
+#[test]
+fn test_claim_records_effect_before_external_transfer() {
+    let ctx = setup();
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+    ctx.dividend.claim(&id, &ctx.h1);
+    // After claim, has_claimed must be true (the "effect") regardless of
+    // any external token behaviour. If this were moved after the transfer,
+    // a malicious token could re-enter claim before the state was updated.
+    assert!(ctx.dividend.has_claimed(&id, &ctx.h1));
+    assert_eq!(pay_balance(&ctx, &ctx.h1), 300);
+}
+
+// ---- issue #112: admin can cancel an unclaimed distribution ----
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_cancel_distribution_requires_admin() {
+    let ctx = setup();
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+    let impostor = Address::generate(&ctx.env);
+    ctx.dividend.cancel_distribution(&impostor, &id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_cancel_distribution_too_early() {
+    let ctx = setup();
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+    ctx.dividend.cancel_distribution(&ctx.admin, &id);
+}
+

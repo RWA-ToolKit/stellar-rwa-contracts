@@ -14,8 +14,25 @@
 !.env.example
 *.key
 
+# Test snapshots
+test-snapshots/
+*.snap
+
+# Coverage
+/coverage
+*.profraw
+*.profdata
+*.gcno
+*.gcda
+cov.out
+
+# Logs
+*.log
+debug.log
+
 # Editor / OS
 .DS_Store
 .idea/
 .vscode/
 *.swp
+.cargo/

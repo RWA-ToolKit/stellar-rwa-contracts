@@ -130,6 +130,20 @@ fn test_deactivate_excludes_from_tvl() {
 }
 
 #[test]
+fn test_reactivate_includes_in_tvl() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "real_estate", 100);
+    register(&env, &client, &issuer, "invoice", 250);
+    assert_eq!(client.total_value_locked(), 350);
+    client.deactivate_asset(&admin, &id);
+    assert_eq!(client.total_value_locked(), 250);
+    client.reactivate_asset(&admin, &id);
+    assert!(client.get_asset(&id).active);
+    assert_eq!(client.total_value_locked(), 350);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_deactivate_requires_admin() {
     let (env, client, _admin) = setup();
@@ -137,6 +151,14 @@ fn test_deactivate_requires_admin() {
     let id = register(&env, &client, &issuer, "real_estate", 100);
     let impostor = Address::generate(&env);
     client.deactivate_asset(&impostor, &id);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_reactivate_missing_asset() {
+    let (env, client, admin) = setup();
+    let missing = 9999;
+    client.reactivate_asset(&admin, &missing);
 }
 
 #[test]
