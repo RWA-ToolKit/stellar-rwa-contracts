@@ -147,6 +147,25 @@ fn test_zero_amount_rejected() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_negative_amount_rejected() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.transfer(&s.admin, &bob, &-1);
+}
+
+#[test]
+fn test_self_transfer_no_inflation() {
+    let s = setup(1_000);
+    let supply_before = s.token.total_supply();
+    let bal_before = s.token.balance(&s.admin);
+    s.token.transfer(&s.admin, &s.admin, &100);
+    assert_eq!(s.token.balance(&s.admin), bal_before);
+    assert_eq!(s.token.total_supply(), supply_before);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_unauthorized_mint_rejected() {
     let s = setup(1_000);
