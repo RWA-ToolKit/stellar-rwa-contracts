@@ -186,6 +186,91 @@ fn test_set_compliance_switches_gate() {
     let _ = &s.compliance_id;
 }
 
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_burn_more_than_balance_fails() {
+    let s = setup(1_000);
+    s.token.burn(&s.admin, &2000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #8)")]
+fn test_initialize_reverts_when_admin_not_compliant() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let compliance_id = env.register(ComplianceContract, ());
+    let compliance = ComplianceContractClient::new(&env, &compliance_id);
+    let admin = Address::generate(&env);
+    compliance.initialize(&admin);
+
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(&env, &token_id);
+    token.initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_initialize_with_negative_total_supply_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let compliance_id = env.register(ComplianceContract, ());
+    let compliance = ComplianceContractClient::new(&env, &compliance_id);
+    let admin = Address::generate(&env);
+    compliance.initialize(&admin);
+
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(&env, &token_id);
+    token.initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &-100i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_initialize_with_negative_valuation_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let compliance_id = env.register(ComplianceContract, ());
+    let compliance = ComplianceContractClient::new(&env, &compliance_id);
+    let admin = Address::generate(&env);
+    compliance.initialize(&admin);
+
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(&env, &token_id);
+    token.initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &-50_000_000i128,
+    );
+}
+
 fn env_register_empty_compliance(env: &Env, admin: &Address) -> Address {
     let id = env.register(ComplianceContract, ());
     let c = ComplianceContractClient::new(env, &id);
