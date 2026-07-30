@@ -222,6 +222,18 @@ fn test_burn_more_than_balance_fails() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_burn_blocked_when_holder_not_compliant() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.transfer(&s.admin, &bob, &200);
+    // Bob now holds tokens; revoke his approval.
+    s.compliance.remove(&s.admin, &bob);
+    s.token.burn(&bob, &100);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #8)")]
 fn test_initialize_reverts_when_admin_not_compliant() {
     let env = Env::default();
