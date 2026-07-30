@@ -13,3 +13,6 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+# Required by the cross-contract admin-verification tests (#10).
+asset-token = { path = "../asset-token", features = ["testutils"] }
+compliance = { path = "../compliance", features = ["testutils"] }

@@ -5,10 +5,54 @@
 //! issuer registers their asset-token contract here; the registry assigns a
 //! monotonically increasing id and tracks issuer, type, valuation and active
 //! status. It also reports total value locked (TVL) across active assets.
+//!
+//! ## Security properties
+//! * **#10 – permissionless registration closed:** `register_asset` verifies
+//!   via a cross-contract call that the caller (`issuer`) is the admin of
+//!   `token_contract`.  Any other caller panics with `Unauthorized`.
+//! * **#11 – no duplicate tokens:** a `DataKey::ByToken(Address)` reverse
+//!   index prevents the same `token_contract` from being registered twice.
+//!   A duplicate attempt panics with `DuplicateToken`.
+//! * **#12 – valuation stays in sync:** `update_asset_valuation` lets the
+//!   issuer **or** the registry admin push a new valuation for an entry at any
+//!   time, keeping TVL accurate after the token's own `update_valuation` is
+//!   called.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
+    Env, String, Vec,
 };
+
+// ---------------------------------------------------------------------------
+// Cross-contract interface: read the admin of an asset-token contract.
+// Only the minimal surface we need is declared here.
+// ---------------------------------------------------------------------------
+
+/// Metadata returned by the asset-token's `get_metadata` method.
+/// Only the `admin` field is used; the rest are ignored at the call site.
+#[contracttype]
+#[derive(Clone)]
+pub struct AssetMetadata {
+    pub name: String,
+    pub symbol: String,
+    pub asset_type: String,
+    pub total_supply: i128,
+    pub decimals: u32,
+    pub admin: Address,
+    pub compliance_contract: Address,
+    pub asset_description: String,
+    pub valuation: i128,
+    pub paused: bool,
+}
+
+#[contractclient(name = "AssetTokenClient")]
+pub trait AssetTokenInterface {
+    fn get_metadata(env: Env) -> AssetMetadata;
+}
+
+// ---------------------------------------------------------------------------
+// Storage types
+// ---------------------------------------------------------------------------
 
 /// A single registered asset.
 #[contracttype]
@@ -31,8 +75,13 @@ pub struct AssetEntry {
 enum DataKey {
     Admin,
     Counter,
+    /// Ordered list of all registered asset ids.
     Ids,
+    /// Asset entry keyed by its monotonic id.
     Asset(u64),
+    /// Reverse index: token_contract address → asset id.
+    /// Prevents duplicate registrations (#11).
+    ByToken(Address),
 }
 
 #[contracterror]
@@ -44,6 +93,8 @@ pub enum Error {
     Unauthorized = 3,
     AssetNotFound = 4,
     InvalidValuation = 5,
+    /// The same token_contract has already been registered (#11).
+    DuplicateToken = 6,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -70,7 +121,15 @@ impl RegistryContract {
         env.events().publish((symbol_short!("init"),), admin);
     }
 
-    /// Register a new tokenized asset. The issuer must authorize the call.
+    /// Register a new tokenized asset.
+    ///
+    /// The caller must be the **admin of `token_contract`** (verified via a
+    /// cross-contract call to `get_metadata`). This closes the permissionless
+    /// registration attack described in issue #10.
+    ///
+    /// Registering the same `token_contract` twice is rejected with
+    /// `DuplicateToken` (#11).
+    ///
     /// Returns the assigned asset id.
     pub fn register_asset(
         env: Env,
@@ -82,13 +141,33 @@ impl RegistryContract {
     ) -> u64 {
         Self::assert_init(&env);
         issuer.require_auth();
+
         if valuation < 0 {
             panic_err(&env, Error::InvalidValuation);
         }
+
+        // --- #10: verify issuer == token_contract.admin ---
+        // A cross-contract call fetches the metadata from the token and
+        // confirms the caller is actually its admin. Any random account that
+        // does not control the token will be rejected here.
+        let token_meta = AssetTokenClient::new(&env, &token_contract).get_metadata();
+        if token_meta.admin != issuer {
+            panic_err(&env, Error::Unauthorized);
+        }
+
+        // --- #11: reject duplicate token_contract registrations ---
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::ByToken(token_contract.clone()))
+        {
+            panic_err(&env, Error::DuplicateToken);
+        }
+
         let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
         let entry = AssetEntry {
             id,
-            token_contract,
+            token_contract: token_contract.clone(),
             issuer: issuer.clone(),
             name,
             asset_type,
@@ -96,8 +175,14 @@ impl RegistryContract {
             created_at: env.ledger().sequence(),
             active: true,
         };
+
+        // Persist the entry and both indexes.
         env.storage().persistent().set(&DataKey::Asset(id), &entry);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ByToken(token_contract), &id);
         env.storage().instance().set(&DataKey::Counter, &id);
+
         let mut ids: Vec<u64> = env
             .storage()
             .instance()
@@ -105,6 +190,7 @@ impl RegistryContract {
             .unwrap_or_else(|| Vec::new(&env));
         ids.push_back(id);
         env.storage().instance().set(&DataKey::Ids, &ids);
+
         bump(&env);
         env.events()
             .publish((symbol_short!("register"), issuer), id);
@@ -161,6 +247,51 @@ impl RegistryContract {
         bump(&env);
         env.events()
             .publish((symbol_short!("deactvate"),), asset_id);
+    }
+
+    /// Update the recorded valuation for an asset entry (#12).
+    ///
+    /// Callable by either the **registry admin** or the **issuer** of the
+    /// asset (both must authorize). This allows the valuation stored in the
+    /// registry — and therefore TVL — to be kept in sync whenever the
+    /// asset-token's own `update_valuation` is called.
+    pub fn update_asset_valuation(
+        env: Env,
+        caller: Address,
+        asset_id: u64,
+        new_valuation: i128,
+    ) {
+        Self::assert_init(&env);
+        caller.require_auth();
+
+        if new_valuation < 0 {
+            panic_err(&env, Error::InvalidValuation);
+        }
+
+        let mut entry: AssetEntry = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Asset(asset_id))
+            .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
+
+        // Accept the call only from the registry admin or the asset's issuer.
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_err(&env, Error::NotInitialized));
+
+        if caller != admin && caller != entry.issuer {
+            panic_err(&env, Error::Unauthorized);
+        }
+
+        entry.valuation = new_valuation;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Asset(asset_id), &entry);
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("updtval"), caller), (asset_id, new_valuation));
     }
 
     /// Sum of valuations across all active assets, in USD cents.

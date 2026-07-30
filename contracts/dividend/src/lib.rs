@@ -62,6 +62,8 @@ pub enum Error {
     InvalidAmount = 5,
     NothingToClaim = 6,
     AlreadyClaimed = 7,
+    /// Arithmetic overflow in proportional share calculation (#13).
+    Overflow = 8,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -148,7 +150,14 @@ impl DividendContract {
             return 0;
         }
         // Proportional share, floored by integer division.
-        (dist.total_amount * balance) / supply
+        // Use checked_mul to surface an explicit Overflow error instead of
+        // panicking with a host trap when total_amount * balance overflows
+        // i128 (#13).
+        let numerator = dist
+            .total_amount
+            .checked_mul(balance)
+            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+        numerator / supply
     }
 
     /// Claim a holder's proportional share, paid from escrow. Holder-authorized.
