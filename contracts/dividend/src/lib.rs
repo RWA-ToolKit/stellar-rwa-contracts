@@ -6,8 +6,9 @@
 //! then claims `total_amount * balance / total_supply`, paid from the escrow
 //! this contract holds. Each holder can claim a given distribution once.
 //!
-//! Balances are read at claim time from the asset token. `snapshot_ledger`
-//! records the ledger at which the distribution was created for reference.
+//! Balances are read at claim time from the asset token; there is no balance
+//! snapshot. `created_at` records the ledger at which the distribution was
+//! created for reference.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
@@ -36,7 +37,6 @@ pub struct Distribution {
     pub payment_token: Address,
     pub total_amount: i128,
     pub distributed: i128,
-    pub snapshot_ledger: u32,
     pub created_at: u32,
     pub completed: bool,
 }
@@ -121,7 +121,6 @@ impl DividendContract {
             payment_token,
             total_amount,
             distributed: 0,
-            snapshot_ledger: env.ledger().sequence(),
             created_at: env.ledger().sequence(),
             completed: false,
         };
