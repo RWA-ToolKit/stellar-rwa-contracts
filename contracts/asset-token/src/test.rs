@@ -203,6 +203,21 @@ fn test_update_valuation() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_update_valuation_by_non_admin_reverts() {
+    let s = setup(1_000);
+    let impostor = Address::generate(&s.env);
+    s.token.update_valuation(&impostor, &75_000_000);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_update_valuation_negative_rejected() {
+    let s = setup(1_000);
+    s.token.update_valuation(&s.admin, &-1);
+}
+
+#[test]
 fn test_set_compliance_switches_gate() {
     let s = setup(1_000);
     // A fresh compliance contract where the admin is approved.
