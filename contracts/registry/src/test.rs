@@ -51,6 +51,24 @@ fn test_double_init() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_register_before_init_panics_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register(RegistryContract, ());
+    let client = RegistryContractClient::new(&env, &id);
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.register_asset(
+        &issuer,
+        &token,
+        &String::from_str(&env, "Asset"),
+        &String::from_str(&env, "real_estate"),
+        &100,
+    );
+}
+
+#[test]
 fn test_register_and_get_asset() {
     let (env, client, _admin) = setup();
     let issuer = Address::generate(&env);
