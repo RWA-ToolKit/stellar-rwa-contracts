@@ -196,6 +196,28 @@ fn test_pause_then_unpause_restores_transfer() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_mint_blocked_when_paused() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.pause(&s.admin);
+    s.token.mint(&s.admin, &bob, &100);
+}
+
+#[test]
+fn test_mint_succeeds_after_unpause() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.pause(&s.admin);
+    s.token.unpause(&s.admin);
+    s.token.mint(&s.admin, &bob, &100);
+    assert_eq!(s.token.balance(&bob), 100);
+    assert_eq!(s.token.total_supply(), 1_100);
+}
+
+#[test]
 fn test_update_valuation() {
     let s = setup(1_000);
     s.token.update_valuation(&s.admin, &75_000_000);
