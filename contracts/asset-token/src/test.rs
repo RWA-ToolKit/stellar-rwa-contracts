@@ -263,6 +263,28 @@ fn test_set_compliance_rejects_contract_that_blocks_admin() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_set_compliance_gate_change_blocks_previously_approved_holder() {
+    let s = setup(1_000);
+    // Bob is approved and holds a balance under the original compliance contract.
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.transfer(&s.admin, &bob, &200);
+
+    // Switch to a fresh compliance contract that only approves the admin
+    // (required for set_compliance to succeed) and rejects everyone else,
+    // including bob.
+    let comp2_id = env_register_empty_compliance(&s.env, &s.admin);
+    let comp2 = ComplianceContractClient::new(&s.env, &comp2_id);
+    approve(&s.env, &comp2, &s.admin, &s.admin);
+    s.token.set_compliance(&s.admin, &comp2_id);
+
+    // Bob was compliant under the old gate but is not recognized by the new
+    // one, so the enforced gate must now reject his transfer.
+    s.token.transfer(&bob, &s.admin, &50);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #4)")]
 fn test_burn_more_than_balance_fails() {
     let s = setup(1_000);
