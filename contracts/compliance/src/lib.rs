@@ -210,7 +210,10 @@ impl ComplianceContract {
     /// Returns `true` only if the address is Approved, not expired, and its
     /// jurisdiction is not blocked.
     pub fn is_allowed(env: Env, address: Address) -> bool {
-        let record: Option<KycRecord> = env.storage().persistent().get(&DataKey::Record(address.clone()));
+        let record: Option<KycRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Record(address.clone()));
         let record = match record {
             Some(r) => r,
             None => return false,
