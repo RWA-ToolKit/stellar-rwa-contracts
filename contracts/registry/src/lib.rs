@@ -116,9 +116,11 @@ impl RegistryContract {
             active: true,
         };
         env.storage().persistent().set(&DataKey::Asset(id), &entry);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Asset(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Asset(id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
         env.storage().instance().set(&DataKey::Counter, &id);
         let active_count: u64 = env
             .storage()
@@ -137,13 +139,16 @@ impl RegistryContract {
 
     /// Fetch a single asset by id.
     pub fn get_asset(env: Env, asset_id: u64) -> AssetEntry {
-        let entry = env.storage()
+        let entry = env
+            .storage()
             .persistent()
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Asset(asset_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Asset(asset_id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
         entry
     }
 
@@ -187,9 +192,11 @@ impl RegistryContract {
         env.storage()
             .persistent()
             .set(&DataKey::Asset(asset_id), &entry);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Asset(asset_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Asset(asset_id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
         if was_active {
             let active_count: u64 = env
                 .storage()
@@ -243,17 +250,15 @@ impl RegistryContract {
     // ---- internal helpers ----
 
     fn iter_assets(env: &Env) -> Vec<AssetEntry> {
-        let counter: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Counter)
-            .unwrap_or(0);
+        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
         let mut out = Vec::new(env);
         for id in 1..=counter {
             if let Some(entry) = env.storage().persistent().get(&DataKey::Asset(id)) {
-                env.storage()
-                    .persistent()
-                    .extend_ttl(&DataKey::Asset(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Asset(id),
+                    INSTANCE_LIFETIME_THRESHOLD,
+                    INSTANCE_BUMP_AMOUNT,
+                );
                 out.push_back(entry);
             }
         }
@@ -290,7 +295,14 @@ fn panic_err(env: &Env, error: Error) -> ! {
 }
 
 /// Allowed asset types (issue #48). Any type outside this list is rejected.
-const VALID_ASSET_TYPES: &[&str] = &["real_estate", "invoice", "commodity", "bond", "equity", "fund"];
+const VALID_ASSET_TYPES: &[&str] = &[
+    "real_estate",
+    "invoice",
+    "commodity",
+    "bond",
+    "equity",
+    "fund",
+];
 
 fn validate_asset_type(env: &Env, asset_type: &String) {
     let bytes = asset_type.to_bytes();

@@ -30,11 +30,15 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Format check
-        run: cargo fmt --all -- --check
-
+      # Tests run before the formatting gate. A cosmetic `cargo fmt` failure
+      # used to abort the job at the first step, so `cargo test` never ran and
+      # broken code merged unnoticed. Formatting is still enforced, but it can
+      # no longer mask a compile or test failure.
       - name: Test
         run: cargo test --workspace
+
+      - name: Format check
+        run: cargo fmt --all -- --check
 
   build-wasm:
     runs-on: ubuntu-latest
