@@ -134,9 +134,11 @@ impl DividendContract {
             completed: false,
         };
         env.storage().persistent().set(&DataKey::Dist(id), &dist);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Dist(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Dist(id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
         env.storage().instance().set(&DataKey::Counter, &id);
         bump(&env);
         env.events()
@@ -193,9 +195,11 @@ impl DividendContract {
         env.storage()
             .persistent()
             .set(&DataKey::Dist(distribution_id), &dist);
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Dist(distribution_id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Dist(distribution_id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
         bump(&env);
         env.events()
             .publish((symbol_short!("claim"), holder), (distribution_id, amount));
@@ -210,11 +214,7 @@ impl DividendContract {
     /// Iterates via the monotonic Counter so the global Ids vector is never
     /// re-serialised; per-id keys are O(1) reads.
     pub fn get_distributions_for_asset(env: Env, asset_token: Address) -> Vec<Distribution> {
-        let counter: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Counter)
-            .unwrap_or(0);
+        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
         let mut out = Vec::new(&env);
         for id in 1..=counter {
             if let Some(d) = env
@@ -222,9 +222,11 @@ impl DividendContract {
                 .persistent()
                 .get::<DataKey, Distribution>(&DataKey::Dist(id))
             {
-                env.storage()
-                    .persistent()
-                    .extend_ttl(&DataKey::Dist(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Dist(id),
+                    INSTANCE_LIFETIME_THRESHOLD,
+                    INSTANCE_BUMP_AMOUNT,
+                );
                 if d.asset_token == asset_token {
                     out.push_back(d);
                 }
@@ -252,13 +254,16 @@ impl DividendContract {
     // ---- internal helpers ----
 
     fn load(env: &Env, id: u64) -> Distribution {
-        let dist = env.storage()
+        let dist = env
+            .storage()
             .persistent()
             .get(&DataKey::Dist(id))
             .unwrap_or_else(|| panic_err(env, Error::DistributionNotFound));
-        env.storage()
-            .persistent()
-            .extend_ttl(&DataKey::Dist(id), INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Dist(id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
         dist
     }
 

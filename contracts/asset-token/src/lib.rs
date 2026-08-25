@@ -136,8 +136,10 @@ impl AssetTokenContract {
             .persistent()
             .set(&DataKey::Balance(admin.clone()), &total_supply);
         Self::bump(&env);
-        env.events()
-            .publish((symbol_short!("genesis"), admin.clone()), (total_supply, total_supply));
+        env.events().publish(
+            (symbol_short!("genesis"), admin.clone()),
+            (total_supply, total_supply),
+        );
     }
 
     /// Transfer `amount` from `from` to `to`. Both parties must be
@@ -178,8 +180,10 @@ impl AssetTokenContract {
         Self::set_balance(&env, &to, new_to_bal);
         Self::bump(&env);
         // Include post-balances so indexers don't need to re-read state (issue #41).
-        env.events()
-            .publish((symbol_short!("transfer"), from, to), (amount, new_from_bal, new_to_bal));
+        env.events().publish(
+            (symbol_short!("transfer"), from, to),
+            (amount, new_from_bal, new_to_bal),
+        );
     }
 
     /// Mint new tokens to a compliance-approved recipient. Admin only.
