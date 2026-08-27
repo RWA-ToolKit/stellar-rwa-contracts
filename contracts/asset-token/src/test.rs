@@ -442,3 +442,259 @@ fn test_transfer_after_sender_suspended_post_mint_panics_sender_not_compliant() 
     approve(&s.env, &s.compliance, &s.admin, &carol);
     s.token.transfer(&bob, &carol, &100);
 }
+
+// ---- issue #191 / #192: initialize string-length validation ----
+
+/// Build an all-`a` ASCII `String` of exactly `len` bytes, for exercising
+/// `check_str`'s min/max boundaries.
+fn ascii_string(env: &Env, len: usize) -> String {
+    const BUF: [u8; 300] = [b'a'; 300];
+    let s = core::str::from_utf8(&BUF[..len]).unwrap();
+    String::from_str(env, s)
+}
+
+/// A registered, un-initialized token plus a compliance contract that already
+/// approves `admin`, for exercising `initialize` boundary conditions.
+fn uninitialized_token() -> (Env, Address, Address, AssetTokenContractClient<'static>) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let compliance_id = env.register(ComplianceContract, ());
+    let compliance = ComplianceContractClient::new(&env, &compliance_id);
+    let admin = Address::generate(&env);
+    compliance.initialize(&admin);
+    approve(&env, &compliance, &admin, &admin);
+
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(&env, &token_id);
+    (env, compliance_id, admin, token)
+}
+
+#[test]
+fn test_initialize_rejects_name_over_max_len() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let result = token.try_initialize(
+        &admin,
+        &ascii_string(&env, MAX_NAME_LEN as usize + 1),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidInput)));
+}
+
+#[test]
+fn test_initialize_accepts_name_at_max_len() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let name = ascii_string(&env, MAX_NAME_LEN as usize);
+    token.initialize(
+        &admin,
+        &name,
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+    assert_eq!(token.get_metadata().name, name);
+}
+
+#[test]
+fn test_initialize_rejects_symbol_over_max_len() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let result = token.try_initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &ascii_string(&env, MAX_SYMBOL_LEN as usize + 1),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidInput)));
+}
+
+#[test]
+fn test_initialize_accepts_symbol_at_max_len() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let symbol = ascii_string(&env, MAX_SYMBOL_LEN as usize);
+    token.initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &symbol,
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+    assert_eq!(token.get_metadata().symbol, symbol);
+}
+
+#[test]
+fn test_initialize_rejects_asset_type_over_max_len() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let result = token.try_initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &ascii_string(&env, MAX_ASSET_TYPE_LEN as usize + 1),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidInput)));
+}
+
+#[test]
+fn test_initialize_accepts_asset_type_at_max_len() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let asset_type = ascii_string(&env, MAX_ASSET_TYPE_LEN as usize);
+    token.initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &asset_type,
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+    assert_eq!(token.get_metadata().asset_type, asset_type);
+}
+
+#[test]
+fn test_initialize_rejects_description_over_max_len() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let result = token.try_initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &ascii_string(&env, MAX_DESC_LEN as usize + 1),
+        &50_000_000i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidInput)));
+}
+
+#[test]
+fn test_initialize_accepts_description_at_max_len() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let description = ascii_string(&env, MAX_DESC_LEN as usize);
+    token.initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &description,
+        &50_000_000i128,
+    );
+    assert_eq!(token.get_metadata().asset_description, description);
+}
+
+#[test]
+fn test_initialize_rejects_empty_name() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let result = token.try_initialize(
+        &admin,
+        &String::from_str(&env, ""),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidInput)));
+}
+
+#[test]
+fn test_initialize_rejects_empty_symbol() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let result = token.try_initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, ""),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidInput)));
+}
+
+#[test]
+fn test_initialize_rejects_empty_asset_type() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let result = token.try_initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, ""),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, "A tokenized NYC loft"),
+        &50_000_000i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidInput)));
+}
+
+#[test]
+fn test_initialize_rejects_empty_description() {
+    let (env, compliance_id, admin, token) = uninitialized_token();
+    let result = token.try_initialize(
+        &admin,
+        &String::from_str(&env, "Manhattan Loft"),
+        &String::from_str(&env, "MLOFT"),
+        &String::from_str(&env, "real_estate"),
+        &1_000i128,
+        &2u32,
+        &compliance_id,
+        &String::from_str(&env, ""),
+        &50_000_000i128,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidInput)));
+}
+
+// ---- issue #193: initialize with zero total supply ----
+
+#[test]
+fn test_initialize_with_zero_total_supply_succeeds() {
+    let s = setup(0);
+    assert_eq!(s.token.total_supply(), 0);
+    assert_eq!(s.token.balance(&s.admin), 0);
+}
+
+// ---- issue #194: set_compliance rejects a gate that would not approve the admin ----
+
+#[test]
+fn test_set_compliance_rejects_gate_not_approving_admin_and_keeps_previous_gate() {
+    let s = setup(1_000);
+    let comp2_id = env_register_empty_compliance(&s.env, &s.admin);
+    // admin is never added to comp2's allowlist.
+    let result = s.token.try_set_compliance(&s.admin, &comp2_id);
+    assert_eq!(result, Err(Ok(Error::InvalidCompliance)));
+    assert_eq!(s.token.get_metadata().compliance_contract, s.compliance_id);
+}
