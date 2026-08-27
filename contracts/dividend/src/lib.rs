@@ -49,6 +49,12 @@ enum DataKey {
     Ids,
     Dist(u64),
     Claimed(u64, Address),
+    /// Per-holder entitlement balances captured when the distribution was
+    /// created. Entitlement is frozen at creation so moving tokens to another
+    /// wallet cannot be used to claim twice (issue #163).
+    Snapshot(u64),
+    /// Sum of the snapshot balances for a distribution (its effective supply).
+    Supply(u64),
 }
 
 #[contracterror]
@@ -72,7 +78,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[contract]
 pub struct DividendContract;
@@ -109,6 +115,7 @@ impl DividendContract {
         asset_token: Address,
         payment_token: Address,
         total_amount: i128,
+        eligible: Vec<(Address, i128)>,
     ) -> u64 {
         Self::require_admin(&env, &admin);
         if total_amount <= 0 {
@@ -139,6 +146,36 @@ impl DividendContract {
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
+
+        // Freeze the entitlement basis at creation time (issue #163). Reading
+        // live balances at claim time let a holder move tokens to a fresh wallet
+        // and claim again; the snapshot makes each holder's share immutable.
+        let mut snap_sum: i128 = 0;
+        for (_, b) in eligible.iter() {
+            snap_sum = snap_sum
+                .checked_add(b)
+                .unwrap_or_else(|| panic_err(&env, Error::InvalidAmount));
+        }
+        if snap_sum <= 0 {
+            panic_err(&env, Error::ZeroSupply);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Snapshot(id), &eligible);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Supply(id), &snap_sum);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Snapshot(id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Supply(id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+
         env.storage().instance().set(&DataKey::Counter, &id);
         bump(&env);
         env.events()
@@ -153,17 +190,16 @@ impl DividendContract {
         if Self::has_claimed(env.clone(), distribution_id, holder.clone()) {
             return 0;
         }
-        let asset = AssetClient::new(&env, &dist.asset_token);
-        let supply = asset.total_supply();
+        let supply = Self::load_supply(&env, distribution_id);
         if supply <= 0 {
             return 0;
         }
-        let balance = asset.balance(&holder);
-        if balance <= 0 {
+        let basis = Self::snapshot_balance(&env, distribution_id, &holder);
+        if basis <= 0 {
             return 0;
         }
         // Proportional share, floored by integer division.
-        (dist.total_amount * balance) / supply
+        (dist.total_amount * basis) / supply
     }
 
     /// Claim a holder's proportional share, paid from escrow. Holder-authorized.
@@ -241,6 +277,33 @@ impl DividendContract {
             .persistent()
             .get(&DataKey::Claimed(distribution_id, holder))
             .unwrap_or(false)
+    }
+
+    /// Effective supply for a distribution: the sum of the snapshot balances
+    /// captured at creation (issue #163).
+    fn load_supply(env: &Env, distribution_id: u64) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Supply(distribution_id))
+            .unwrap_or(0)
+    }
+
+    /// A holder's entitlement basis: the balance recorded in the distribution's
+    /// creation-time snapshot. Wallets not present in the snapshot (e.g. ones
+    /// that received tokens only afterwards) have a basis of 0 and cannot claim
+    /// (issue #163).
+    fn snapshot_balance(env: &Env, distribution_id: u64, holder: &Address) -> i128 {
+        let snap: Vec<(Address, i128)> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Snapshot(distribution_id))
+            .unwrap_or_else(|| panic_err(env, Error::DistributionNotFound));
+        for (h, b) in snap.iter() {
+            if h == *holder {
+                return b;
+            }
+        }
+        0
     }
 
     /// Configured admin.

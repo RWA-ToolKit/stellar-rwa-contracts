@@ -4,7 +4,7 @@ use asset_token::{AssetTokenContract, AssetTokenContractClient};
 use compliance::{ComplianceContract, ComplianceContractClient};
 use soroban_sdk::{
     testutils::{Address as _, AuthorizedFunction},
-    token, Address, Env, String, Symbol,
+    token, Address, Env, String, Symbol, Vec,
 };
 
 struct Ctx {
@@ -15,6 +15,7 @@ struct Ctx {
     admin: Address,
     h1: Address,
     h2: Address,
+    comp_id: Address,
 }
 
 fn setup() -> Ctx {
@@ -67,7 +68,17 @@ fn setup() -> Ctx {
         admin,
         h1,
         h2,
+        comp_id,
     }
+}
+
+/// Eligible balances as of distribution creation: h1=300, h2=200, admin=500.
+fn eligible(ctx: &Ctx) -> Vec<(Address, i128)> {
+    let mut v = Vec::new(&ctx.env);
+    v.push_back((ctx.h1.clone(), 300));
+    v.push_back((ctx.h2.clone(), 200));
+    v.push_back((ctx.admin.clone(), 500));
+    v
 }
 
 fn pay_balance(ctx: &Ctx, who: &Address) -> i128 {
@@ -92,7 +103,7 @@ fn test_create_distribution_escrows_funds() {
     let div_addr = ctx.dividend.address.clone();
     let id = ctx
         .dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
     assert_eq!(id, 1);
     assert_eq!(pay_balance(&ctx, &div_addr), 1000);
     let d = ctx.dividend.get_distribution(&id);
@@ -106,7 +117,7 @@ fn test_claim_is_proportional() {
     let ctx = setup();
     let id = ctx
         .dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
     // h1 holds 300/1000 -> 300; h2 holds 200/1000 -> 200.
     assert_eq!(ctx.dividend.claimable(&id, &ctx.h1), 300);
     assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 200);
@@ -124,7 +135,7 @@ fn test_double_claim_rejected() {
     let ctx = setup();
     let id = ctx
         .dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
     ctx.dividend.claim(&id, &ctx.h1);
     ctx.dividend.claim(&id, &ctx.h1);
 }
@@ -135,7 +146,7 @@ fn test_nonholder_nothing_to_claim() {
     let ctx = setup();
     let id = ctx
         .dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
     let stranger = Address::generate(&ctx.env);
     ctx.dividend.claim(&id, &stranger);
 }
@@ -146,7 +157,7 @@ fn test_create_requires_admin() {
     let ctx = setup();
     let impostor = Address::generate(&ctx.env);
     ctx.dividend
-        .create_distribution(&impostor, &ctx.asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&impostor, &ctx.asset_id, &ctx.pay_id, &1000, &Vec::new(&ctx.env));
 }
 
 #[test]
@@ -154,7 +165,7 @@ fn test_create_requires_admin() {
 fn test_zero_amount_rejected() {
     let ctx = setup();
     ctx.dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &0);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &0, &Vec::new(&ctx.env));
 }
 
 #[test]
@@ -168,9 +179,9 @@ fn test_missing_distribution() {
 fn test_get_distributions_for_asset() {
     let ctx = setup();
     ctx.dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
     ctx.dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &500);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &500, &eligible(&ctx));
     let other_asset = Address::generate(&ctx.env);
     assert_eq!(
         ctx.dividend
@@ -189,7 +200,7 @@ fn test_full_distribution_completes() {
     let ctx = setup();
     let id = ctx
         .dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
     ctx.dividend.claim(&id, &ctx.h1); // 300
     ctx.dividend.claim(&id, &ctx.h2); // 200
     ctx.dividend.claim(&id, &ctx.admin); // 500
@@ -228,7 +239,7 @@ fn test_create_distribution_zero_supply_rejected() {
     );
 
     ctx.dividend
-        .create_distribution(&ctx.admin, &zero_asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&ctx.admin, &zero_asset_id, &ctx.pay_id, &1000, &Vec::new(&ctx.env));
 }
 
 // ---- issue #120: cross-contract auth propagation ----
@@ -237,7 +248,7 @@ fn test_create_distribution_zero_supply_rejected() {
 fn test_create_distribution_auth_tree() {
     let ctx = setup();
     ctx.dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
 
     let auths = ctx.env.auths();
     assert_eq!(auths.len(), 1);
@@ -267,7 +278,7 @@ fn test_claim_requires_only_holder_auth() {
     let ctx = setup();
     let id = ctx
         .dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
 
     ctx.dividend.claim(&id, &ctx.h1);
 
@@ -285,4 +296,54 @@ fn test_claim_requires_only_holder_auth() {
     // The payout transfer moves funds `from` the dividend contract's own
     // escrow, so it is self-authorized and needs no separate sub-invocation.
     assert_eq!(invocation.sub_invocations.len(), 0);
+}
+
+// ---- issue #163: holders cannot claim twice by moving tokens to a new wallet ----
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_token_move_to_fresh_wallet_cannot_claim() {
+    let ctx = setup();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    // h1 (snapshot 300) claims its share.
+    ctx.dividend.claim(&id, &ctx.h1);
+    assert_eq!(pay_balance(&ctx, &ctx.h1), 300);
+
+    // A brand-new wallet receives 300 tokens from the admin. It is
+    // compliance-approved so the transfer succeeds, and it now holds tokens, but
+    // it is NOT in the distribution snapshot...
+    let comp = ComplianceContractClient::new(&ctx.env, &ctx.comp_id);
+    let w = Address::generate(&ctx.env);
+    comp.add_to_allowlist(&ctx.admin, &w, &String::from_str(&ctx.env, "US"), &0);
+    let asset = AssetTokenContractClient::new(&ctx.env, &ctx.asset_id);
+    asset.transfer(&ctx.admin, &w, &300);
+
+    // ...so its entitlement basis is 0 and it cannot claim (fixes #163).
+    ctx.dividend.claim(&id, &w);
+}
+
+#[test]
+fn test_snapshot_basis_is_immutable_after_transfer() {
+    let ctx = setup();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    // h2 is snapshotted at 200. Even after receiving more tokens, the payout
+    // stays at the frozen 200 (not the inflated live balance).
+    let asset = AssetTokenContractClient::new(&ctx.env, &ctx.asset_id);
+    asset.transfer(&ctx.admin, &ctx.h2, &300);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 200);
+    ctx.dividend.claim(&id, &ctx.h2);
+    assert_eq!(pay_balance(&ctx, &ctx.h2), 200);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 0);
 }
