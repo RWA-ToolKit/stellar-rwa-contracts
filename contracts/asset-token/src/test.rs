@@ -442,3 +442,112 @@ fn test_transfer_after_sender_suspended_post_mint_panics_sender_not_compliant() 
     approve(&s.env, &s.compliance, &s.admin, &carol);
     s.token.transfer(&bob, &carol, &100);
 }
+
+// ---- issue #198: every entry point rejects calls before `initialize` ----
+
+#[test]
+fn test_entry_points_fail_before_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(&env, &token_id);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    assert_eq!(
+        token.try_transfer(&admin, &user, &100),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(
+        token.try_mint(&admin, &user, &100),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(
+        token.try_burn(&admin, &100),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_eq!(token.try_total_supply(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(token.try_get_metadata(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(token.try_pause(&admin), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        token.try_update_valuation(&admin, &100),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+// ---- issue #197: every admin-only entry point rejects a non-admin caller ----
+
+#[test]
+fn test_admin_only_entry_points_reject_non_admin() {
+    let s = setup(1_000);
+    let impostor = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    assert_eq!(
+        s.token.try_mint(&impostor, &bob, &100),
+        Err(Ok(Error::Unauthorized))
+    );
+
+    let recipients = Vec::from_array(&s.env, [(bob.clone(), 100i128)]);
+    assert_eq!(
+        s.token.try_mint_batch(&impostor, &recipients),
+        Err(Ok(Error::Unauthorized))
+    );
+
+    assert_eq!(
+        s.token.try_pause(&impostor),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        s.token.try_unpause(&impostor),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        s.token.try_update_valuation(&impostor, &75_000_000),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        s.token.try_set_compliance(&impostor, &s.compliance_id),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+// ---- issue #196: `update_valuation` rejects a negative valuation and keeps the old value ----
+
+#[test]
+fn test_update_valuation_negative_rejected_keeps_old_value() {
+    let s = setup(1_000);
+    let original = s.token.get_metadata().valuation;
+    assert_eq!(
+        s.token.try_update_valuation(&s.admin, &-1),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(s.token.get_metadata().valuation, original);
+}
+
+// ---- issue #195: `burn` reduces `total_supply` and rejects burning more than the balance ----
+
+#[test]
+fn test_burn_decrements_balance_and_supply_by_same_amount() {
+    let s = setup(1_000);
+    let balance_before = s.token.balance(&s.admin);
+    let supply_before = s.token.total_supply();
+    s.token.burn(&s.admin, &300);
+    assert_eq!(balance_before - s.token.balance(&s.admin), 300);
+    assert_eq!(supply_before - s.token.total_supply(), 300);
+}
+
+#[test]
+fn test_burn_more_than_balance_fails_without_partial_mutation() {
+    let s = setup(1_000);
+    let balance_before = s.token.balance(&s.admin);
+    let supply_before = s.token.total_supply();
+    assert_eq!(
+        s.token.try_burn(&s.admin, &(balance_before + 1)),
+        Err(Ok(Error::InsufficientBalance))
+    );
+    assert_eq!(s.token.balance(&s.admin), balance_before);
+    assert_eq!(s.token.total_supply(), supply_before);
+}
