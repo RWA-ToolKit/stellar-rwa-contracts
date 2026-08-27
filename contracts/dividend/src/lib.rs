@@ -49,6 +49,10 @@ enum DataKey {
     Ids,
     Dist(u64),
     Claimed(u64, Address),
+    /// Distribution ids created for a given asset token, so
+    /// `get_distributions_for_asset` only walks that asset's distributions
+    /// instead of scanning the global counter (issue #166).
+    AssetIds(Address),
 }
 
 #[contracterror]
@@ -141,6 +145,22 @@ impl DividendContract {
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
+        // Index this distribution under its asset token so lookups are O(n_asset)
+        // rather than O(global counter) (issue #166).
+        let mut asset_ids = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<u64>>(&DataKey::AssetIds(dist.asset_token.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        asset_ids.push_back(id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AssetIds(dist.asset_token.clone()), &asset_ids);
+        env.storage().persistent().extend_ttl(
+            &DataKey::AssetIds(dist.asset_token.clone()),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
         env.storage().instance().set(&DataKey::Counter, &id);
         bump(&env);
         env.events()
@@ -220,12 +240,17 @@ impl DividendContract {
     }
 
     /// All distributions created for a given asset token.
-    /// Iterates via the monotonic Counter so the global Ids vector is never
-    /// re-serialised; per-id keys are O(1) reads.
+    /// Walks only the per-asset id index (issue #166) instead of scanning the
+    /// global counter, keeping the cost proportional to that asset's
+    /// distributions rather than every distribution ever created.
     pub fn get_distributions_for_asset(env: Env, asset_token: Address) -> Vec<Distribution> {
-        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        let ids = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<u64>>(&DataKey::AssetIds(asset_token.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
         let mut out = Vec::new(&env);
-        for id in 1..=counter {
+        for id in ids.iter() {
             if let Some(d) = env
                 .storage()
                 .persistent()
@@ -236,9 +261,7 @@ impl DividendContract {
                     INSTANCE_LIFETIME_THRESHOLD,
                     INSTANCE_BUMP_AMOUNT,
                 );
-                if d.asset_token == asset_token {
-                    out.push_back(d);
-                }
+                out.push_back(d);
             }
         }
         out
