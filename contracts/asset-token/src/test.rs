@@ -424,6 +424,47 @@ fn test_transfer_requires_only_sender_auth() {
 }
 
 #[test]
+fn test_balance_of_address_never_held_tokens_is_zero() {
+    let s = setup(1_000);
+    let stranger = Address::generate(&s.env);
+    assert_eq!(s.token.balance(&stranger), 0);
+}
+
+#[test]
+fn test_invalid_amount_rejected_for_transfer_mint_burn() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    assert_eq!(
+        s.token.try_transfer(&s.admin, &bob, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        s.token.try_transfer(&s.admin, &bob, &-1),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    assert_eq!(
+        s.token.try_mint(&s.admin, &bob, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        s.token.try_mint(&s.admin, &bob, &-1),
+        Err(Ok(Error::InvalidAmount))
+    );
+
+    assert_eq!(
+        s.token.try_burn(&s.admin, &0),
+        Err(Ok(Error::InvalidAmount))
+    );
+    assert_eq!(
+        s.token.try_burn(&s.admin, &-1),
+        Err(Ok(Error::InvalidAmount))
+    );
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #7)")]
 fn test_transfer_after_sender_suspended_post_mint_panics_sender_not_compliant() {
     let s = setup(1_000);

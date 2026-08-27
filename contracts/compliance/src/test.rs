@@ -223,3 +223,51 @@ fn test_lowercase_jurisdiction_normalized() {
         String::from_str(&env, "US")
     );
 }
+
+#[test]
+fn test_prune_expired_removes_only_expired() {
+    let (env, client, admin) = setup();
+    let expired_user = Address::generate(&env);
+    let live_user = Address::generate(&env);
+    let never_expires_user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 10);
+    client.add_to_allowlist(&admin, &expired_user, &us, &100);
+    client.add_to_allowlist(&admin, &live_user, &us, &1000);
+    client.add_to_allowlist(&admin, &never_expires_user, &us, &0);
+
+    env.ledger().with_mut(|l| l.sequence_number = 500);
+    client.prune_expired(&admin);
+
+    let list = client.get_allowlist();
+    assert!(!list.contains(&expired_user));
+    assert!(list.contains(&live_user));
+    assert!(list.contains(&never_expires_user));
+    assert!(client.get_record(&expired_user).is_none());
+    assert!(client.get_record(&live_user).is_some());
+    assert!(client.get_record(&never_expires_user).is_some());
+}
+
+#[test]
+fn test_prune_expired_is_idempotent() {
+    let (env, client, admin) = setup();
+    let expired_user = Address::generate(&env);
+    let live_user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 10);
+    client.add_to_allowlist(&admin, &expired_user, &us, &100);
+    client.add_to_allowlist(&admin, &live_user, &us, &0);
+
+    env.ledger().with_mut(|l| l.sequence_number = 500);
+    client.prune_expired(&admin);
+    let first_run = client.get_allowlist();
+
+    client.prune_expired(&admin);
+    let second_run = client.get_allowlist();
+
+    assert_eq!(first_run, second_run);
+    assert_eq!(second_run.len(), 1);
+    assert!(second_run.contains(&live_user));
+}
