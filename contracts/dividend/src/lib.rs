@@ -53,6 +53,11 @@ enum DataKey {
     /// `get_distributions_for_asset` only walks that asset's distributions
     /// instead of scanning the global counter (issue #166).
     AssetIds(Address),
+    /// Per-holder entitlement balances captured at distribution creation so
+    /// moving tokens to another wallet cannot be used to claim twice (issue #163).
+    Snapshot(u64),
+    /// Sum of the snapshot balances for a distribution (its effective supply).
+    Supply(u64),
 }
 
 #[contracterror]
@@ -70,6 +75,8 @@ pub enum Error {
     ZeroSupply = 8,
     /// Total distributed would exceed the distribution's `total_amount` (issue #164).
     OverDistributed = 9,
+    /// `total_amount * balance` overflowed i128 while computing a claim (issue #165).
+    ArithmeticOverflow = 10,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -146,6 +153,34 @@ impl DividendContract {
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
+        // Freeze the entitlement basis at creation time (issue #163). Reading
+        // live balances at claim time let a holder move tokens to a fresh wallet
+        // and claim again; the snapshot makes each holder's share immutable.
+        let mut snap_sum: i128 = 0;
+        for (_, b) in eligible.iter() {
+            snap_sum = snap_sum
+                .checked_add(b)
+                .unwrap_or_else(|| panic_err(&env, Error::InvalidAmount));
+        }
+        if snap_sum <= 0 {
+            panic_err(&env, Error::ZeroSupply);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Snapshot(id), &eligible);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Supply(id), &snap_sum);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Snapshot(id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Supply(id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
         // Index this distribution under its asset token so lookups are O(n_asset)
         // rather than O(global counter) (issue #166).
         let mut asset_ids = env
@@ -186,9 +221,8 @@ impl DividendContract {
         }
         // Proportional share, floored by integer division. Guard the
         // multiplication against i128 overflow (issue #165).
-        dist
-            .total_amount
-            .checked_mul(balance)
+        dist.total_amount
+            .checked_mul(basis)
             .unwrap_or_else(|| panic_err(&env, Error::ArithmeticOverflow))
             / supply
     }
