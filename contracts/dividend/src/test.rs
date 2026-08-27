@@ -149,6 +149,54 @@ fn test_create_requires_admin() {
         .create_distribution(&impostor, &ctx.asset_id, &ctx.pay_id, &1000);
 }
 
+// ---- issue #165: `claimable` must guard `total_amount * balance` against
+// i128 overflow instead of relying on the release profile's overflow-checks
+// (which would abort the whole contract). ----
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_claimable_overflow_guarded() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let comp_id = env.register(ComplianceContract, ());
+    let comp = ComplianceContractClient::new(&env, &comp_id);
+    comp.initialize(&admin);
+    let us = String::from_str(&env, "US");
+    let h1 = Address::generate(&env);
+    comp.add_to_allowlist(&admin, &admin, &us, &0);
+    comp.add_to_allowlist(&admin, &h1, &us, &0);
+
+    // Use amounts large enough that total_amount * balance overflows i128,
+    // but each individually fits and the supply is positive.
+    let big: i128 = 20_000_000_000_000_000_000; // 2e19
+    let asset_id = env.register(AssetTokenContract, ());
+    let asset = AssetTokenContractClient::new(&env, &asset_id);
+    asset.initialize(
+        &admin,
+        &String::from_str(&env, "Big"),
+        &String::from_str(&env, "BIG"),
+        &String::from_str(&env, "real_estate"),
+        &big,
+        &0u32,
+        &comp_id,
+        &String::from_str(&env, "desc"),
+        &big,
+    );
+    asset.transfer(&admin, &h1, &big);
+
+    let sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let pay_id = sac.address();
+    token::StellarAssetClient::new(&env, &pay_id).mint(&admin, &big);
+
+    let div_id = env.register(DividendContract, ());
+    let dividend = DividendContractClient::new(&env, &div_id);
+    dividend.initialize(&admin);
+    dividend.create_distribution(&admin, &asset_id, &pay_id, &big);
+
+    // total_amount(2e19) * balance(2e19) overflows i128 -> ArithmeticOverflow (#10)
+    let _ = dividend.claimable(&1, &h1);
+}
+
 #[test]
 #[should_panic(expected = "Error(Contract, #5)")]
 fn test_zero_amount_rejected() {
