@@ -223,3 +223,84 @@ fn test_lowercase_jurisdiction_normalized() {
         String::from_str(&env, "US")
     );
 }
+
+#[test]
+fn test_block_jurisdiction_denies_all_approved_in_jurisdiction() {
+    // Issue #206: blocking a jurisdiction denies every approved address sharing
+    // it at once, and unblocking restores all of them.
+    let (env, client, admin) = setup();
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+    let ir = String::from_str(&env, "IR");
+    client.add_to_allowlist(&admin, &user_a, &ir, &0);
+    client.add_to_allowlist(&admin, &user_b, &ir, &0);
+    assert!(client.is_allowed(&user_a));
+    assert!(client.is_allowed(&user_b));
+
+    client.block_jurisdiction(&admin, &ir);
+    assert!(!client.is_allowed(&user_a));
+    assert!(!client.is_allowed(&user_b));
+
+    client.unblock_jurisdiction(&admin, &ir);
+    assert!(client.is_allowed(&user_a));
+    assert!(client.is_allowed(&user_b));
+}
+
+#[test]
+fn test_remove_missing_record_fails_typed_error_and_leaves_allowlist_untouched() {
+    // Issue #205: `remove` on an address with no record fails RecordNotFound
+    // and leaves the allowlist untouched.
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    client.add_to_allowlist(&admin, &user, &us, &0);
+
+    let ghost = Address::generate(&env);
+    let result = client.try_remove(&admin, &ghost);
+    assert_eq!(result, Err(Ok(Error::RecordNotFound)));
+
+    let list = client.get_allowlist();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list.get(0).unwrap(), user);
+}
+
+#[test]
+fn test_reapproving_suspended_address_restores_is_allowed() {
+    // Issue #204: re-approving a suspended address flips status back to
+    // Approved, restores is_allowed, and does not duplicate get_allowlist.
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    client.suspend(&admin, &user);
+    assert!(!client.is_allowed(&user));
+    assert_eq!(
+        client.get_record(&user).unwrap().status,
+        ComplianceStatus::Suspended
+    );
+
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    assert!(client.is_allowed(&user));
+    assert_eq!(
+        client.get_record(&user).unwrap().status,
+        ComplianceStatus::Approved
+    );
+    assert_eq!(client.get_allowlist().len(), 1);
+}
+
+#[test]
+fn test_expires_at_boundary_treated_as_expired() {
+    // Issue #203: `is_allowed` uses `now >= record.expires_at`, so the ledger
+    // equal to expires_at must be treated as expired, one before must not.
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    env.ledger().with_mut(|l| l.sequence_number = 10);
+    client.add_to_allowlist(&admin, &user, &us, &100);
+
+    env.ledger().with_mut(|l| l.sequence_number = 99);
+    assert!(client.is_allowed(&user));
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    assert!(!client.is_allowed(&user));
+}
