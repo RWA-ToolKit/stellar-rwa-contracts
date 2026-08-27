@@ -164,8 +164,13 @@ impl DividendContract {
         if balance <= 0 {
             return 0;
         }
-        // Proportional share, floored by integer division.
-        (dist.total_amount * balance) / supply
+        // Proportional share, floored by integer division. Guard the
+        // multiplication against i128 overflow (issue #165).
+        dist
+            .total_amount
+            .checked_mul(balance)
+            .unwrap_or_else(|| panic_err(&env, Error::ArithmeticOverflow))
+            / supply
     }
 
     /// Claim a holder's proportional share, paid from escrow. Holder-authorized.
