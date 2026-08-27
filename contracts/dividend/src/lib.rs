@@ -49,12 +49,10 @@ enum DataKey {
     Ids,
     Dist(u64),
     Claimed(u64, Address),
-    /// Per-holder entitlement balances captured when the distribution was
-    /// created. Entitlement is frozen at creation so moving tokens to another
-    /// wallet cannot be used to claim twice (issue #163).
-    Snapshot(u64),
-    /// Sum of the snapshot balances for a distribution (its effective supply).
-    Supply(u64),
+    /// Distribution ids created for a given asset token, so
+    /// `get_distributions_for_asset` only walks that asset's distributions
+    /// instead of scanning the global counter (issue #166).
+    AssetIds(Address),
 }
 
 #[contracterror]
@@ -70,6 +68,8 @@ pub enum Error {
     AlreadyClaimed = 7,
     /// `asset_token` has zero total supply; no holder can ever claim (issue #49).
     ZeroSupply = 8,
+    /// Total distributed would exceed the distribution's `total_amount` (issue #164).
+    OverDistributed = 9,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -146,36 +146,22 @@ impl DividendContract {
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
-
-        // Freeze the entitlement basis at creation time (issue #163). Reading
-        // live balances at claim time let a holder move tokens to a fresh wallet
-        // and claim again; the snapshot makes each holder's share immutable.
-        let mut snap_sum: i128 = 0;
-        for (_, b) in eligible.iter() {
-            snap_sum = snap_sum
-                .checked_add(b)
-                .unwrap_or_else(|| panic_err(&env, Error::InvalidAmount));
-        }
-        if snap_sum <= 0 {
-            panic_err(&env, Error::ZeroSupply);
-        }
+        // Index this distribution under its asset token so lookups are O(n_asset)
+        // rather than O(global counter) (issue #166).
+        let mut asset_ids = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<u64>>(&DataKey::AssetIds(dist.asset_token.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+        asset_ids.push_back(id);
         env.storage()
             .persistent()
-            .set(&DataKey::Snapshot(id), &eligible);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Supply(id), &snap_sum);
+            .set(&DataKey::AssetIds(dist.asset_token.clone()), &asset_ids);
         env.storage().persistent().extend_ttl(
-            &DataKey::Snapshot(id),
+            &DataKey::AssetIds(dist.asset_token.clone()),
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
-        env.storage().persistent().extend_ttl(
-            &DataKey::Supply(id),
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
-        );
-
         env.storage().instance().set(&DataKey::Counter, &id);
         bump(&env);
         env.events()
@@ -198,8 +184,13 @@ impl DividendContract {
         if basis <= 0 {
             return 0;
         }
-        // Proportional share, floored by integer division.
-        (dist.total_amount * basis) / supply
+        // Proportional share, floored by integer division. Guard the
+        // multiplication against i128 overflow (issue #165).
+        dist
+            .total_amount
+            .checked_mul(balance)
+            .unwrap_or_else(|| panic_err(&env, Error::ArithmeticOverflow))
+            / supply
     }
 
     /// Claim a holder's proportional share, paid from escrow. Holder-authorized.
@@ -224,7 +215,9 @@ impl DividendContract {
             .distributed
             .checked_add(amount)
             .unwrap_or_else(|| panic_err(&env, Error::InvalidAmount));
-        assert!(dist.distributed <= dist.total_amount);
+        if dist.distributed > dist.total_amount {
+            panic_err(&env, Error::OverDistributed);
+        }
         if dist.distributed >= dist.total_amount {
             dist.completed = true;
         }
@@ -247,12 +240,17 @@ impl DividendContract {
     }
 
     /// All distributions created for a given asset token.
-    /// Iterates via the monotonic Counter so the global Ids vector is never
-    /// re-serialised; per-id keys are O(1) reads.
+    /// Walks only the per-asset id index (issue #166) instead of scanning the
+    /// global counter, keeping the cost proportional to that asset's
+    /// distributions rather than every distribution ever created.
     pub fn get_distributions_for_asset(env: Env, asset_token: Address) -> Vec<Distribution> {
-        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        let ids = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<u64>>(&DataKey::AssetIds(asset_token.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
         let mut out = Vec::new(&env);
-        for id in 1..=counter {
+        for id in ids.iter() {
             if let Some(d) = env
                 .storage()
                 .persistent()
@@ -263,9 +261,7 @@ impl DividendContract {
                     INSTANCE_LIFETIME_THRESHOLD,
                     INSTANCE_BUMP_AMOUNT,
                 );
-                if d.asset_token == asset_token {
-                    out.push_back(d);
-                }
+                out.push_back(d);
             }
         }
         out

@@ -160,6 +160,54 @@ fn test_create_requires_admin() {
         .create_distribution(&impostor, &ctx.asset_id, &ctx.pay_id, &1000, &Vec::new(&ctx.env));
 }
 
+// ---- issue #165: `claimable` must guard `total_amount * balance` against
+// i128 overflow instead of relying on the release profile's overflow-checks
+// (which would abort the whole contract). ----
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_claimable_overflow_guarded() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let comp_id = env.register(ComplianceContract, ());
+    let comp = ComplianceContractClient::new(&env, &comp_id);
+    comp.initialize(&admin);
+    let us = String::from_str(&env, "US");
+    let h1 = Address::generate(&env);
+    comp.add_to_allowlist(&admin, &admin, &us, &0);
+    comp.add_to_allowlist(&admin, &h1, &us, &0);
+
+    // Use amounts large enough that total_amount * balance overflows i128,
+    // but each individually fits and the supply is positive.
+    let big: i128 = 20_000_000_000_000_000_000; // 2e19
+    let asset_id = env.register(AssetTokenContract, ());
+    let asset = AssetTokenContractClient::new(&env, &asset_id);
+    asset.initialize(
+        &admin,
+        &String::from_str(&env, "Big"),
+        &String::from_str(&env, "BIG"),
+        &String::from_str(&env, "real_estate"),
+        &big,
+        &0u32,
+        &comp_id,
+        &String::from_str(&env, "desc"),
+        &big,
+    );
+    asset.transfer(&admin, &h1, &big);
+
+    let sac = env.register_stellar_asset_contract_v2(admin.clone());
+    let pay_id = sac.address();
+    token::StellarAssetClient::new(&env, &pay_id).mint(&admin, &big);
+
+    let div_id = env.register(DividendContract, ());
+    let dividend = DividendContractClient::new(&env, &div_id);
+    dividend.initialize(&admin);
+    dividend.create_distribution(&admin, &asset_id, &pay_id, &big);
+
+    // total_amount(2e19) * balance(2e19) overflows i128 -> ArithmeticOverflow (#10)
+    let _ = dividend.claimable(&1, &h1);
+}
+
 #[test]
 #[should_panic(expected = "Error(Contract, #5)")]
 fn test_zero_amount_rejected() {
@@ -193,6 +241,57 @@ fn test_get_distributions_for_asset() {
         ctx.dividend.get_distributions_for_asset(&other_asset).len(),
         0
     );
+}
+
+// ---- issue #166: results must be scoped to the requested asset token, not
+// derived from a global counter scan. ----
+#[test]
+fn test_get_distributions_for_asset_scoped_per_asset() {
+    let ctx = setup();
+    // Register a second, real asset token so distributions can be created for it.
+    let other_asset = env_register_asset(&ctx, 1000);
+    // 3 distributions for the main asset, 2 for a different asset.
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &500);
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &250);
+    ctx.dividend
+        .create_distribution(&ctx.admin, &other_asset, &ctx.pay_id, &100);
+    ctx.dividend
+        .create_distribution(&ctx.admin, &other_asset, &ctx.pay_id, &100);
+
+    let main = ctx.dividend.get_distributions_for_asset(&ctx.asset_id);
+    assert_eq!(main.len(), 3);
+    let other = ctx.dividend.get_distributions_for_asset(&other_asset);
+    assert_eq!(other.len(), 2);
+    // Every returned distribution actually references the requested asset.
+    for d in main.iter() {
+        assert_eq!(d.asset_token, ctx.asset_id);
+    }
+    for d in other.iter() {
+        assert_eq!(d.asset_token, other_asset);
+    }
+}
+
+/// Register a fresh asset token (supply `supply`) under the test compliance
+/// allowlist so distributions can be created against it.
+fn env_register_asset(ctx: &Ctx, supply: i128) -> Address {
+    let asset_id = ctx.env.register(AssetTokenContract, ());
+    let asset = AssetTokenContractClient::new(&ctx.env, &asset_id);
+    asset.initialize(
+        &ctx.admin,
+        &String::from_str(&ctx.env, "Oth"),
+        &String::from_str(&ctx.env, "OTH"),
+        &String::from_str(&ctx.env, "real_estate"),
+        &supply,
+        &0u32,
+        &ctx.comp_id,
+        &String::from_str(&ctx.env, "desc"),
+        &supply,
+    );
+    asset_id
 }
 
 #[test]
