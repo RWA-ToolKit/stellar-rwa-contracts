@@ -64,8 +64,8 @@ pub enum Error {
     AlreadyClaimed = 7,
     /// `asset_token` has zero total supply; no holder can ever claim (issue #49).
     ZeroSupply = 8,
-    /// `total_amount * balance` overflowed `i128` while sizing a share (issue #165).
-    ArithmeticOverflow = 10,
+    /// Total distributed would exceed the distribution's `total_amount` (issue #164).
+    OverDistributed = 9,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -195,7 +195,9 @@ impl DividendContract {
             .distributed
             .checked_add(amount)
             .unwrap_or_else(|| panic_err(&env, Error::InvalidAmount));
-        assert!(dist.distributed <= dist.total_amount);
+        if dist.distributed > dist.total_amount {
+            panic_err(&env, Error::OverDistributed);
+        }
         if dist.distributed >= dist.total_amount {
             dist.completed = true;
         }
