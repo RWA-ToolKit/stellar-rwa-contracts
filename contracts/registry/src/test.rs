@@ -238,3 +238,125 @@ fn test_invalid_asset_type_rejected() {
         &100,
     );
 }
+
+// ---- issue #219: register_asset rejects an unrecognised asset_type ----
+
+#[test]
+fn test_register_asset_rejects_unrecognised_type_typed_error() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let result = client.try_register_asset(
+        &issuer,
+        &token,
+        &String::from_str(&env, "My Asset"),
+        &String::from_str(&env, "garbage"),
+        &100,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidInput)));
+}
+
+#[test]
+fn test_register_asset_accepts_every_valid_type() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+
+    for kind in ["real_estate", "invoice", "commodity", "bond", "equity", "fund"] {
+        let token = Address::generate(&env);
+        let result = client.try_register_asset(
+            &issuer,
+            &token,
+            &String::from_str(&env, "Asset"),
+            &String::from_str(&env, kind),
+            &100,
+        );
+        assert!(result.is_ok(), "expected asset_type {kind:?} to be accepted");
+    }
+    assert_eq!(client.asset_count(), 6);
+}
+
+// ---- issue #220: active_count tracks deactivation and never underflows ----
+
+#[test]
+fn test_active_count_decrements_once_on_repeated_deactivation() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let a = register(&env, &client, &issuer, "real_estate", 100);
+    register(&env, &client, &issuer, "invoice", 250);
+    assert_eq!(client.active_count(), 2);
+
+    client.deactivate_asset(&admin, &a);
+    assert_eq!(client.active_count(), 1);
+    assert!(!client.get_asset(&a).active);
+
+    // Deactivating the same (already-inactive) asset again must not double-decrement.
+    client.deactivate_asset(&admin, &a);
+    assert_eq!(client.active_count(), 1);
+    assert_eq!(client.asset_count(), 2);
+}
+
+#[test]
+fn test_active_count_never_underflows_below_zero() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "real_estate", 100);
+    assert_eq!(client.active_count(), 1);
+
+    // Deactivate the only asset repeatedly; active_count must floor at 0,
+    // never wrap around a u64 underflow.
+    client.deactivate_asset(&admin, &id);
+    client.deactivate_asset(&admin, &id);
+    client.deactivate_asset(&admin, &id);
+    assert_eq!(client.active_count(), 0);
+}
+
+// ---- issue #221: total_value_locked excludes deactivated assets ----
+
+#[test]
+fn test_tvl_drops_by_exactly_the_deactivated_valuation() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let a = register(&env, &client, &issuer, "real_estate", 100);
+    register(&env, &client, &issuer, "invoice", 250);
+
+    let tvl_before = client.total_value_locked();
+    client.deactivate_asset(&admin, &a);
+    let tvl_after = client.total_value_locked();
+
+    assert_eq!(tvl_before - tvl_after, 100);
+}
+
+#[test]
+fn test_tvl_is_zero_once_every_asset_is_deactivated() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let a = register(&env, &client, &issuer, "real_estate", 100);
+    let b = register(&env, &client, &issuer, "invoice", 250);
+    let c = register(&env, &client, &issuer, "commodity", 40);
+    assert!(client.total_value_locked() > 0);
+
+    client.deactivate_asset(&admin, &a);
+    client.deactivate_asset(&admin, &b);
+    client.deactivate_asset(&admin, &c);
+
+    assert_eq!(client.total_value_locked(), 0);
+}
+
+// ---- issue #222: register_asset rejects an empty name ----
+
+#[test]
+fn test_register_asset_rejects_empty_name_typed_error() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let result = client.try_register_asset(
+        &issuer,
+        &token,
+        &String::from_str(&env, ""),
+        &String::from_str(&env, "real_estate"),
+        &100,
+    );
+    assert_eq!(result, Err(Ok(Error::InvalidInput)));
+}
