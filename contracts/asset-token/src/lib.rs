@@ -132,9 +132,7 @@ impl AssetTokenContract {
             paused: false,
         };
         env.storage().instance().set(&DataKey::Metadata, &metadata);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(admin.clone()), &total_supply);
+        Self::set_balance(&env, &admin, total_supply);
         Self::bump(&env);
         env.events().publish(
             (symbol_short!("genesis"), admin.clone()),
@@ -167,8 +165,13 @@ impl AssetTokenContract {
         // have passed.
         if from == to {
             Self::bump(&env);
-            env.events()
-                .publish((symbol_short!("transfer"), from, to), amount);
+            // Keep the payload shape identical to the normal path
+            // (amount, new_from_bal, new_to_bal) so indexers can decode both
+            // uniformly; a self-transfer leaves the balance unchanged.
+            env.events().publish(
+                (symbol_short!("transfer"), from, to),
+                (amount, from_bal, from_bal),
+            );
             return;
         }
         let to_bal = Self::balance(env.clone(), to.clone());
@@ -229,7 +232,10 @@ impl AssetTokenContract {
                 .checked_add(amount)
                 .unwrap_or_else(|| panic_err(&env, Error::Overflow));
             let to_bal = Self::balance(env.clone(), to.clone());
-            Self::set_balance(&env, &to, to_bal + amount);
+            let new_to_bal = to_bal
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+            Self::set_balance(&env, &to, new_to_bal);
             env.events().publish((symbol_short!("mint"), to), amount);
         }
         meta.total_supply = new_supply;
@@ -359,9 +365,13 @@ impl AssetTokenContract {
     }
 
     fn set_balance(env: &Env, id: &Address, amount: i128) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::Balance(id.clone()), &amount);
+        let key = DataKey::Balance(id.clone());
+        env.storage().persistent().set(&key, &amount);
+        env.storage().persistent().extend_ttl(
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
     }
 
     fn bump(env: &Env) {

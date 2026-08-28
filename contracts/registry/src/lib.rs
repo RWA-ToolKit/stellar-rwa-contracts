@@ -38,6 +38,9 @@ enum DataKey {
     Ids,
     Asset(u64),
     ActiveCount,
+    IssuerIndex(Address),
+    TypeIndex(String),
+    TotalValuation,
 }
 
 #[contracterror]
@@ -80,6 +83,9 @@ impl RegistryContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Counter, &0u64);
         env.storage().instance().set(&DataKey::ActiveCount, &0u64);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalValuation, &0i128);
         bump(&env);
         env.events().publish((symbol_short!("init"),), admin);
     }
@@ -131,6 +137,47 @@ impl RegistryContract {
         env.storage()
             .instance()
             .set(&DataKey::ActiveCount, &active_count);
+
+        let issuer_key = DataKey::IssuerIndex(entry.issuer.clone());
+        let mut issuer_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&issuer_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        issuer_ids.push_back(id);
+        env.storage().persistent().set(&issuer_key, &issuer_ids);
+        env.storage().persistent().extend_ttl(
+            &issuer_key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+
+        let type_key = DataKey::TypeIndex(entry.asset_type.clone());
+        let mut type_ids: Vec<u64> = env
+            .storage()
+            .persistent()
+            .get(&type_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        type_ids.push_back(id);
+        env.storage().persistent().set(&type_key, &type_ids);
+        env.storage().persistent().extend_ttl(
+            &type_key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+
+        let tvl: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalValuation)
+            .unwrap_or(0);
+        let new_tvl = tvl
+            .checked_add(entry.valuation)
+            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalValuation, &new_tvl);
+
         bump(&env);
         env.events()
             .publish((symbol_short!("register"), issuer), id);
@@ -152,31 +199,43 @@ impl RegistryContract {
         entry
     }
 
-    /// All assets registered by a given issuer.
+    /// All assets registered by a given issuer. Backed by a per-issuer index,
+    /// so cost scales with that issuer's asset count, not the whole registry.
     pub fn get_assets_by_issuer(env: Env, issuer: Address) -> Vec<AssetEntry> {
-        let mut out = Vec::new(&env);
-        for entry in Self::iter_assets(&env) {
-            if entry.issuer == issuer {
-                out.push_back(entry);
-            }
-        }
-        out
+        let ids = Self::index_ids(&env, &DataKey::IssuerIndex(issuer));
+        Self::fetch_assets(&env, &ids)
     }
 
-    /// All assets of a given asset type (e.g. "real_estate").
+    /// All assets of a given asset type (e.g. "real_estate"). Backed by a
+    /// per-type index, so cost scales with that type's asset count, not the
+    /// whole registry.
     pub fn get_assets_by_type(env: Env, asset_type: String) -> Vec<AssetEntry> {
-        let mut out = Vec::new(&env);
-        for entry in Self::iter_assets(&env) {
-            if entry.asset_type == asset_type {
-                out.push_back(entry);
-            }
-        }
-        out
+        let ids = Self::index_ids(&env, &DataKey::TypeIndex(asset_type));
+        Self::fetch_assets(&env, &ids)
     }
 
-    /// Every registered asset.
-    pub fn get_all_assets(env: Env) -> Vec<AssetEntry> {
-        Self::iter_assets(&env)
+    /// A page of registered assets: ids `[start_id, start_id + limit)`,
+    /// capped at the current counter. Page through the full set by calling
+    /// again with `start_id + limit`. Bounds per-call cost regardless of how
+    /// many assets have been registered.
+    pub fn get_all_assets(env: Env, start_id: u64, limit: u32) -> Vec<AssetEntry> {
+        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        let mut out = Vec::new(&env);
+        let start = start_id.max(1);
+        let end = start.saturating_add(limit as u64).min(counter + 1);
+        let mut id = start;
+        while id < end {
+            if let Some(entry) = env.storage().persistent().get(&DataKey::Asset(id)) {
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Asset(id),
+                    INSTANCE_LIFETIME_THRESHOLD,
+                    INSTANCE_BUMP_AMOUNT,
+                );
+                out.push_back(entry);
+            }
+            id += 1;
+        }
+        out
     }
 
     /// Deactivate an asset. Admin only. Excluded from TVL afterwards.
@@ -207,23 +266,31 @@ impl RegistryContract {
             env.storage()
                 .instance()
                 .set(&DataKey::ActiveCount, &active_count);
+            let tvl: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalValuation)
+                .unwrap_or(0);
+            let new_tvl = tvl
+                .checked_sub(entry.valuation)
+                .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalValuation, &new_tvl);
         }
         bump(&env);
         env.events()
             .publish((symbol_short!("deactvate"),), asset_id);
     }
 
-    /// Sum of valuations across all active assets, in USD cents.
+    /// Sum of valuations across all active assets, in USD cents. Maintained
+    /// incrementally on register/deactivate, so this is a single read
+    /// regardless of registry size.
     pub fn total_value_locked(env: Env) -> i128 {
-        let mut tvl: i128 = 0;
-        for entry in Self::iter_assets(&env) {
-            if entry.active {
-                tvl = tvl
-                    .checked_add(entry.valuation)
-                    .unwrap_or_else(|| panic_err(&env, Error::Overflow));
-            }
-        }
-        tvl
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalValuation)
+            .unwrap_or(0)
     }
 
     /// Number of registered assets (active or not).
@@ -249,10 +316,24 @@ impl RegistryContract {
 
     // ---- internal helpers ----
 
-    fn iter_assets(env: &Env) -> Vec<AssetEntry> {
-        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+    /// Read an id index (issuer/type), extending its TTL if present.
+    fn index_ids(env: &Env, key: &DataKey) -> Vec<u64> {
+        if let Some(ids) = env.storage().persistent().get(key) {
+            env.storage().persistent().extend_ttl(
+                key,
+                INSTANCE_LIFETIME_THRESHOLD,
+                INSTANCE_BUMP_AMOUNT,
+            );
+            ids
+        } else {
+            Vec::new(env)
+        }
+    }
+
+    /// Resolve a list of asset ids to their entries, extending each TTL.
+    fn fetch_assets(env: &Env, ids: &Vec<u64>) -> Vec<AssetEntry> {
         let mut out = Vec::new(env);
-        for id in 1..=counter {
+        for id in ids.iter() {
             if let Some(entry) = env.storage().persistent().get(&DataKey::Asset(id)) {
                 env.storage().persistent().extend_ttl(
                     &DataKey::Asset(id),
