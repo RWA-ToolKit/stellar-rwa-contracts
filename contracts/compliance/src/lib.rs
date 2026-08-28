@@ -231,6 +231,22 @@ impl ComplianceContract {
         env.storage().persistent().get(&DataKey::Record(address))
     }
 
+    /// Approval status of an address, distinguishing "never submitted for KYC"
+    /// from every recorded state (issue #183).
+    ///
+    /// Mapping:
+    /// - `None` — the address has no KYC record at all (never seen).
+    /// - `Some(Approved)` — currently on the allowlist. Note this does not by
+    ///   itself mean `is_allowed` returns `true`: `is_allowed` additionally
+    ///   checks expiry and jurisdiction blocks, neither of which changes the
+    ///   stored status.
+    /// - `Some(Pending)` / `Some(Rejected)` — reserved for future workflows;
+    ///   no current method sets these.
+    /// - `Some(Suspended)` — was approved, then suspended via [`Self::suspend`].
+    pub fn status_of(env: Env, address: Address) -> Option<ComplianceStatus> {
+        Self::get_record(env, address).map(|r| r.status)
+    }
+
     /// Return every address currently on the allowlist.
     pub fn get_allowlist(env: Env) -> Vec<Address> {
         let mut all = Vec::new(&env);
