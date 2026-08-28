@@ -134,10 +134,15 @@ impl AssetTokenContract {
         env.storage().instance().set(&DataKey::Metadata, &metadata);
         Self::set_balance(&env, &admin, total_supply);
         Self::bump(&env);
-        env.events().publish(
-            (symbol_short!("genesis"), admin.clone()),
-            (total_supply, total_supply),
-        );
+        // Emit `genesis` for the one-time initialization event, and also `mint`
+        // (matching `mint`/`mint_batch`) so indexers that sum `mint` topics to
+        // track supply see the initial allocation instead of under-reporting it
+        // (issue #176). Each topic carries a single `total_supply` value, not a
+        // duplicated tuple (issue #175).
+        env.events()
+            .publish((symbol_short!("genesis"), admin.clone()), total_supply);
+        env.events()
+            .publish((symbol_short!("mint"), admin.clone()), total_supply);
     }
 
     /// Transfer `amount` from `from` to `to`. Both parties must be

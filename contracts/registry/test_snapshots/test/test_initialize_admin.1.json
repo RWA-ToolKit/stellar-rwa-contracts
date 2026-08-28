@@ -58,6 +58,18 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "ActiveCount"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "Admin"
                           }
                         ]
@@ -76,18 +88,6 @@
                       },
                       "val": {
                         "u64": "0"
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
-                            "symbol": "Ids"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "vec": []
                       }
                     }
                   ]

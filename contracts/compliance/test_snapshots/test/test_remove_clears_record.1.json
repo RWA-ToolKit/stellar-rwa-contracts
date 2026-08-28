@@ -96,6 +96,33 @@
             "contract_data": {
               "ext": "v0",
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "AllowlistPage"
+                  },
+                  {
+                    "u32": 0
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "vec": []
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": "ledger_key_contract_instance",
               "durability": "persistent",
               "val": {
@@ -120,12 +147,19 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "Allowlist"
+                            "symbol": "AllowlistMeta"
                           }
                         ]
                       },
                       "val": {
-                        "vec": []
+                        "vec": [
+                          {
+                            "u32": 0
+                          },
+                          {
+                            "u32": 1
+                          }
+                        ]
                       }
                     }
                   ]
