@@ -37,6 +37,18 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      # Committed test_snapshots must match what the tests actually produce, so
+      # drift (e.g. a storage layout change without regenerated snapshots)
+      # fails CI instead of silently leaving every contributor's tree dirty.
+      - name: Check working tree is clean after tests
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "cargo test left the working tree dirty. Regenerate and commit test_snapshots:"
+            git status --porcelain
+            git diff
+            exit 1
+          fi
+
       - name: Format check
         run: cargo fmt --all -- --check
 

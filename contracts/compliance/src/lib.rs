@@ -42,10 +42,21 @@ pub struct KycRecord {
 #[derive(Clone)]
 enum DataKey {
     Admin,
-    Allowlist,
+    /// Small fixed-size (current_page, current_page_len) cursor for appends.
+    AllowlistMeta,
+    /// One page of up to `ALLOWLIST_PAGE_SIZE` addresses, in persistent storage
+    /// (issue #177): no single entry grows without bound or shares the
+    /// instance ledger entry with the rest of the contract's state.
+    AllowlistPage(u32),
+    /// Which page an address currently lives on, for O(1) removal.
+    AllowlistPageOf(Address),
     Record(Address),
     Blocked(String),
 }
+
+/// Max addresses per allowlist page (issue #177). Bounds the size of any single
+/// storage entry regardless of how large the KYC list grows.
+const ALLOWLIST_PAGE_SIZE: u32 = 200;
 
 /// Typed contract errors. Signalled via `panic_with_error!`, which produces a
 /// deterministic contract error (not an unhandled host panic).
@@ -88,9 +99,6 @@ impl ComplianceContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
-            .set(&DataKey::Allowlist, &Vec::<Address>::new(&env));
-        env.storage()
-            .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         env.events().publish((symbol_short!("init"),), admin);
     }
@@ -128,14 +136,10 @@ impl ComplianceContract {
             .persistent()
             .set(&DataKey::Record(address.clone()), &record);
 
-        let mut list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Allowlist)
-            .unwrap_or_else(|| Vec::new(&env));
-        if !list.contains(&address) {
-            list.push_back(address.clone());
-            env.storage().instance().set(&DataKey::Allowlist, &list);
+        // Only a genuinely new address needs to be appended to a page; a
+        // re-approval or reinstatement already has a page slot.
+        if prev.is_none() {
+            Self::append_to_allowlist(&env, &address);
         }
         Self::bump_instance(&env);
 
@@ -188,19 +192,7 @@ impl ComplianceContract {
         env.storage()
             .persistent()
             .remove(&DataKey::Record(address.clone()));
-
-        let list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Allowlist)
-            .unwrap_or_else(|| Vec::new(&env));
-        let mut next = Vec::new(&env);
-        for a in list.iter() {
-            if a != address {
-                next.push_back(a);
-            }
-        }
-        env.storage().instance().set(&DataKey::Allowlist, &next);
+        Self::remove_from_allowlist(&env, &address);
         Self::bump_instance(&env);
         env.events()
             .publish((symbol_short!("removed"), address), ());
@@ -241,10 +233,19 @@ impl ComplianceContract {
 
     /// Return every address currently on the allowlist.
     pub fn get_allowlist(env: Env) -> Vec<Address> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Allowlist)
-            .unwrap_or_else(|| Vec::new(&env))
+        let mut all = Vec::new(&env);
+        let (current_page, _) = Self::allowlist_meta(&env);
+        for page_idx in 0..=current_page {
+            let page: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::AllowlistPage(page_idx))
+                .unwrap_or_else(|| Vec::new(&env));
+            for a in page.iter() {
+                all.push_back(a);
+            }
+        }
+        all
     }
 
     /// Block an entire jurisdiction (country code). Approved addresses in a
@@ -287,38 +288,50 @@ impl ComplianceContract {
     pub fn prune_expired(env: Env, admin: Address) {
         Self::require_admin(&env, &admin);
         let now = env.ledger().sequence();
-        let list: Vec<Address> = env
-            .storage()
-            .instance()
-            .get(&DataKey::Allowlist)
-            .unwrap_or_else(|| Vec::new(&env));
-        let mut next = Vec::new(&env);
-        for addr in list.iter() {
-            let record: Option<KycRecord> = env
+        let (current_page, _) = Self::allowlist_meta(&env);
+        for page_idx in 0..=current_page {
+            let page: Vec<Address> = env
                 .storage()
                 .persistent()
-                .get(&DataKey::Record(addr.clone()));
-            let keep = match record {
-                Some(ref r) => {
-                    if r.expires_at != 0 && now >= r.expires_at {
-                        // Remove the expired persistent record.
-                        env.storage()
-                            .persistent()
-                            .remove(&DataKey::Record(addr.clone()));
-                        env.events()
-                            .publish((symbol_short!("expired"), addr.clone()), r.expires_at);
-                        false
-                    } else {
-                        true
+                .get(&DataKey::AllowlistPage(page_idx))
+                .unwrap_or_else(|| Vec::new(&env));
+            let mut next = Vec::new(&env);
+            let mut changed = false;
+            for addr in page.iter() {
+                let record: Option<KycRecord> = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Record(addr.clone()));
+                let keep = match record {
+                    Some(ref r) => {
+                        if r.expires_at != 0 && now >= r.expires_at {
+                            env.storage()
+                                .persistent()
+                                .remove(&DataKey::Record(addr.clone()));
+                            env.storage()
+                                .persistent()
+                                .remove(&DataKey::AllowlistPageOf(addr.clone()));
+                            env.events()
+                                .publish((symbol_short!("expired"), addr.clone()), r.expires_at);
+                            false
+                        } else {
+                            true
+                        }
                     }
+                    None => false,
+                };
+                if keep {
+                    next.push_back(addr);
+                } else {
+                    changed = true;
                 }
-                None => false,
-            };
-            if keep {
-                next.push_back(addr);
+            }
+            if changed {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::AllowlistPage(page_idx), &next);
             }
         }
-        env.storage().instance().set(&DataKey::Allowlist, &next);
         Self::bump_instance(&env);
     }
 
@@ -356,6 +369,71 @@ impl ComplianceContract {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Current (page index, length of that page) append cursor. Defaults to
+    /// an empty page 0 when nothing has been added yet.
+    fn allowlist_meta(env: &Env) -> (u32, u32) {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllowlistMeta)
+            .unwrap_or((0u32, 0u32))
+    }
+
+    /// Append a new address to the current allowlist page, rolling over to a
+    /// fresh page once the current one is full (issue #177).
+    fn append_to_allowlist(env: &Env, address: &Address) {
+        let (mut page_idx, mut page_len) = Self::allowlist_meta(env);
+        if page_len >= ALLOWLIST_PAGE_SIZE {
+            page_idx += 1;
+            page_len = 0;
+        }
+        let mut page: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AllowlistPage(page_idx))
+            .unwrap_or_else(|| Vec::new(env));
+        page.push_back(address.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::AllowlistPage(page_idx), &page);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AllowlistPageOf(address.clone()), &page_idx);
+        page_len += 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowlistMeta, &(page_idx, page_len));
+    }
+
+    /// Remove an address from whichever page it lives on. Leaves the page
+    /// under-full rather than repacking pages, which keeps removal O(page
+    /// size) instead of O(list size) (issue #177).
+    fn remove_from_allowlist(env: &Env, address: &Address) {
+        let page_idx: Option<u32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AllowlistPageOf(address.clone()));
+        let Some(page_idx) = page_idx else {
+            return;
+        };
+        let page: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AllowlistPage(page_idx))
+            .unwrap_or_else(|| Vec::new(env));
+        let mut next = Vec::new(env);
+        for a in page.iter() {
+            if a != *address {
+                next.push_back(a);
+            }
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::AllowlistPage(page_idx), &next);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AllowlistPageOf(address.clone()));
     }
 }
 
