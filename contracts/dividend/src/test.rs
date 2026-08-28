@@ -202,7 +202,9 @@ fn test_claimable_overflow_guarded() {
     let div_id = env.register(DividendContract, ());
     let dividend = DividendContractClient::new(&env, &div_id);
     dividend.initialize(&admin);
-    dividend.create_distribution(&admin, &asset_id, &pay_id, &big);
+    let mut eligible = Vec::new(&env);
+    eligible.push_back((h1.clone(), big));
+    dividend.create_distribution(&admin, &asset_id, &pay_id, &big, &eligible);
 
     // total_amount(2e19) * balance(2e19) overflows i128 -> ArithmeticOverflow (#10)
     let _ = dividend.claimable(&1, &h1);
@@ -250,17 +252,19 @@ fn test_get_distributions_for_asset_scoped_per_asset() {
     let ctx = setup();
     // Register a second, real asset token so distributions can be created for it.
     let other_asset = env_register_asset(&ctx, 1000);
+    let mut other_eligible = Vec::new(&ctx.env);
+    other_eligible.push_back((ctx.admin.clone(), 1000));
     // 3 distributions for the main asset, 2 for a different asset.
     ctx.dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
     ctx.dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &500);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &500, &eligible(&ctx));
     ctx.dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &250);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &250, &eligible(&ctx));
     ctx.dividend
-        .create_distribution(&ctx.admin, &other_asset, &ctx.pay_id, &100);
+        .create_distribution(&ctx.admin, &other_asset, &ctx.pay_id, &100, &other_eligible);
     ctx.dividend
-        .create_distribution(&ctx.admin, &other_asset, &ctx.pay_id, &100);
+        .create_distribution(&ctx.admin, &other_asset, &ctx.pay_id, &100, &other_eligible);
 
     let main = ctx.dividend.get_distributions_for_asset(&ctx.asset_id);
     assert_eq!(main.len(), 3);
@@ -445,4 +449,134 @@ fn test_snapshot_basis_is_immutable_after_transfer() {
     ctx.dividend.claim(&id, &ctx.h2);
     assert_eq!(pay_balance(&ctx, &ctx.h2), 200);
     assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 0);
+}
+
+// ---- issue #211: create_distribution rejects an asset with zero total supply ----
+
+#[test]
+fn test_create_distribution_zero_supply_rejects_and_moves_no_funds() {
+    let ctx = setup();
+    let env = &ctx.env;
+    let comp_id = env.register(ComplianceContract, ());
+    let comp = ComplianceContractClient::new(env, &comp_id);
+    comp.initialize(&ctx.admin);
+    comp.add_to_allowlist(&ctx.admin, &ctx.admin, &String::from_str(env, "US"), &0);
+
+    let zero_asset_id = env.register(AssetTokenContract, ());
+    let zero_asset = AssetTokenContractClient::new(env, &zero_asset_id);
+    zero_asset.initialize(
+        &ctx.admin,
+        &String::from_str(env, "Empty"),
+        &String::from_str(env, "EMPT"),
+        &String::from_str(env, "commodity"),
+        &0i128, // zero supply
+        &0u32,
+        &comp_id,
+        &String::from_str(env, "empty asset"),
+        &0i128,
+    );
+
+    let admin_before = pay_balance(&ctx, &ctx.admin);
+
+    let result = ctx.dividend.try_create_distribution(
+        &ctx.admin,
+        &zero_asset_id,
+        &ctx.pay_id,
+        &1000,
+        &Vec::new(&ctx.env),
+    );
+    assert_eq!(result, Err(Ok(Error::ZeroSupply)));
+
+    // The rejection must happen before any escrow transfer.
+    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
+    let div_addr = ctx.dividend.address.clone();
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+}
+
+// ---- issue #212: escrow balance exactly matches the sum of every claim ----
+
+#[test]
+fn test_escrow_drained_exactly_by_full_claims() {
+    let ctx = setup();
+    let div_addr = ctx.dividend.address.clone();
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
+
+    ctx.dividend.claim(&id, &ctx.h1);
+    ctx.dividend.claim(&id, &ctx.h2);
+    ctx.dividend.claim(&id, &ctx.admin);
+
+    let d = ctx.dividend.get_distribution(&id);
+    assert_eq!(d.distributed, d.total_amount);
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+}
+
+// ---- issue #213: integer division leaves dust unclaimable and the distribution never completes ----
+
+#[test]
+fn test_uneven_division_leaves_dust_and_distribution_stays_incomplete() {
+    let ctx = setup();
+    let env = &ctx.env;
+
+    // Three holders with equal snapshot basis (1 each, supply=3) sharing a
+    // pool of 100 that doesn't divide evenly by 3: floor(100/3) = 33 each,
+    // summing to 99 — 1 unit of dust can never be claimed by anyone.
+    let h3 = Address::generate(env);
+    let mut uneven_eligible = Vec::new(env);
+    uneven_eligible.push_back((ctx.h1.clone(), 1));
+    uneven_eligible.push_back((ctx.h2.clone(), 1));
+    uneven_eligible.push_back((h3.clone(), 1));
+
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &100,
+        &uneven_eligible,
+    );
+
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h1), 33);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 33);
+    assert_eq!(ctx.dividend.claimable(&id, &h3), 33);
+
+    ctx.dividend.claim(&id, &ctx.h1);
+    ctx.dividend.claim(&id, &ctx.h2);
+    ctx.dividend.claim(&id, &h3);
+
+    let d = ctx.dividend.get_distribution(&id);
+    assert_eq!(d.distributed, 99);
+    assert!(
+        !d.completed,
+        "flooring the proportional split leaves 1 unit of dust, so the distribution can never reach total_amount"
+    );
+    let div_addr = ctx.dividend.address.clone();
+    assert_eq!(
+        pay_balance(&ctx, &div_addr),
+        1,
+        "the undistributed dust remains stranded in escrow"
+    );
+}
+
+// ---- issue #214: a holder with a zero balance cannot claim ----
+
+#[test]
+fn test_zero_balance_holder_cannot_claim() {
+    let ctx = setup();
+    let zero_holder = Address::generate(&ctx.env);
+    let mut eligible_with_zero = eligible(&ctx);
+    eligible_with_zero.push_back((zero_holder.clone(), 0));
+
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible_with_zero,
+    );
+
+    assert_eq!(ctx.dividend.claimable(&id, &zero_holder), 0);
+
+    let result = ctx.dividend.try_claim(&id, &zero_holder);
+    assert_eq!(result, Err(Ok(Error::NothingToClaim)));
 }
