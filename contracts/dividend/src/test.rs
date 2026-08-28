@@ -202,7 +202,9 @@ fn test_claimable_overflow_guarded() {
     let div_id = env.register(DividendContract, ());
     let dividend = DividendContractClient::new(&env, &div_id);
     dividend.initialize(&admin);
-    dividend.create_distribution(&admin, &asset_id, &pay_id, &big);
+    let mut eligible = Vec::new(&env);
+    eligible.push_back((h1.clone(), big));
+    dividend.create_distribution(&admin, &asset_id, &pay_id, &big, &eligible);
 
     // total_amount(2e19) * balance(2e19) overflows i128 -> ArithmeticOverflow (#10)
     let _ = dividend.claimable(&1, &h1);
@@ -250,17 +252,19 @@ fn test_get_distributions_for_asset_scoped_per_asset() {
     let ctx = setup();
     // Register a second, real asset token so distributions can be created for it.
     let other_asset = env_register_asset(&ctx, 1000);
+    let mut other_eligible = Vec::new(&ctx.env);
+    other_eligible.push_back((ctx.admin.clone(), 1000));
     // 3 distributions for the main asset, 2 for a different asset.
     ctx.dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
     ctx.dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &500);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &500, &eligible(&ctx));
     ctx.dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &250);
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &250, &eligible(&ctx));
     ctx.dividend
-        .create_distribution(&ctx.admin, &other_asset, &ctx.pay_id, &100);
+        .create_distribution(&ctx.admin, &other_asset, &ctx.pay_id, &100, &other_eligible);
     ctx.dividend
-        .create_distribution(&ctx.admin, &other_asset, &ctx.pay_id, &100);
+        .create_distribution(&ctx.admin, &other_asset, &ctx.pay_id, &100, &other_eligible);
 
     let main = ctx.dividend.get_distributions_for_asset(&ctx.asset_id);
     assert_eq!(main.len(), 3);
@@ -445,4 +449,106 @@ fn test_snapshot_basis_is_immutable_after_transfer() {
     ctx.dividend.claim(&id, &ctx.h2);
     assert_eq!(pay_balance(&ctx, &ctx.h2), 200);
     assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 0);
+}
+
+// ---- issue #215: claim on a non-existent distribution id fails DistributionNotFound ----
+
+#[test]
+fn test_claim_on_nonexistent_distribution_fails() {
+    let ctx = setup();
+    // No distribution has been created yet, so the counter is still 0 —
+    // both an id above the counter and id 0 itself must fail the same way.
+    let above_counter = ctx.dividend.try_claim(&99, &ctx.h1);
+    assert_eq!(above_counter, Err(Ok(Error::DistributionNotFound)));
+
+    let zero_id = ctx.dividend.try_claim(&0, &ctx.h1);
+    assert_eq!(zero_id, Err(Ok(Error::DistributionNotFound)));
+}
+
+// ---- issue #216: has_claimed flips from false to true exactly once ----
+
+#[test]
+fn test_has_claimed_flips_once_and_second_claim_moves_no_funds() {
+    let ctx = setup();
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
+
+    assert!(!ctx.dividend.has_claimed(&id, &ctx.h1));
+
+    ctx.dividend.claim(&id, &ctx.h1);
+    assert!(ctx.dividend.has_claimed(&id, &ctx.h1));
+
+    let balance_after_first_claim = pay_balance(&ctx, &ctx.h1);
+    let div_addr = ctx.dividend.address.clone();
+    let escrow_after_first_claim = pay_balance(&ctx, &div_addr);
+
+    let result = ctx.dividend.try_claim(&id, &ctx.h1);
+    assert_eq!(result, Err(Ok(Error::AlreadyClaimed)));
+
+    // Still claimed, and no additional funds moved on the rejected second claim.
+    assert!(ctx.dividend.has_claimed(&id, &ctx.h1));
+    assert_eq!(pay_balance(&ctx, &ctx.h1), balance_after_first_claim);
+    assert_eq!(pay_balance(&ctx, &div_addr), escrow_after_first_claim);
+}
+
+// ---- issue #217: create_distribution rejects a zero or negative amount ----
+
+#[test]
+fn test_create_distribution_rejects_zero_and_negative_amount() {
+    let ctx = setup();
+    let admin_before = pay_balance(&ctx, &ctx.admin);
+    let div_addr = ctx.dividend.address.clone();
+
+    let zero_result = ctx.dividend.try_create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &0,
+        &eligible(&ctx),
+    );
+    assert_eq!(zero_result, Err(Ok(Error::InvalidAmount)));
+
+    let negative_result = ctx.dividend.try_create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &-1,
+        &eligible(&ctx),
+    );
+    assert_eq!(negative_result, Err(Ok(Error::InvalidAmount)));
+
+    // Neither rejected call should have moved any payment-token funds.
+    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+}
+
+// ---- issue #218: distributions for one asset are not returned for another ----
+
+#[test]
+fn test_distributions_for_one_asset_excluded_from_another() {
+    let ctx = setup();
+    let other_asset = env_register_asset(&ctx, 1000);
+    let mut other_eligible = Vec::new(&ctx.env);
+    other_eligible.push_back((ctx.admin.clone(), 1000));
+
+    let main_id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &eligible(&ctx));
+    let other_id =
+        ctx.dividend
+            .create_distribution(&ctx.admin, &other_asset, &ctx.pay_id, &100, &other_eligible);
+
+    let main_list = ctx.dividend.get_distributions_for_asset(&ctx.asset_id);
+    let other_list = ctx.dividend.get_distributions_for_asset(&other_asset);
+
+    assert_eq!(main_list.len(), 1);
+    assert_eq!(main_list.get(0).unwrap().id, main_id);
+    assert_eq!(other_list.len(), 1);
+    assert_eq!(other_list.get(0).unwrap().id, other_id);
+
+    // Cross-check: the other asset's distribution id never shows up in the
+    // main asset's list, and vice versa.
+    assert!(!main_list.iter().any(|d| d.id == other_id));
+    assert!(!other_list.iter().any(|d| d.id == main_id));
 }
