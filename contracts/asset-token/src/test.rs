@@ -2,8 +2,8 @@
 use super::*;
 use compliance::{ComplianceContract, ComplianceContractClient};
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction},
-    Address, Env, String, Symbol,
+    testutils::{Address as _, AuthorizedFunction, Events},
+    Address, Env, String, Symbol, Vec,
 };
 
 struct Setup {
@@ -489,4 +489,57 @@ fn test_transfer_after_sender_suspended_post_mint_panics_sender_not_compliant() 
     let carol = Address::generate(&s.env);
     approve(&s.env, &s.compliance, &s.admin, &carol);
     s.token.transfer(&bob, &carol, &100);
+}
+
+// ---- mint_batch ----
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_mint_batch_blocked_when_paused() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.pause(&s.admin);
+    let mut recipients = Vec::new(&s.env);
+    recipients.push_back((bob, 100));
+    s.token.mint_batch(&s.admin, &recipients);
+}
+
+#[test]
+fn test_mint_batch_succeeds_after_unpause() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.pause(&s.admin);
+    s.token.unpause(&s.admin);
+    let mut recipients = Vec::new(&s.env);
+    recipients.push_back((bob.clone(), 100));
+    s.token.mint_batch(&s.admin, &recipients);
+    assert_eq!(s.token.balance(&bob), 100);
+    assert_eq!(s.token.total_supply(), 1_100);
+}
+
+#[test]
+fn test_mint_batch_empty_is_noop() {
+    let s = setup(1_000);
+    let supply_before = s.token.total_supply();
+    let events_before = s.env.events().all().len();
+    let recipients: Vec<(Address, i128)> = Vec::new(&s.env);
+    s.token.mint_batch(&s.admin, &recipients);
+    assert_eq!(s.token.total_supply(), supply_before);
+    assert_eq!(s.env.events().all().len(), events_before);
+}
+
+#[test]
+fn test_mint_batch_credits_repeated_recipient_cumulatively() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    let supply_before = s.token.total_supply();
+    let mut recipients = Vec::new(&s.env);
+    recipients.push_back((bob.clone(), 100));
+    recipients.push_back((bob.clone(), 50));
+    s.token.mint_batch(&s.admin, &recipients);
+    assert_eq!(s.token.balance(&bob), 150);
+    assert_eq!(s.token.total_supply(), supply_before + 150);
 }
