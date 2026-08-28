@@ -53,6 +53,13 @@ enum DataKey {
     /// `get_distributions_for_asset` only walks that asset's distributions
     /// instead of scanning the global counter (issue #166).
     AssetIds(Address),
+    /// Sum of the snapshot balances captured at creation for a distribution
+    /// (issue #163) — the denominator used to size every holder's share.
+    Supply(u64),
+    /// The `eligible` list passed to `create_distribution`, frozen at
+    /// creation time so a holder's entitlement can't be inflated (or
+    /// diluted) by balance changes after the fact (issue #163).
+    Snapshot(u64),
 }
 
 #[contracterror]
@@ -70,6 +77,8 @@ pub enum Error {
     ZeroSupply = 8,
     /// Total distributed would exceed the distribution's `total_amount` (issue #164).
     OverDistributed = 9,
+    /// `total_amount * balance` would overflow i128 (issue #165).
+    ArithmeticOverflow = 10,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -131,6 +140,33 @@ impl DividendContract {
         TokenClient::new(&env, &payment_token).transfer(&admin, &this, &total_amount);
 
         let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
+
+        // Freeze the eligible-holder snapshot and its total (issue #163): every
+        // holder's share is sized against this frozen list, not against the
+        // asset token's live balances, so a post-creation transfer can neither
+        // inflate nor dilute anyone's entitlement.
+        let mut snapshot_supply: i128 = 0;
+        for (_, balance) in eligible.iter() {
+            snapshot_supply = snapshot_supply
+                .checked_add(balance)
+                .unwrap_or_else(|| panic_err(&env, Error::ArithmeticOverflow));
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Snapshot(id), &eligible);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Snapshot(id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::Supply(id), &snapshot_supply);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Supply(id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
         let dist = Distribution {
             id,
             asset_token,
@@ -188,7 +224,7 @@ impl DividendContract {
         // multiplication against i128 overflow (issue #165).
         dist
             .total_amount
-            .checked_mul(balance)
+            .checked_mul(basis)
             .unwrap_or_else(|| panic_err(&env, Error::ArithmeticOverflow))
             / supply
     }
