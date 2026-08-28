@@ -20,6 +20,18 @@ via a cross-contract call into the compliance contract.
 
 Full addresses and the sample asset are in [DEPLOYMENTS.md](DEPLOYMENTS.md).
 
+## Cross-cutting reference docs
+
+- [docs/events.md](docs/events.md) — every event's exact topic tuple and
+  payload shape, for indexers.
+- [docs/errors.md](docs/errors.md) — every numeric error code, per contract,
+  with when it's raised and what to do about it.
+- [docs/storage.md](docs/storage.md) — every contract's storage keys,
+  instance vs. persistent, TTL extension strategy, and known archival-risk
+  gaps.
+- [docs/trust-model.md](docs/trust-model.md) — exactly what each contract's
+  admin can and cannot do, and what holders are trusting.
+
 ## How compliance gating works
 
 ```
