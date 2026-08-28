@@ -11,11 +11,18 @@ claims their share, paid from escrow held by this contract.
 At claim time a holder can claim:
 
 ```
-claimable = total_amount * balance(holder) / total_supply
+claimable = total_amount * snapshot_balance(holder) / snapshot_supply
 ```
 
-where `balance` and `total_supply` are read live from the asset token. Integer
-division floors the result. Each holder can claim a given distribution **once**.
+where `snapshot_balance`/`snapshot_supply` come from the frozen `eligible`
+list passed to `create_distribution` at creation time — **not** read live
+from the asset token at claim time. This means a holder who transfers away
+their tokens after a distribution is created can still claim their original
+share, and a wallet that only receives tokens after creation has a basis of
+0 and cannot claim from that distribution. Integer division floors the
+result, so a pool that doesn't divide evenly by the snapshot supply leaves a
+small remainder permanently unclaimable (`completed` never becomes `true` in
+that case). Each holder can claim a given distribution **once**.
 
 ## `Distribution`
 
@@ -26,7 +33,6 @@ division floors the result. Each holder can claim a given distribution **once**.
 | `payment_token`  | `Address` | Token used to pay (e.g. a SAC)       |
 | `total_amount`   | `i128`    | Total escrowed for the distribution  |
 | `distributed`    | `i128`    | Amount claimed so far                |
-| `snapshot_ledger`| `u32`     | Ledger at creation (reference)       |
 | `created_at`     | `u32`     | Ledger at creation                   |
 | `completed`      | `bool`    | True once `distributed >= total`     |
 
@@ -48,10 +54,13 @@ pub trait TokenInterface {
 ## Functions
 
 - `initialize(admin)` — sets admin. Once only.
-- `create_distribution(admin, asset_token, payment_token, total_amount) -> u64` —
+- `create_distribution(admin, asset_token, payment_token, total_amount, eligible) -> u64` —
   admin auth; pulls `total_amount` of `payment_token` from the admin into the
-  contract's escrow and records the distribution. `InvalidAmount (#5)` if
-  `total_amount <= 0`.
+  contract's escrow, freezes `eligible: Vec<(Address, i128)>` as the payout
+  snapshot (its balances summed become the snapshot supply used by
+  `claimable`), and records the distribution. `InvalidAmount (#5)` if
+  `total_amount <= 0`, `ZeroSupply (#8)` if `asset_token`'s live
+  `total_supply()` is `<= 0` at creation time.
 - `claimable(distribution_id, holder) -> i128` — the holder's remaining share
   (0 if already claimed / holds nothing / empty supply). Never panics.
 - `claim(distribution_id, holder)` — holder auth; pays the claimable amount from
@@ -61,6 +70,38 @@ pub trait TokenInterface {
 - `get_distributions_for_asset(asset_token) -> Vec<Distribution>`
 - `has_claimed(distribution_id, holder) -> bool`
 - `get_admin() -> Address`
+
+## Usage examples
+
+Fund a distribution against a frozen snapshot and let two holders claim:
+
+```rust
+client.initialize(&admin);
+
+// Freeze balances as of right now: h1=300, h2=200 (snapshot supply = 500).
+let mut eligible = Vec::new(&env);
+eligible.push_back((h1.clone(), 300));
+eligible.push_back((h2.clone(), 200));
+
+// Pulls 1_000 of `payment_token` from `admin` into escrow.
+let dist_id = client.create_distribution(&admin, &asset_token, &payment_token, &1_000, &eligible);
+
+assert_eq!(client.claimable(&dist_id, &h1), 600); // 1000 * 300 / 500
+assert_eq!(client.claimable(&dist_id, &h2), 400); // 1000 * 200 / 500
+
+client.claim(&dist_id, &h1);
+assert_eq!(client.claimable(&dist_id, &h1), 0);
+assert!(client.has_claimed(&dist_id, &h1));
+```
+
+Check a distribution's progress without claiming:
+
+```rust
+let d = client.get_distribution(&dist_id);
+assert_eq!(d.total_amount, 1_000);
+assert_eq!(d.distributed, 600); // after h1's claim above
+assert!(!d.completed);          // h2 hasn't claimed yet
+```
 
 ## Errors
 
@@ -73,6 +114,8 @@ pub trait TokenInterface {
 | 5    | InvalidAmount        | `total_amount <= 0`                  |
 | 6    | NothingToClaim       | claimable is zero                    |
 | 7    | AlreadyClaimed       | holder already claimed this dist     |
+| 8    | ZeroSupply           | `asset_token.total_supply()` is `<= 0` at creation — no holder could ever claim |
+| 9    | OverDistributed      | internal guard: total claimed would exceed `total_amount` |
 
 ## Events
 

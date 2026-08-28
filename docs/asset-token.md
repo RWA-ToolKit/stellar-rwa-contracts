@@ -60,6 +60,39 @@ in metadata and can be swapped with `set_compliance`.
 - `update_valuation(admin, new_valuation)` — admin auth.
 - `set_compliance(admin, compliance)` — admin auth; repoints the gate.
 
+## Usage examples
+
+Issue a token and move some of it to an approved holder:
+
+```rust
+// `admin` must already be compliance-approved before initialize() succeeds.
+client.initialize(
+    &admin,
+    &String::from_str(&env, "Loft 42"),
+    &String::from_str(&env, "LFT"),
+    &String::from_str(&env, "real_estate"),
+    &1_000_000i128,      // total_supply, all minted to `admin`
+    &2u32,                // decimals
+    &compliance_contract,
+    &String::from_str(&env, "Downtown loft, tokenized"),
+    &50_000_00i128,        // valuation: $50,000.00 in USD cents
+);
+
+// `holder` must be compliance-approved first, or this reverts RecipientNotCompliant.
+client.transfer(&admin, &holder, &1_000);
+assert_eq!(client.balance(&holder), 1_000);
+```
+
+Mint additional supply to a new investor, then pause the token during an
+incident:
+
+```rust
+client.mint(&admin, &new_investor, &500);
+client.pause(&admin);
+// every transfer()/mint() now fails with Paused (#6) until unpause()
+client.unpause(&admin);
+```
+
 ## Errors
 
 | Code | Name                   | Cause                                |

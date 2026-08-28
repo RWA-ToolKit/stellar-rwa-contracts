@@ -20,6 +20,12 @@ via a cross-contract call into the compliance contract.
 
 Full addresses and the sample asset are in [DEPLOYMENTS.md](DEPLOYMENTS.md).
 
+**New here?** [docs/lifecycle.md](docs/lifecycle.md) walks through the full
+asset lifecycle — deploy compliance, approve the issuer, deploy the asset
+token, register it, approve holders, mint/transfer, create a dividend
+distribution, and claim — naming the exact call sequence and who signs each
+step.
+
 ## How compliance gating works
 
 ```

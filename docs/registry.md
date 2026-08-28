@@ -33,6 +33,38 @@ and reports total value locked (TVL).
 - `asset_count() -> u64`
 - `get_admin() -> Address`
 
+## Usage examples
+
+Register an asset and read it back:
+
+```rust
+client.initialize(&admin);
+
+let asset_id = client.register_asset(
+    &issuer,
+    &token_contract,
+    &String::from_str(&env, "Loft 42"),
+    &String::from_str(&env, "real_estate"),
+    &50_000_00i128,  // valuation in USD cents
+);
+
+let entry = client.get_asset(&asset_id);
+assert_eq!(entry.issuer, issuer);
+assert!(entry.active);
+```
+
+List an issuer's assets and total platform value, then deactivate one:
+
+```rust
+let mine = client.get_assets_by_issuer(&issuer);
+let tvl_before = client.total_value_locked();
+
+client.deactivate_asset(&admin, &asset_id);
+
+// deactivated entries are excluded from TVL immediately
+assert_eq!(client.total_value_locked(), tvl_before - entry.valuation);
+```
+
 ## Errors
 
 | Code | Name               | Cause                          |
