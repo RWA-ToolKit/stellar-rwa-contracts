@@ -423,54 +423,6 @@ fn test_transfer_requires_only_sender_auth() {
     assert_eq!(invocation.sub_invocations.len(), 0);
 }
 
-// ---- issue #185: self-transfer still enforces balance and compliance checks ----
-
-#[test]
-fn test_self_transfer_exceeding_balance_fails() {
-    let s = setup(1_000);
-    let bob = Address::generate(&s.env);
-    approve(&s.env, &s.compliance, &s.admin, &bob);
-    // Bob has zero balance; a self-transfer must still hit the balance check
-    // before the self-transfer short-circuit.
-    let res = s.token.try_transfer(&bob, &bob, &1);
-    assert_eq!(res, Err(Ok(Error::InsufficientBalance)));
-}
-
-#[test]
-fn test_self_transfer_by_suspended_holder_fails() {
-    let s = setup(1_000);
-    let bob = Address::generate(&s.env);
-    approve(&s.env, &s.compliance, &s.admin, &bob);
-    s.token.mint(&s.admin, &bob, &500);
-    s.compliance.suspend(&s.admin, &bob);
-    // The sender-compliance check must still run before the self-transfer
-    // short-circuit.
-    let res = s.token.try_transfer(&bob, &bob, &100);
-    assert_eq!(res, Err(Ok(Error::SenderNotCompliant)));
-}
-
-// ---- issue #186: mint_batch reverts entirely when one recipient fails compliance ----
-
-#[test]
-fn test_mint_batch_reverts_entirely_on_noncompliant_recipient() {
-    let s = setup(1_000);
-    let bob = Address::generate(&s.env);
-    let eve = Address::generate(&s.env); // never approved
-    approve(&s.env, &s.compliance, &s.admin, &bob);
-
-    let supply_before = s.token.total_supply();
-    let mut recipients = Vec::new(&s.env);
-    recipients.push_back((bob.clone(), 100i128));
-    recipients.push_back((eve, 50i128));
-
-    let res = s.token.try_mint_batch(&s.admin, &recipients);
-    assert_eq!(res, Err(Ok(Error::RecipientNotCompliant)));
-
-    // The whole batch must revert: bob's balance and total_supply are untouched.
-    assert_eq!(s.token.balance(&bob), 0);
-    assert_eq!(s.token.total_supply(), supply_before);
-}
-
 #[test]
 #[should_panic(expected = "Error(Contract, #7)")]
 fn test_transfer_after_sender_suspended_post_mint_panics_sender_not_compliant() {

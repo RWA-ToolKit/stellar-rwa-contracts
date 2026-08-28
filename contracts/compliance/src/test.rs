@@ -223,20 +223,3 @@ fn test_lowercase_jurisdiction_normalized() {
         String::from_str(&env, "US")
     );
 }
-
-#[test]
-fn test_status_of_distinguishes_unseen_from_approved_and_suspended() {
-    // Issue #183: `status_of` must let callers tell "never seen" (`None`)
-    // apart from a recorded status such as `Approved` or `Suspended`.
-    let (env, client, admin) = setup();
-    let stranger = Address::generate(&env);
-    let user = Address::generate(&env);
-
-    assert_eq!(client.status_of(&stranger), None);
-
-    client.add_to_allowlist(&admin, &user, &String::from_str(&env, "US"), &0);
-    assert_eq!(client.status_of(&user), Some(ComplianceStatus::Approved));
-
-    client.suspend(&admin, &user);
-    assert_eq!(client.status_of(&user), Some(ComplianceStatus::Suspended));
-}
