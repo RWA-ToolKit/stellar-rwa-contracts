@@ -90,8 +90,7 @@ invoke "$REGISTRY_ID" register_asset \
   --issuer "$ADMIN_ADDR" \
   --token_contract "$ASSET_ID" \
   --name "Manhattan Loft" \
-  --asset_type "real_estate" \
-  --valuation 500000000
+  --asset_type "real_estate"
 
 cat <<EOF
 

@@ -7,12 +7,41 @@
 //! status. It also reports total value locked (TVL) across active assets.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
+    Env, String, Vec,
 };
 
 // NOTE: The `Ids` instance-storage key is retained in the enum only for
 // forward-compatibility reads of contracts already deployed; it is no longer
 // written. New registrations are enumerated via the monotonic Counter alone.
+
+/// Cross-contract client for the asset-token contract. Only the method the
+/// registry needs is declared here, decoupling the two contracts at build
+/// time. Used to verify the caller actually controls `token_contract` (issue
+/// #169) and to read its valuation directly rather than trusting a
+/// self-reported copy (issue #170).
+#[contractclient(name = "AssetTokenClient")]
+pub trait AssetTokenInterface {
+    fn get_metadata(env: Env) -> AssetTokenMetadata;
+}
+
+/// Mirrors the `asset-token` contract's `AssetMetadata` layout so the
+/// cross-contract call above decodes correctly without a build-time
+/// dependency on that crate.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetTokenMetadata {
+    pub name: String,
+    pub symbol: String,
+    pub asset_type: String,
+    pub total_supply: i128,
+    pub decimals: u32,
+    pub admin: Address,
+    pub compliance_contract: Address,
+    pub asset_description: String,
+    pub valuation: i128,
+    pub paused: bool,
+}
 
 /// A single registered asset.
 #[contracttype]
@@ -23,7 +52,10 @@ pub struct AssetEntry {
     pub issuer: Address,
     pub name: String,
     pub asset_type: String,
-    /// Valuation in USD cents.
+    /// Valuation in USD cents, as reported by the asset token at registration
+    /// time. This is a point-in-time copy only; `total_value_locked` always
+    /// re-reads the token's live valuation rather than trusting this field
+    /// (issue #170), since it can go stale after `update_valuation`.
     pub valuation: i128,
     /// Ledger sequence at registration.
     pub created_at: u32,
@@ -59,7 +91,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[contract]
 pub struct RegistryContract;
@@ -84,26 +116,37 @@ impl RegistryContract {
         env.events().publish((symbol_short!("init"),), admin);
     }
 
-    /// Register a new tokenized asset. The issuer must authorize the call.
-    /// Returns the assigned asset id.
+    /// Register a new tokenized asset. The issuer must authorize the call
+    /// *and* must be the on-chain admin of `token_contract`, verified via a
+    /// cross-contract call to its `get_metadata()` (issue #169) — this
+    /// prevents anyone from listing a contract they don't control. Valuation
+    /// is likewise read from the token itself, not caller-supplied, so it
+    /// can't be self-declared (issue #170). Returns the assigned asset id.
     pub fn register_asset(
         env: Env,
         issuer: Address,
         token_contract: Address,
         name: String,
         asset_type: String,
-        valuation: i128,
     ) -> u64 {
         Self::assert_init(&env);
         issuer.require_auth();
-        if valuation < 0 {
-            panic_err(&env, Error::InvalidValuation);
-        }
         // Require non-empty name and a recognised asset type (issue #48).
         if name.len() == 0 {
             panic_err(&env, Error::InvalidInput);
         }
         validate_asset_type(&env, &asset_type);
+
+        // Verify the caller actually controls `token_contract` rather than
+        // merely proving they control the address they supplied (issue #169).
+        let meta = AssetTokenClient::new(&env, &token_contract).get_metadata();
+        if meta.admin != issuer {
+            panic_err(&env, Error::Unauthorized);
+        }
+        if meta.valuation < 0 {
+            panic_err(&env, Error::InvalidValuation);
+        }
+
         let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
         let entry = AssetEntry {
             id,
@@ -111,7 +154,7 @@ impl RegistryContract {
             issuer: issuer.clone(),
             name,
             asset_type,
-            valuation,
+            valuation: meta.valuation,
             created_at: env.ledger().sequence(),
             active: true,
         };
@@ -213,13 +256,17 @@ impl RegistryContract {
             .publish((symbol_short!("deactvate"),), asset_id);
     }
 
-    /// Sum of valuations across all active assets, in USD cents.
+    /// Sum of valuations across all active assets, in USD cents. Reads each
+    /// asset token's live `get_metadata().valuation` rather than the
+    /// registry's cached copy, so a valuation change on the token (via its
+    /// own `update_valuation`) is reflected immediately (issue #170).
     pub fn total_value_locked(env: Env) -> i128 {
         let mut tvl: i128 = 0;
         for entry in Self::iter_assets(&env) {
             if entry.active {
+                let meta = AssetTokenClient::new(&env, &entry.token_contract).get_metadata();
                 tvl = tvl
-                    .checked_add(entry.valuation)
+                    .checked_add(meta.valuation)
                     .unwrap_or_else(|| panic_err(&env, Error::Overflow));
             }
         }

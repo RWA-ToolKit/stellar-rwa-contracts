@@ -3,12 +3,14 @@
 //!
 //! Distributes yield/dividends to asset-token holders in proportion to their
 //! holdings. An issuer funds a distribution with a payment token; each holder
-//! then claims `total_amount * balance / total_supply`, paid from the escrow
-//! this contract holds. Each holder can claim a given distribution once.
+//! then claims `total_amount * basis / supply`, paid from the escrow this
+//! contract holds. Each holder can claim a given distribution once.
 //!
-//! Balances are read at claim time from the asset token; there is no balance
-//! snapshot. `created_at` records the ledger at which the distribution was
-//! created for reference.
+//! `basis` and `supply` come from a holder-balance snapshot taken at
+//! `create_distribution` time, not a live read of the asset token, so moving
+//! tokens to another wallet after creation cannot be used to claim twice
+//! (issue #163). `created_at` records the ledger at which the distribution
+//! was created for reference.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
@@ -46,9 +48,14 @@ pub struct Distribution {
 enum DataKey {
     Admin,
     Counter,
-    Ids,
     Dist(u64),
     Claimed(u64, Address),
+    /// Per-holder entitlement balances captured when the distribution was
+    /// created. Entitlement is frozen at creation so moving tokens to another
+    /// wallet cannot be used to claim twice (issue #163).
+    Snapshot(u64),
+    /// Sum of the snapshot balances for a distribution (its effective supply).
+    Supply(u64),
     /// Distribution ids created for a given asset token, so
     /// `get_distributions_for_asset` only walks that asset's distributions
     /// instead of scanning the global counter (issue #166).
@@ -70,6 +77,8 @@ pub enum Error {
     ZeroSupply = 8,
     /// Total distributed would exceed the distribution's `total_amount` (issue #164).
     OverDistributed = 9,
+    /// `total_amount * basis` overflowed `i128` while sizing a share (issue #165).
+    ArithmeticOverflow = 10,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -146,6 +155,36 @@ impl DividendContract {
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
+
+        // Freeze the entitlement basis at creation time (issue #163). Reading
+        // live balances at claim time let a holder move tokens to a fresh wallet
+        // and claim again; the snapshot makes each holder's share immutable.
+        let mut snap_sum: i128 = 0;
+        for (_, b) in eligible.iter() {
+            snap_sum = snap_sum
+                .checked_add(b)
+                .unwrap_or_else(|| panic_err(&env, Error::InvalidAmount));
+        }
+        if snap_sum <= 0 {
+            panic_err(&env, Error::ZeroSupply);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Snapshot(id), &eligible);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Supply(id), &snap_sum);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Snapshot(id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::Supply(id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+
         // Index this distribution under its asset token so lookups are O(n_asset)
         // rather than O(global counter) (issue #166).
         let mut asset_ids = env
@@ -188,7 +227,7 @@ impl DividendContract {
         // multiplication against i128 overflow (issue #165).
         dist
             .total_amount
-            .checked_mul(balance)
+            .checked_mul(basis)
             .unwrap_or_else(|| panic_err(&env, Error::ArithmeticOverflow))
             / supply
     }
@@ -242,7 +281,8 @@ impl DividendContract {
     /// All distributions created for a given asset token.
     /// Walks only the per-asset id index (issue #166) instead of scanning the
     /// global counter, keeping the cost proportional to that asset's
-    /// distributions rather than every distribution ever created.
+    /// distributions rather than every distribution ever created. Read-only:
+    /// does not extend any entry's TTL (issue #167).
     pub fn get_distributions_for_asset(env: Env, asset_token: Address) -> Vec<Distribution> {
         let ids = env
             .storage()
@@ -256,11 +296,6 @@ impl DividendContract {
                 .persistent()
                 .get::<DataKey, Distribution>(&DataKey::Dist(id))
             {
-                env.storage().persistent().extend_ttl(
-                    &DataKey::Dist(id),
-                    INSTANCE_LIFETIME_THRESHOLD,
-                    INSTANCE_BUMP_AMOUNT,
-                );
                 out.push_back(d);
             }
         }
@@ -312,18 +347,13 @@ impl DividendContract {
 
     // ---- internal helpers ----
 
+    /// Read-only: does not extend the entry's TTL. State-changing callers
+    /// (e.g. `claim`) extend it explicitly after writing back (issue #167).
     fn load(env: &Env, id: u64) -> Distribution {
-        let dist = env
-            .storage()
+        env.storage()
             .persistent()
             .get(&DataKey::Dist(id))
-            .unwrap_or_else(|| panic_err(env, Error::DistributionNotFound));
-        env.storage().persistent().extend_ttl(
-            &DataKey::Dist(id),
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
-        );
-        dist
+            .unwrap_or_else(|| panic_err(env, Error::DistributionNotFound))
     }
 
     fn require_admin(env: &Env, admin: &Address) {
