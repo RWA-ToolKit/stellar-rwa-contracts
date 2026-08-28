@@ -61,6 +61,8 @@ pub trait TokenInterface {
 - `get_distributions_for_asset(asset_token) -> Vec<Distribution>`
 - `has_claimed(distribution_id, holder) -> bool`
 - `get_admin() -> Address`
+- `propose_admin(admin, new_admin)` / `accept_admin(new_admin)` — two-step
+  admin rotation (issue #181); `new_admin` must call `accept_admin` itself.
 
 ## Errors
 
@@ -73,6 +75,7 @@ pub trait TokenInterface {
 | 5    | InvalidAmount        | `total_amount <= 0`                  |
 | 6    | NothingToClaim       | claimable is zero                    |
 | 7    | AlreadyClaimed       | holder already claimed this dist     |
+| 10   | NoPendingAdmin       | `accept_admin` with nothing proposed |
 
 ## Events
 
@@ -81,6 +84,8 @@ pub trait TokenInterface {
 | `init`    | admin                      | initialize          |
 | `created` | (admin) → (id, total)      | distribution funded |
 | `claim`   | (holder) → (id, amount)    | holder claims       |
+| `propadmin` | proposed admin           | propose_admin      |
+| `newadmin`  | new admin                | accept_admin       |
 
 ## Storage / TTL
 

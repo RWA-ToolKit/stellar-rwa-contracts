@@ -32,6 +32,8 @@ and reports total value locked (TVL).
 - `total_value_locked() -> i128` — sum of `valuation` over active assets.
 - `asset_count() -> u64`
 - `get_admin() -> Address`
+- `propose_admin(admin, new_admin)` / `accept_admin(new_admin)` — two-step
+  admin rotation (issue #181); `new_admin` must call `accept_admin` itself.
 
 ## Errors
 
@@ -42,6 +44,7 @@ and reports total value locked (TVL).
 | 3    | Unauthorized       | non-admin deactivation         |
 | 4    | AssetNotFound      | unknown id                     |
 | 5    | InvalidValuation   | negative valuation             |
+| 8    | NoPendingAdmin     | `accept_admin` with nothing proposed |
 
 ## Events
 
@@ -50,6 +53,8 @@ and reports total value locked (TVL).
 | `init`      | admin             | initialize        |
 | `register`  | (issuer) → id     | asset registered  |
 | `deactvate` | asset_id          | asset deactivated |
+| `propadmin` | proposed admin    | propose_admin     |
+| `newadmin`  | new admin         | accept_admin      |
 
 ## Storage / TTL
 

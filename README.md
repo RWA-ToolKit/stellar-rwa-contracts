@@ -36,6 +36,32 @@ jurisdiction), the transfer reverts. The asset token knows only the compliance
 *interface* (`#[contractclient]`), so the concrete compliance contract can be
 swapped with `set_compliance`.
 
+## Admin trust assumptions
+
+Every contract in this repo is controlled by a **single admin key**
+(`require_auth`-gated; no timelock, no multisig at the contract level). Know
+what that key can do before you deploy or grant custody of it:
+
+- **asset-token**: `update_valuation` re-prices the asset instantly;
+  `set_compliance` repoints the compliance gate instantly (existing holders
+  are *not* re-validated — see [docs/asset-token.md](docs/asset-token.md));
+  `pause`/`unpause` halts all transfers and mints instantly; `force_transfer`
+  can move any holder's balance without their authorization.
+- **compliance**: the admin can approve, suspend, remove, or block an entire
+  jurisdiction instantly — this directly gates who can hold or move the
+  asset token.
+- **registry** / **dividend**: the admin can deactivate a registered asset or
+  create distributions that pull escrow from itself.
+
+None of these actions carry an on-chain delay, so a compromised or careless
+admin key is an immediate, first-order economic risk for a real-world-asset
+deployment — treat the admin key as you would treasury custody: a hardware
+signer or a multisig/timelock wallet *upstream* of these contracts (e.g. a
+Soroban account with its own multi-sig thresholds as the `admin` address),
+not a single hot key. Every contract supports rotating the admin via
+`propose_admin` / `accept_admin` (two-step, so a typo'd address can't
+accidentally lock out control) if the key needs to change hands.
+
 ## Stellar integration
 
 These contracts are native **Soroban** programs — Stellar's Rust/WASM smart-contract

@@ -38,6 +38,8 @@ enum DataKey {
     Ids,
     Asset(u64),
     ActiveCount,
+    /// Address proposed via `propose_admin`, awaiting `accept_admin` (issue #181).
+    PendingAdmin,
 }
 
 #[contracterror]
@@ -51,6 +53,8 @@ pub enum Error {
     InvalidValuation = 5,
     Overflow = 6,
     InvalidInput = 7,
+    /// `accept_admin` called with no matching `propose_admin` pending (issue #181).
+    NoPendingAdmin = 8,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -245,6 +249,38 @@ impl RegistryContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_err(&env, Error::NotInitialized))
+    }
+
+    /// Propose `new_admin` as the next admin. Current admin only. Takes
+    /// effect only once `new_admin` calls `accept_admin` (issue #181), so a
+    /// typo'd address can't accidentally lock out admin control.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
+        Self::require_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("propadmin"),), new_admin);
+    }
+
+    /// Accept a pending admin proposal. Must be authorized by the proposed
+    /// address itself.
+    pub fn accept_admin(env: Env, new_admin: Address) {
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_err(&env, Error::NoPendingAdmin));
+        if pending != new_admin {
+            panic_err(&env, Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("newadmin"),), new_admin);
     }
 
     // ---- internal helpers ----

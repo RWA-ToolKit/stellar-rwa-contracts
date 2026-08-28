@@ -52,13 +52,20 @@ in metadata and can be swapped with `set_compliance`.
   `from` has balance; moves tokens.
 - `mint(admin, to, amount)` — admin auth; not paused; `to` compliant; increases
   supply.
-- `burn(from, amount)` — `from` auth; reduces caller balance and supply.
+- `burn(from, amount)` — `from` auth; reduces caller balance and supply. Not
+  blocked by `pause` — see [Security considerations](#security-considerations).
 - `balance(id) -> i128`
 - `total_supply() -> i128`
 - `pause(admin)` / `unpause(admin)` — admin auth.
 - `get_metadata() -> AssetMetadata`
 - `update_valuation(admin, new_valuation)` — admin auth.
-- `set_compliance(admin, compliance)` — admin auth; repoints the gate.
+- `set_compliance(admin, compliance)` — admin auth; repoints the gate. Does
+  **not** re-validate existing holders against the new gate.
+- `force_transfer(admin, from, to, amount)` — admin auth; moves `from`'s
+  balance to `to` bypassing `from`'s compliance check (`to` must still be
+  compliant). Remediation tool for holders a new gate rejects.
+- `propose_admin(admin, new_admin)` / `accept_admin(new_admin)` — two-step
+  admin rotation; `new_admin` must call `accept_admin` itself.
 
 ## Errors
 
@@ -73,6 +80,7 @@ in metadata and can be swapped with `set_compliance`.
 | 7    | SenderNotCompliant     | sender fails `is_allowed`            |
 | 8    | RecipientNotCompliant  | recipient fails `is_allowed`         |
 | 9    | Overflow               | supply overflow on mint              |
+| 12   | NoPendingAdmin         | `accept_admin` with nothing proposed |
 
 ## Events
 
@@ -85,6 +93,9 @@ in metadata and can be swapped with `set_compliance`.
 | `unpause`   | admin                   | unpause      |
 | `valuation` | new valuation           | valuation up |
 | `setcomp`   | compliance address      | gate changed |
+| `forcexfer` | (from, to) → amount     | force_transfer |
+| `propadmin` | proposed admin          | propose_admin |
+| `newadmin`  | new admin               | accept_admin |
 
 ## Storage / TTL
 
@@ -102,3 +113,12 @@ Listing of the contract `DataKey` variants and their storage behaviour.
 - Amounts must be strictly positive; zero/negative amounts revert.
 - `mint` overflow is checked; supply cannot wrap.
 - Only the admin can pause, mint, change valuation, or repoint compliance.
+- `burn` is intentionally **not** gated by `pause`: pausing stops circulation
+  (`transfer`/`mint`), but a holder can always destroy their own compliant
+  balance, and redemption flows built on `burn` keep working while paused
+  (issue #182).
+- `set_compliance` does not re-validate existing holders (issue #179); use
+  `force_transfer` to remediate holders the new gate rejects.
+- The admin key itself has no on-chain timelock or multisig (issue #180) —
+  see the root [README](../README.md#admin-trust-assumptions). Use
+  `propose_admin`/`accept_admin` to rotate it safely.

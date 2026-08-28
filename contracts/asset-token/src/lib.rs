@@ -45,6 +45,8 @@ pub struct AssetMetadata {
 enum DataKey {
     Metadata,
     Balance(Address),
+    /// Address proposed via `propose_admin`, awaiting `accept_admin` (issue #181).
+    PendingAdmin,
 }
 
 #[contracterror]
@@ -62,6 +64,8 @@ pub enum Error {
     Overflow = 9,
     InvalidInput = 10,
     InvalidCompliance = 11,
+    /// `accept_admin` called with no matching `propose_admin` pending (issue #181).
+    NoPendingAdmin = 12,
 }
 
 /// Maximum byte lengths for string metadata fields (issue #46).
@@ -238,13 +242,16 @@ impl AssetTokenContract {
     }
 
     /// Burn `amount` of the caller's own tokens.
+    ///
+    /// Not blocked by `pause` (issue #182): pausing is meant to stop
+    /// *circulation* (`transfer`/`mint`), not to prevent a holder from
+    /// destroying their own tokens. This also keeps redemption flows built on
+    /// `burn` working while the token is paused. The sender must still be
+    /// compliance-approved.
     pub fn burn(env: Env, from: Address, amount: i128) {
         from.require_auth();
         Self::check_amount(&env, amount);
         let mut meta = Self::metadata(&env);
-        if meta.paused {
-            panic_err(&env, Error::Paused);
-        }
         if !Self::compliant(&env, &meta.compliance_contract, &from) {
             panic_err(&env, Error::SenderNotCompliant);
         }
@@ -318,6 +325,13 @@ impl AssetTokenContract {
     /// the new contract would reject them. It only checks that `compliance`
     /// implements `is_allowed` and approves the admin, to catch a
     /// misconfigured address before it bricks every transfer.
+    ///
+    /// Operational procedure (issue #179): after swapping the gate, an admin
+    /// who needs to remediate holders the new gate rejects should (1) `pause`
+    /// the token, (2) re-verify/re-KYC holders against the new gate off-chain
+    /// or via the compliance contract's allowlist, and (3) for holders who
+    /// remain rejected, use `force_transfer` to move their balance to a
+    /// compliant custody/redemption address before `unpause`-ing.
     pub fn set_compliance(env: Env, admin: Address, compliance: Address) {
         let mut meta = Self::require_admin(&env, &admin);
         if !Self::compliant(&env, &compliance, &admin) {
@@ -328,6 +342,75 @@ impl AssetTokenContract {
         Self::bump(&env);
         env.events()
             .publish((symbol_short!("setcomp"),), compliance);
+    }
+
+    /// Admin-only remediation move: force `amount` from `from` to `to`,
+    /// bypassing `from`'s compliance check (issue #179). Exists to let an
+    /// admin exit a holder who no longer passes the compliance gate (e.g.
+    /// after `set_compliance` swaps in a stricter one) without requiring
+    /// their cooperation. `to` must still be compliance-approved.
+    pub fn force_transfer(env: Env, admin: Address, from: Address, to: Address, amount: i128) {
+        let meta = Self::require_admin(&env, &admin);
+        Self::check_amount(&env, amount);
+        if !Self::compliant(&env, &meta.compliance_contract, &to) {
+            panic_err(&env, Error::RecipientNotCompliant);
+        }
+        let from_bal = Self::balance(env.clone(), from.clone());
+        if from_bal < amount {
+            panic_err(&env, Error::InsufficientBalance);
+        }
+        if from == to {
+            Self::bump(&env);
+            env.events()
+                .publish((symbol_short!("forcexfer"), from, to), amount);
+            return;
+        }
+        let to_bal = Self::balance(env.clone(), to.clone());
+        let new_from_bal = from_bal - amount;
+        Self::set_balance(&env, &from, new_from_bal);
+        let new_to_bal = to_bal
+            .checked_add(amount)
+            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+        Self::set_balance(&env, &to, new_to_bal);
+        Self::bump(&env);
+        env.events().publish(
+            (symbol_short!("forcexfer"), from, to),
+            (amount, new_from_bal, new_to_bal),
+        );
+    }
+
+    /// Propose `new_admin` as the next admin. Current admin only. Takes
+    /// effect only once `new_admin` calls `accept_admin` (issue #181), so a
+    /// typo'd address can't accidentally lock out admin control.
+    pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
+        Self::require_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("propadmin"),), new_admin);
+    }
+
+    /// Accept a pending admin proposal. Must be authorized by the proposed
+    /// address itself.
+    pub fn accept_admin(env: Env, new_admin: Address) {
+        new_admin.require_auth();
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .unwrap_or_else(|| panic_err(&env, Error::NoPendingAdmin));
+        if pending != new_admin {
+            panic_err(&env, Error::Unauthorized);
+        }
+        let mut meta = Self::metadata(&env);
+        meta.admin = new_admin.clone();
+        env.storage().instance().set(&DataKey::Metadata, &meta);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("newadmin"),), new_admin);
     }
 
     // ---- internal helpers ----

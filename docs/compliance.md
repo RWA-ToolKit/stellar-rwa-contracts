@@ -72,6 +72,11 @@ Whether a jurisdiction is currently blocked.
 ### `get_admin() -> Address`
 The configured admin. Errors: `NotInitialized (#2)`.
 
+### `propose_admin(admin, new_admin)` / `accept_admin(new_admin)`
+Two-step admin rotation (issue #181): the current admin proposes, and
+`new_admin` must call `accept_admin` itself before the change takes effect.
+Errors: `Unauthorized (#5)`, `NoPendingAdmin (#7)`.
+
 ## Errors
 
 | Code | Name                | Cause                                   |
@@ -81,6 +86,8 @@ The configured admin. Errors: `NotInitialized (#2)`.
 | 3    | RecordNotFound      | Operating on a missing record           |
 | 4    | InvalidExpiry       | `expires_at` already in the past        |
 | 5    | Unauthorized        | Caller is not the stored admin          |
+| 6    | InvalidJurisdiction | Malformed jurisdiction code             |
+| 7    | NoPendingAdmin      | `accept_admin` with nothing proposed    |
 
 ## Events
 
@@ -92,6 +99,8 @@ The configured admin. Errors: `NotInitialized (#2)`.
 | `removed`    | (address)                     | address removed            |
 | `blockjur`   | jurisdiction                  | jurisdiction blocked       |
 | `unblkjur`   | jurisdiction                  | jurisdiction unblocked     |
+| `propadmin`  | proposed admin                | propose_admin              |
+| `newadmin`   | new admin                     | accept_admin               |
 
 ## Storage / TTL
 
