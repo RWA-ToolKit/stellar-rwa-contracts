@@ -238,3 +238,67 @@ fn test_invalid_asset_type_rejected() {
         &100,
     );
 }
+
+#[test]
+fn test_asset_ids_increment_monotonically_and_are_never_reused() {
+    // Issue #223.
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let id1 = register(&env, &client, &issuer, "real_estate", 1_000);
+    let id2 = register(&env, &client, &issuer, "invoice", 2_000);
+    let id3 = register(&env, &client, &issuer, "commodity", 3_000);
+    assert_eq!(id1, 1);
+    assert_eq!(id2, 2);
+    assert_eq!(id3, 3);
+
+    client.deactivate_asset(&admin, &id2);
+
+    let id4 = register(&env, &client, &issuer, "bond", 4_000);
+    assert_eq!(id4, 4);
+    assert_ne!(id4, id2);
+}
+
+#[test]
+fn test_get_asset_on_unknown_id_fails_asset_not_found() {
+    // Issue #224.
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "real_estate", 1_000);
+
+    assert_eq!(
+        client.try_get_asset(&0),
+        Err(Ok(Error::AssetNotFound))
+    );
+    assert_eq!(
+        client.try_get_asset(&2),
+        Err(Ok(Error::AssetNotFound))
+    );
+}
+
+#[test]
+fn test_get_assets_by_issuer_and_by_type_return_empty_vec_not_error() {
+    // Issue #225.
+    let (env, client, _admin) = setup();
+    let unknown_issuer = Address::generate(&env);
+
+    let by_issuer = client.get_assets_by_issuer(&unknown_issuer);
+    assert_eq!(by_issuer.len(), 0);
+
+    let by_type = client.get_assets_by_type(&String::from_str(&env, "fund"));
+    assert_eq!(by_type.len(), 0);
+}
+
+#[test]
+fn test_deactivate_asset_on_unknown_id_fails_and_active_count_unchanged() {
+    // Issue #226.
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "real_estate", 1_000);
+    assert_eq!(client.active_count(), 1);
+
+    assert_eq!(
+        client.try_deactivate_asset(&admin, &99),
+        Err(Ok(Error::AssetNotFound))
+    );
+    assert_eq!(client.active_count(), 1);
+}
