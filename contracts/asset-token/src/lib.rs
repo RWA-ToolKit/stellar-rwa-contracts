@@ -12,7 +12,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
-    Env, String, Vec,
+    BytesN, Env, String, Vec,
 };
 
 /// Cross-contract client for the compliance contract. Only the method the asset
@@ -40,11 +40,31 @@ pub struct AssetMetadata {
     pub paused: bool,
 }
 
+/// A SEP-41 style allowance: `spender` may move up to `amount` of `from`'s
+/// tokens, and the allowance is treated as zero once `expiration_ledger` has
+/// passed (issue #260, #261).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AllowanceValue {
+    pub amount: i128,
+    pub expiration_ledger: u32,
+}
+
+/// An upgrade awaiting its timelock before it can be applied (issue #259).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: BytesN<32>,
+    pub ready_at: u32,
+}
+
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
     Metadata,
     Balance(Address),
+    Allowance(Address, Address),
+    PendingUpgrade,
 }
 
 #[contracterror]
@@ -62,6 +82,14 @@ pub enum Error {
     Overflow = 9,
     InvalidInput = 10,
     InvalidCompliance = 11,
+    /// `spender` tried to move more than `from` has approved (issue #260).
+    InsufficientAllowance = 12,
+    /// `expiration_ledger` is in the past for a non-zero approval (issue #260).
+    InvalidExpirationLedger = 13,
+    /// No upgrade is currently pending (issue #259).
+    NoPendingUpgrade = 14,
+    /// A pending upgrade's timelock has not yet elapsed (issue #259).
+    UpgradeNotReady = 15,
 }
 
 /// Maximum byte lengths for string metadata fields (issue #46).
@@ -74,9 +102,13 @@ const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
+/// Minimum delay between proposing and applying a contract upgrade, giving
+/// holders and integrators time to react to an announced change (issue #259).
+const UPGRADE_TIMELOCK_LEDGERS: u32 = 3 * DAY_IN_LEDGERS;
+
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[contract]
 pub struct AssetTokenContract;
@@ -341,6 +373,170 @@ impl AssetTokenContract {
             .publish((symbol_short!("setcomp"),), compliance);
     }
 
+    // ---- SEP-41 metadata surface (issue #261) ----
+
+    /// Token name (SEP-41).
+    pub fn name(env: Env) -> String {
+        Self::metadata(&env).name
+    }
+
+    /// Token symbol (SEP-41).
+    pub fn symbol(env: Env) -> String {
+        Self::metadata(&env).symbol
+    }
+
+    /// Token decimals (SEP-41).
+    pub fn decimals(env: Env) -> u32 {
+        Self::metadata(&env).decimals
+    }
+
+    // ---- allowance surface (issue #260, #261) ----
+
+    /// Remaining amount `spender` may move from `from`, 0 if none or expired.
+    pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
+        Self::read_allowance(&env, &from, &spender).amount
+    }
+
+    /// Set how much `spender` may move from `from`'s balance, until
+    /// `expiration_ledger`. Pass `amount = 0` to revoke. Mirrors SEP-41.
+    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
+        from.require_auth();
+        if amount < 0 {
+            panic_err(&env, Error::InvalidAmount);
+        }
+        if Self::metadata(&env).paused {
+            panic_err(&env, Error::Paused);
+        }
+        Self::write_allowance(&env, &from, &spender, amount, expiration_ledger);
+        Self::bump(&env);
+        env.events().publish(
+            (symbol_short!("approve"), from, spender),
+            (amount, expiration_ledger),
+        );
+    }
+
+    /// Transfer `amount` from `from` to `to` using `spender`'s allowance.
+    /// Both `from` and `to` must be compliance-approved, matching `transfer`.
+    pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
+        spender.require_auth();
+        Self::check_amount(&env, amount);
+        let meta = Self::metadata(&env);
+        if meta.paused {
+            panic_err(&env, Error::Paused);
+        }
+        if !Self::compliant(&env, &meta.compliance_contract, &from) {
+            panic_err(&env, Error::SenderNotCompliant);
+        }
+        if !Self::compliant(&env, &meta.compliance_contract, &to) {
+            panic_err(&env, Error::RecipientNotCompliant);
+        }
+        Self::spend_allowance(&env, &from, &spender, amount);
+        let from_bal = Self::balance(env.clone(), from.clone());
+        if from_bal < amount {
+            panic_err(&env, Error::InsufficientBalance);
+        }
+        if from == to {
+            Self::bump(&env);
+            env.events().publish(
+                (symbol_short!("transfer"), from, to),
+                (amount, from_bal, from_bal),
+            );
+            return;
+        }
+        let to_bal = Self::balance(env.clone(), to.clone());
+        let new_from_bal = from_bal - amount;
+        Self::set_balance(&env, &from, new_from_bal);
+        let new_to_bal = to_bal
+            .checked_add(amount)
+            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+        Self::set_balance(&env, &to, new_to_bal);
+        Self::bump(&env);
+        env.events().publish(
+            (symbol_short!("transfer"), from, to),
+            (amount, new_from_bal, new_to_bal),
+        );
+    }
+
+    /// Burn `amount` of `from`'s tokens using `spender`'s allowance.
+    pub fn burn_from(env: Env, spender: Address, from: Address, amount: i128) {
+        spender.require_auth();
+        Self::check_amount(&env, amount);
+        let mut meta = Self::metadata(&env);
+        if meta.paused {
+            panic_err(&env, Error::Paused);
+        }
+        if !Self::compliant(&env, &meta.compliance_contract, &from) {
+            panic_err(&env, Error::SenderNotCompliant);
+        }
+        Self::spend_allowance(&env, &from, &spender, amount);
+        let from_bal = Self::balance(env.clone(), from.clone());
+        if from_bal < amount {
+            panic_err(&env, Error::InsufficientBalance);
+        }
+        Self::set_balance(&env, &from, from_bal - amount);
+        meta.total_supply = meta
+            .total_supply
+            .checked_sub(amount)
+            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+        env.storage().instance().set(&DataKey::Metadata, &meta);
+        Self::bump(&env);
+        env.events().publish((symbol_short!("burn"), from), amount);
+    }
+
+    // ---- upgrade (issue #259) ----
+
+    /// Propose upgrading this contract to `new_wasm_hash`. Admin only. Cannot
+    /// be applied until `UPGRADE_TIMELOCK_LEDGERS` have elapsed.
+    pub fn propose_upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        let ready_at = env.ledger().sequence().saturating_add(UPGRADE_TIMELOCK_LEDGERS);
+        let pending = PendingUpgrade {
+            wasm_hash: new_wasm_hash.clone(),
+            ready_at,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingUpgrade, &pending);
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("upgprop"),), (new_wasm_hash, ready_at));
+    }
+
+    /// Cancel a pending upgrade. Admin only.
+    pub fn cancel_upgrade(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        if !env.storage().instance().has(&DataKey::PendingUpgrade) {
+            panic_err(&env, Error::NoPendingUpgrade);
+        }
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+        Self::bump(&env);
+        env.events().publish((symbol_short!("upgcncl"),), ());
+    }
+
+    /// Apply a pending upgrade once its timelock has elapsed. Admin only.
+    pub fn upgrade(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        let pending: PendingUpgrade = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgrade)
+            .unwrap_or_else(|| panic_err(&env, Error::NoPendingUpgrade));
+        if env.ledger().sequence() < pending.ready_at {
+            panic_err(&env, Error::UpgradeNotReady);
+        }
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+        env.deployer()
+            .update_current_contract_wasm(pending.wasm_hash.clone());
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("upgraded"),), pending.wasm_hash);
+    }
+
+    /// The upgrade currently awaiting its timelock, if any.
+    pub fn get_pending_upgrade(env: Env) -> Option<PendingUpgrade> {
+        env.storage().instance().get(&DataKey::PendingUpgrade)
+    }
+
     // ---- internal helpers ----
 
     fn metadata(env: &Env) -> AssetMetadata {
@@ -383,6 +579,61 @@ impl AssetTokenContract {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Current allowance record, treated as zeroed out once expired.
+    fn read_allowance(env: &Env, from: &Address, spender: &Address) -> AllowanceValue {
+        let key = DataKey::Allowance(from.clone(), spender.clone());
+        match env.storage().persistent().get::<_, AllowanceValue>(&key) {
+            Some(a) if a.amount > 0 && a.expiration_ledger < env.ledger().sequence() => {
+                AllowanceValue {
+                    amount: 0,
+                    expiration_ledger: a.expiration_ledger,
+                }
+            }
+            Some(a) => a,
+            None => AllowanceValue {
+                amount: 0,
+                expiration_ledger: 0,
+            },
+        }
+    }
+
+    fn write_allowance(
+        env: &Env,
+        from: &Address,
+        spender: &Address,
+        amount: i128,
+        expiration_ledger: u32,
+    ) {
+        if amount > 0 && expiration_ledger < env.ledger().sequence() {
+            panic_err(env, Error::InvalidExpirationLedger);
+        }
+        let key = DataKey::Allowance(from.clone(), spender.clone());
+        let value = AllowanceValue {
+            amount,
+            expiration_ledger,
+        };
+        env.storage().persistent().set(&key, &value);
+        env.storage().persistent().extend_ttl(
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+    }
+
+    fn spend_allowance(env: &Env, from: &Address, spender: &Address, amount: i128) {
+        let allowance = Self::read_allowance(env, from, spender);
+        if allowance.amount < amount {
+            panic_err(env, Error::InsufficientAllowance);
+        }
+        Self::write_allowance(
+            env,
+            from,
+            spender,
+            allowance.amount - amount,
+            allowance.expiration_ledger,
+        );
     }
 }
 

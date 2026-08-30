@@ -72,6 +72,12 @@ Whether a jurisdiction is currently blocked.
 ### `get_admin() -> Address`
 The configured admin. Errors: `NotInitialized (#2)`.
 
+### `propose_upgrade(admin, new_wasm_hash)` / `cancel_upgrade(admin)` / `upgrade(admin)`
+Admin-gated upgrade path with a 3-day timelock between proposing and applying
+a new Wasm build (#259).
+
+### `get_pending_upgrade() -> Option<PendingUpgrade>`
+
 ## Errors
 
 | Code | Name                | Cause                                   |
@@ -81,6 +87,8 @@ The configured admin. Errors: `NotInitialized (#2)`.
 | 3    | RecordNotFound      | Operating on a missing record           |
 | 4    | InvalidExpiry       | `expires_at` already in the past        |
 | 5    | Unauthorized        | Caller is not the stored admin          |
+| 7    | NoPendingUpgrade    | `cancel_upgrade`/`upgrade` with none pending |
+| 8    | UpgradeNotReady     | `upgrade` before the timelock elapses   |
 
 ## Events
 
@@ -92,6 +100,9 @@ The configured admin. Errors: `NotInitialized (#2)`.
 | `removed`    | (address)                     | address removed            |
 | `blockjur`   | jurisdiction                  | jurisdiction blocked       |
 | `unblkjur`   | jurisdiction                  | jurisdiction unblocked     |
+| `upgprop`    | (wasm_hash, ready_at)         | upgrade proposed           |
+| `upgcncl`    | -                              | upgrade cancelled          |
+| `upgraded`   | wasm_hash                     | upgrade applied            |
 
 ## Storage / TTL
 

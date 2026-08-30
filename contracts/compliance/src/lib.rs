@@ -10,7 +10,8 @@
 //! An `expires_at` of `0` means the KYC approval never expires.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    String, Vec,
 };
 
 /// Approval state of an address.
@@ -52,6 +53,15 @@ enum DataKey {
     AllowlistPageOf(Address),
     Record(Address),
     Blocked(String),
+    PendingUpgrade,
+}
+
+/// An upgrade awaiting its timelock before it can be applied (issue #259).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: BytesN<32>,
+    pub ready_at: u32,
 }
 
 /// Max addresses per allowlist page (issue #177). Bounds the size of any single
@@ -70,15 +80,22 @@ pub enum Error {
     InvalidExpiry = 4,
     Unauthorized = 5,
     InvalidJurisdiction = 6,
+    /// No upgrade is currently pending (issue #259).
+    NoPendingUpgrade = 7,
+    /// A pending upgrade's timelock has not yet elapsed (issue #259).
+    UpgradeNotReady = 8,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280; // ~5s ledgers
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
+/// Minimum delay between proposing and applying a contract upgrade (issue #259).
+const UPGRADE_TIMELOCK_LEDGERS: u32 = 3 * DAY_IN_LEDGERS;
+
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[contract]
 pub struct ComplianceContract;
@@ -357,6 +374,60 @@ impl ComplianceContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error(&env, Error::NotInitialized))
+    }
+
+    // ---- upgrade (issue #259) ----
+
+    /// Propose upgrading this contract to `new_wasm_hash`. Admin only. Cannot
+    /// be applied until `UPGRADE_TIMELOCK_LEDGERS` have elapsed.
+    pub fn propose_upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        let ready_at = env.ledger().sequence().saturating_add(UPGRADE_TIMELOCK_LEDGERS);
+        let pending = PendingUpgrade {
+            wasm_hash: new_wasm_hash.clone(),
+            ready_at,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingUpgrade, &pending);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("upgprop"),), (new_wasm_hash, ready_at));
+    }
+
+    /// Cancel a pending upgrade. Admin only.
+    pub fn cancel_upgrade(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        if !env.storage().instance().has(&DataKey::PendingUpgrade) {
+            panic_with_error(&env, Error::NoPendingUpgrade);
+        }
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+        Self::bump_instance(&env);
+        env.events().publish((symbol_short!("upgcncl"),), ());
+    }
+
+    /// Apply a pending upgrade once its timelock has elapsed. Admin only.
+    pub fn upgrade(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        let pending: PendingUpgrade = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgrade)
+            .unwrap_or_else(|| panic_with_error(&env, Error::NoPendingUpgrade));
+        if env.ledger().sequence() < pending.ready_at {
+            panic_with_error(&env, Error::UpgradeNotReady);
+        }
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+        env.deployer()
+            .update_current_contract_wasm(pending.wasm_hash.clone());
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("upgraded"),), pending.wasm_hash);
+    }
+
+    /// The upgrade currently awaiting its timelock, if any.
+    pub fn get_pending_upgrade(env: Env) -> Option<PendingUpgrade> {
+        env.storage().instance().get(&DataKey::PendingUpgrade)
     }
 
     // ---- internal helpers ----

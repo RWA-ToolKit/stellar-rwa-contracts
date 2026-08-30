@@ -12,7 +12,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
-    Env, Vec,
+    BytesN, Env, Vec,
 };
 
 /// Read-only view of the asset token needed to size a holder's share.
@@ -39,6 +39,17 @@ pub struct Distribution {
     pub distributed: i128,
     pub created_at: u32,
     pub completed: bool,
+    /// Whether an admin has swept the unclaimed remainder (issue #262). Once
+    /// true, no further claims are payable from this distribution.
+    pub swept: bool,
+}
+
+/// An upgrade awaiting its timelock before it can be applied (issue #259).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: BytesN<32>,
+    pub ready_at: u32,
 }
 
 #[contracttype]
@@ -60,6 +71,7 @@ enum DataKey {
     /// creation time so a holder's entitlement can't be inflated (or
     /// diluted) by balance changes after the fact (issue #163).
     Snapshot(u64),
+    PendingUpgrade,
 }
 
 #[contracterror]
@@ -79,15 +91,32 @@ pub enum Error {
     OverDistributed = 9,
     /// `total_amount * balance` would overflow i128 (issue #165).
     ArithmeticOverflow = 10,
+    /// The sweep delay has not yet elapsed since creation (issue #262).
+    TooEarlyToSweep = 11,
+    /// Nothing left to sweep from this distribution (issue #262).
+    NothingToSweep = 12,
+    /// This distribution has already been swept (issue #262).
+    AlreadySwept = 13,
+    /// No upgrade is currently pending (issue #259).
+    NoPendingUpgrade = 14,
+    /// A pending upgrade's timelock has not yet elapsed (issue #259).
+    UpgradeNotReady = 15,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
+/// Ledgers after creation before an admin may sweep a distribution's
+/// unclaimed escrow, giving holders a long window to claim first (issue #262).
+const SWEEP_DELAY_LEDGERS: u32 = 90 * DAY_IN_LEDGERS;
+
+/// Minimum delay between proposing and applying a contract upgrade (issue #259).
+const UPGRADE_TIMELOCK_LEDGERS: u32 = 3 * DAY_IN_LEDGERS;
+
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 #[contract]
 pub struct DividendContract;
@@ -175,6 +204,7 @@ impl DividendContract {
             distributed: 0,
             created_at: env.ledger().sequence(),
             completed: false,
+            swept: false,
         };
         env.storage().persistent().set(&DataKey::Dist(id), &dist);
         env.storage().persistent().extend_ttl(
@@ -209,6 +239,11 @@ impl DividendContract {
     /// claimed, holds nothing, or the distribution is empty).
     pub fn claimable(env: Env, distribution_id: u64, holder: Address) -> i128 {
         let dist = Self::load(&env, distribution_id);
+        // Once an admin has swept the escrow (issue #262), nothing more is
+        // payable, regardless of what a holder's snapshot basis would imply.
+        if dist.swept {
+            return 0;
+        }
         if Self::has_claimed(env.clone(), distribution_id, holder.clone()) {
             return 0;
         }
@@ -344,6 +379,102 @@ impl DividendContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_err(&env, Error::NotInitialized))
+    }
+
+    /// Sweep a distribution's unclaimed escrow back to the admin. Admin only,
+    /// and only once `SWEEP_DELAY_LEDGERS` have elapsed since creation, so
+    /// holders keep a long window to claim first (issue #262). Zeroes out the
+    /// distribution's remaining claimable amount so no holder can claim
+    /// after the sweep.
+    pub fn sweep(env: Env, admin: Address, distribution_id: u64) {
+        Self::require_admin(&env, &admin);
+        let mut dist = Self::load(&env, distribution_id);
+        if dist.swept {
+            panic_err(&env, Error::AlreadySwept);
+        }
+        let deadline = dist.created_at.saturating_add(SWEEP_DELAY_LEDGERS);
+        if env.ledger().sequence() < deadline {
+            panic_err(&env, Error::TooEarlyToSweep);
+        }
+        let remaining = dist
+            .total_amount
+            .checked_sub(dist.distributed)
+            .unwrap_or_else(|| panic_err(&env, Error::ArithmeticOverflow));
+        if remaining <= 0 {
+            panic_err(&env, Error::NothingToSweep);
+        }
+        dist.swept = true;
+        dist.distributed = dist.total_amount;
+        dist.completed = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dist(distribution_id), &dist);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Dist(distribution_id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        bump(&env);
+        let this = env.current_contract_address();
+        TokenClient::new(&env, &dist.payment_token).transfer(&this, &admin, &remaining);
+        env.events().publish(
+            (symbol_short!("swept"), admin),
+            (distribution_id, remaining),
+        );
+    }
+
+    // ---- upgrade (issue #259) ----
+
+    /// Propose upgrading this contract to `new_wasm_hash`. Admin only. Cannot
+    /// be applied until `UPGRADE_TIMELOCK_LEDGERS` have elapsed.
+    pub fn propose_upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        let ready_at = env.ledger().sequence().saturating_add(UPGRADE_TIMELOCK_LEDGERS);
+        let pending = PendingUpgrade {
+            wasm_hash: new_wasm_hash.clone(),
+            ready_at,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingUpgrade, &pending);
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("upgprop"),), (new_wasm_hash, ready_at));
+    }
+
+    /// Cancel a pending upgrade. Admin only.
+    pub fn cancel_upgrade(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        if !env.storage().instance().has(&DataKey::PendingUpgrade) {
+            panic_err(&env, Error::NoPendingUpgrade);
+        }
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+        bump(&env);
+        env.events().publish((symbol_short!("upgcncl"),), ());
+    }
+
+    /// Apply a pending upgrade once its timelock has elapsed. Admin only.
+    pub fn upgrade(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        let pending: PendingUpgrade = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgrade)
+            .unwrap_or_else(|| panic_err(&env, Error::NoPendingUpgrade));
+        if env.ledger().sequence() < pending.ready_at {
+            panic_err(&env, Error::UpgradeNotReady);
+        }
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+        env.deployer()
+            .update_current_contract_wasm(pending.wasm_hash.clone());
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("upgraded"),), pending.wasm_hash);
+    }
+
+    /// The upgrade currently awaiting its timelock, if any.
+    pub fn get_pending_upgrade(env: Env) -> Option<PendingUpgrade> {
+        env.storage().instance().get(&DataKey::PendingUpgrade)
     }
 
     // ---- internal helpers ----

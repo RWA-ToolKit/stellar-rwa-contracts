@@ -61,6 +61,13 @@ pub trait TokenInterface {
 - `get_distributions_for_asset(asset_token) -> Vec<Distribution>`
 - `has_claimed(distribution_id, holder) -> bool`
 - `get_admin() -> Address`
+- `sweep(admin, distribution_id)` — admin auth; recovers a distribution's
+  unclaimed escrow once 90 days have passed since creation, and blocks any
+  further claims against it (#262). Errors: `TooEarlyToSweep (#11)`,
+  `NothingToSweep (#12)`, `AlreadySwept (#13)`.
+- `propose_upgrade(admin, new_wasm_hash)` / `cancel_upgrade(admin)` /
+  `upgrade(admin)` — admin-gated upgrade path with a 3-day timelock (#259).
+- `get_pending_upgrade() -> Option<PendingUpgrade>`
 
 ## Errors
 
@@ -73,6 +80,11 @@ pub trait TokenInterface {
 | 5    | InvalidAmount        | `total_amount <= 0`                  |
 | 6    | NothingToClaim       | claimable is zero                    |
 | 7    | AlreadyClaimed       | holder already claimed this dist     |
+| 11   | TooEarlyToSweep      | `sweep` before the 90-day grace period |
+| 12   | NothingToSweep       | distribution already fully claimed   |
+| 13   | AlreadySwept         | `sweep` called twice                 |
+| 14   | NoPendingUpgrade     | `cancel_upgrade`/`upgrade` with none pending |
+| 15   | UpgradeNotReady      | `upgrade` before the timelock elapses |
 
 ## Events
 
@@ -81,6 +93,10 @@ pub trait TokenInterface {
 | `init`    | admin                      | initialize          |
 | `created` | (admin) → (id, total)      | distribution funded |
 | `claim`   | (holder) → (id, amount)    | holder claims       |
+| `swept`   | (admin) → (id, amount)     | admin sweeps unclaimed escrow |
+| `upgprop` | (wasm_hash, ready_at)      | upgrade proposed    |
+| `upgcncl` | -                          | upgrade cancelled   |
+| `upgraded`| wasm_hash                  | upgrade applied     |
 
 ## Storage / TTL
 

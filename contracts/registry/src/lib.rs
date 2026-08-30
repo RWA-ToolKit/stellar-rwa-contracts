@@ -7,7 +7,8 @@
 //! status. It also reports total value locked (TVL) across active assets.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    String, Vec,
 };
 
 // NOTE: The `Ids` instance-storage key is retained in the enum only for
@@ -41,6 +42,15 @@ enum DataKey {
     IssuerIndex(Address),
     TypeIndex(String),
     TotalValuation,
+    PendingUpgrade,
+}
+
+/// An upgrade awaiting its timelock before it can be applied (issue #259).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: BytesN<32>,
+    pub ready_at: u32,
 }
 
 #[contracterror]
@@ -54,15 +64,22 @@ pub enum Error {
     InvalidValuation = 5,
     Overflow = 6,
     InvalidInput = 7,
+    /// No upgrade is currently pending (issue #259).
+    NoPendingUpgrade = 8,
+    /// A pending upgrade's timelock has not yet elapsed (issue #259).
+    UpgradeNotReady = 9,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
+/// Minimum delay between proposing and applying a contract upgrade (issue #259).
+const UPGRADE_TIMELOCK_LEDGERS: u32 = 3 * DAY_IN_LEDGERS;
+
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[contract]
 pub struct RegistryContract;
@@ -312,6 +329,60 @@ impl RegistryContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_err(&env, Error::NotInitialized))
+    }
+
+    // ---- upgrade (issue #259) ----
+
+    /// Propose upgrading this contract to `new_wasm_hash`. Admin only. Cannot
+    /// be applied until `UPGRADE_TIMELOCK_LEDGERS` have elapsed.
+    pub fn propose_upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        let ready_at = env.ledger().sequence().saturating_add(UPGRADE_TIMELOCK_LEDGERS);
+        let pending = PendingUpgrade {
+            wasm_hash: new_wasm_hash.clone(),
+            ready_at,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingUpgrade, &pending);
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("upgprop"),), (new_wasm_hash, ready_at));
+    }
+
+    /// Cancel a pending upgrade. Admin only.
+    pub fn cancel_upgrade(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        if !env.storage().instance().has(&DataKey::PendingUpgrade) {
+            panic_err(&env, Error::NoPendingUpgrade);
+        }
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+        bump(&env);
+        env.events().publish((symbol_short!("upgcncl"),), ());
+    }
+
+    /// Apply a pending upgrade once its timelock has elapsed. Admin only.
+    pub fn upgrade(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        let pending: PendingUpgrade = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgrade)
+            .unwrap_or_else(|| panic_err(&env, Error::NoPendingUpgrade));
+        if env.ledger().sequence() < pending.ready_at {
+            panic_err(&env, Error::UpgradeNotReady);
+        }
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+        env.deployer()
+            .update_current_contract_wasm(pending.wasm_hash.clone());
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("upgraded"),), pending.wasm_hash);
+    }
+
+    /// The upgrade currently awaiting its timelock, if any.
+    pub fn get_pending_upgrade(env: Env) -> Option<PendingUpgrade> {
+        env.storage().instance().get(&DataKey::PendingUpgrade)
     }
 
     // ---- internal helpers ----

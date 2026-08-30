@@ -59,6 +59,20 @@ in metadata and can be swapped with `set_compliance`.
 - `get_metadata() -> AssetMetadata`
 - `update_valuation(admin, new_valuation)` — admin auth.
 - `set_compliance(admin, compliance)` — admin auth; repoints the gate.
+- `name() -> String` / `symbol() -> String` / `decimals() -> u32` — SEP-41
+  metadata accessors (#261).
+- `allowance(from, spender) -> i128` — remaining approved amount, 0 if none or
+  expired (#260).
+- `approve(from, spender, amount, expiration_ledger)` — `from` auth; sets or
+  revokes (`amount = 0`) an allowance (#260, #261).
+- `transfer_from(spender, from, to, amount)` — `spender` auth; spends the
+  allowance; both `from`/`to` must be compliant, same as `transfer` (#260).
+- `burn_from(spender, from, amount)` — `spender` auth; spends the allowance;
+  reduces `from`'s balance and total supply (#260, #261).
+- `propose_upgrade(admin, new_wasm_hash)` / `cancel_upgrade(admin)` /
+  `upgrade(admin)` — admin-gated upgrade path with a 3-day timelock between
+  proposing and applying a new Wasm build (#259).
+- `get_pending_upgrade() -> Option<PendingUpgrade>`
 
 ## Errors
 
@@ -73,6 +87,10 @@ in metadata and can be swapped with `set_compliance`.
 | 7    | SenderNotCompliant     | sender fails `is_allowed`            |
 | 8    | RecipientNotCompliant  | recipient fails `is_allowed`         |
 | 9    | Overflow               | supply overflow on mint              |
+| 12   | InsufficientAllowance  | `transfer_from`/`burn_from` over allowance |
+| 13   | InvalidExpirationLedger| non-zero `approve` with a past expiration  |
+| 14   | NoPendingUpgrade       | `cancel_upgrade`/`upgrade` with none pending |
+| 15   | UpgradeNotReady        | `upgrade` before the timelock elapses      |
 
 ## Events
 
@@ -85,6 +103,10 @@ in metadata and can be swapped with `set_compliance`.
 | `unpause`   | admin                   | unpause      |
 | `valuation` | new valuation           | valuation up |
 | `setcomp`   | compliance address      | gate changed |
+| `approve`   | (from, spender) → (amount, expiration_ledger) | approve |
+| `upgprop`   | (wasm_hash, ready_at)   | upgrade proposed |
+| `upgcncl`   | -                       | upgrade cancelled |
+| `upgraded`  | wasm_hash               | upgrade applied |
 
 ## Storage / TTL
 

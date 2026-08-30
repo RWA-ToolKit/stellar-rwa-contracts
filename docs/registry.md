@@ -32,6 +32,9 @@ and reports total value locked (TVL).
 - `total_value_locked() -> i128` — sum of `valuation` over active assets.
 - `asset_count() -> u64`
 - `get_admin() -> Address`
+- `propose_upgrade(admin, new_wasm_hash)` / `cancel_upgrade(admin)` /
+  `upgrade(admin)` — admin-gated upgrade path with a 3-day timelock (#259).
+- `get_pending_upgrade() -> Option<PendingUpgrade>`
 
 ## Errors
 
@@ -42,6 +45,8 @@ and reports total value locked (TVL).
 | 3    | Unauthorized       | non-admin deactivation         |
 | 4    | AssetNotFound      | unknown id                     |
 | 5    | InvalidValuation   | negative valuation             |
+| 8    | NoPendingUpgrade   | `cancel_upgrade`/`upgrade` with none pending |
+| 9    | UpgradeNotReady    | `upgrade` before the timelock elapses |
 
 ## Events
 
@@ -50,6 +55,9 @@ and reports total value locked (TVL).
 | `init`      | admin             | initialize        |
 | `register`  | (issuer) → id     | asset registered  |
 | `deactvate` | asset_id          | asset deactivated |
+| `upgprop`   | (wasm_hash, ready_at) | upgrade proposed |
+| `upgcncl`   | -                 | upgrade cancelled |
+| `upgraded`  | wasm_hash         | upgrade applied   |
 
 ## Storage / TTL
 
