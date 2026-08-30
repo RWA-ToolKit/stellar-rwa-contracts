@@ -13,13 +13,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
+      # Reads rust-toolchain.toml and installs/activates exactly the channel,
+      # targets, and components pinned there, so CI can't drift onto a newer
+      # `stable` than the one contributors build against locally.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
-          components: rustfmt
+        run: rustup show
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -55,12 +55,10 @@ jobs:
   build-wasm:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
+        run: rustup show
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -76,3 +74,35 @@ jobs:
       # CLI from source (which needs the libdbus system library and is slow).
       - name: Build contracts (wasm)
         run: cargo build --workspace --release --target wasm32v1-none
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust
+        run: rustup show
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
+
+      # Report-only for now: prints a per-crate summary to the job's PR check
+      # so reviewers have a coverage signal. No floor is enforced yet -- that
+      # needs a separate discussion to agree a sane threshold first.
+      - name: Generate coverage summary
+        run: |
+          {
+            echo "### Coverage summary"
+            echo '```'
+            cargo llvm-cov --workspace --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

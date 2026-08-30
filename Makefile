@@ -1,4 +1,4 @@
-.PHONY: build test fmt fmt-check clean deploy
+.PHONY: build test coverage fmt fmt-check clean deploy
 
 # Build all contracts to wasm.
 build:
@@ -7,6 +7,10 @@ build:
 # Run the full workspace test suite.
 test:
 	cargo test
+
+# Print a per-crate coverage summary (requires cargo-llvm-cov).
+coverage:
+	cargo llvm-cov --workspace --summary-only
 
 # Format all code.
 fmt:
