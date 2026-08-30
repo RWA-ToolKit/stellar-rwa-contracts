@@ -1,4 +1,4 @@
-.PHONY: build test fmt fmt-check clean deploy
+.PHONY: build test fmt fmt-check clippy verify clean deploy
 
 # Build all contracts to wasm.
 build:
@@ -15,6 +15,15 @@ fmt:
 # Check formatting without writing.
 fmt-check:
 	cargo fmt --all -- --check
+
+# Lint the workspace, denying warnings.
+clippy:
+	cargo clippy --workspace --all-targets -- -D warnings
+
+# Run the full local gate in the same order as CI: test, format check,
+# lint, then the wasm build. Mirrors .github/workflows/ci.yml so
+# contributors can catch a CI failure before pushing.
+verify: test fmt-check clippy build
 
 # Remove build artifacts.
 clean:

@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Catch DEPLOYMENTS.md drifting from what's actually live on Testnet
+    # (e.g. a redeploy that forgot to update the recorded contract ids).
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -28,7 +33,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-test-
 
       # Tests run before the formatting gate. A cosmetic `cargo fmt` failure
       # used to abort the job at the first step, so `cargo test` never ran and
@@ -69,10 +76,56 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-wasm-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-wasm32v1-none-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm32v1-none-
 
       # Build the contracts to Wasm directly with cargo. This verifies the same
       # artifacts as `stellar contract build` without compiling the full Stellar
       # CLI from source (which needs the libdbus system library and is slow).
+      #
+      # --locked ensures a drifted Cargo.lock fails here instead of being
+      # silently regenerated, with the mismatch only surfacing at deploy time.
       - name: Build contracts (wasm)
-        run: cargo build --workspace --release --target wasm32v1-none
+        run: cargo build --workspace --release --target wasm32v1-none --locked
+
+  check-deployments:
+    # Only meaningful on a schedule or manual trigger: it checks the current
+    # state of the live network against what DEPLOYMENTS.md records, which has
+    # nothing to do with the code in a given push or PR.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm32v1-none-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-wasm32v1-none-
+
+      - name: Build contracts (wasm)
+        run: cargo build --workspace --release --target wasm32v1-none --locked
+
+      - name: Install system deps for stellar-cli
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install stellar-cli
+        run: cargo install --locked stellar-cli
+
+      # Fetches the wasm actually live at each id in DEPLOYMENTS.md and
+      # compares it to what this repo builds, so a redeploy that forgot to
+      # update the file (or an id that no longer resolves) fails loudly
+      # instead of the doc silently drifting from reality.
+      - name: Verify DEPLOYMENTS.md against Testnet
+        run: ./scripts/check_deployments.sh
