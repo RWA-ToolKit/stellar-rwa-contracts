@@ -91,6 +91,15 @@ impl ComplianceContract {
     }
 
     /// Initialize the contract with an admin. Callable exactly once.
+    ///
+    /// Security: this is permissionless until first called — anyone who
+    /// observes a freshly deployed, uninitialized instance can call
+    /// `initialize` with themselves as `admin` and claim it, since
+    /// `require_auth` only proves they authorized their *own* address, not
+    /// that they are the intended admin. Deploy and initialize must be
+    /// submitted together (see `scripts/deploy.sh`, which invokes
+    /// `initialize` immediately after `deploy` with no other steps in
+    /// between) so no window exists for an outside caller to front-run it.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error(&env, Error::AlreadyInitialized);

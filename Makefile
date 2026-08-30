@@ -1,7 +1,13 @@
-.PHONY: build test fmt fmt-check clean deploy
+.PHONY: build build-cli test fmt fmt-check clippy verify clean deploy
 
-# Build all contracts to wasm.
+# Build all contracts to wasm the same way CI does: plain cargo against the
+# wasm32v1-none target. This avoids requiring the Stellar CLI just to build.
 build:
+	cargo build --workspace --release --target wasm32v1-none
+
+# Build via the Stellar CLI instead (needed for `stellar contract deploy`
+# workflows, e.g. `make deploy`). Requires the CLI to be installed.
+build-cli:
 	stellar contract build
 
 # Run the full workspace test suite.
@@ -15,6 +21,13 @@ fmt:
 # Check formatting without writing.
 fmt-check:
 	cargo fmt --all -- --check
+
+# Lint with clippy, denying warnings.
+clippy:
+	cargo clippy --all-targets -- -D warnings
+
+# Run the full local verification suite: formatting, lints, and tests.
+verify: fmt-check clippy test
 
 # Remove build artifacts.
 clean:

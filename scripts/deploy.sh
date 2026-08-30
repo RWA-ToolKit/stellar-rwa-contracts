@@ -10,32 +10,76 @@
 # Requirements: stellar CLI (>= 22), a funded identity on the target network.
 # The script is idempotent about building; deployment always creates fresh
 # contract instances and prints their ids.
+#
+# Set DRY_RUN=1 to print the commands that would run without executing them.
+# Deploying to any network other than "testnet" requires typing "yes" at an
+# interactive confirmation prompt (skip it non-interactively with CONFIRM=1),
+# since a mistyped NETWORK could otherwise spend real funds unattended.
 
 set -euo pipefail
 
 NETWORK="${NETWORK:-testnet}"
 IDENTITY="${IDENTITY:-rwa-admin}"
+DRY_RUN="${DRY_RUN:-0}"
+CONFIRM="${CONFIRM:-0}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WASM_DIR="$ROOT/target/wasm32v1-none/release"
 
 echo "==> Network:  $NETWORK"
 echo "==> Identity: $IDENTITY"
+if [ "$DRY_RUN" = "1" ]; then
+  echo "==> DRY_RUN=1: commands will be printed, not executed."
+fi
+
+# 0. Require explicit confirmation before touching any non-testnet network.
+if [ "$DRY_RUN" != "1" ] && [ "$NETWORK" != "testnet" ]; then
+  if [ "$CONFIRM" = "1" ]; then
+    echo "==> CONFIRM=1: skipping interactive confirmation for network '$NETWORK'."
+  else
+    read -r -p "About to deploy and initialize contracts on '$NETWORK', which may spend real funds. Type 'yes' to continue: " reply
+    if [ "$reply" != "yes" ]; then
+      echo "Aborted."
+      exit 1
+    fi
+  fi
+fi
+
+# run <description> -- <command...>
+# In DRY_RUN mode, prints the command instead of executing it.
+run() {
+  local desc="$1"; shift
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "DRY_RUN: $desc: $*"
+  else
+    "$@"
+  fi
+}
 
 # 1. Ensure the deploying identity exists and is funded (Testnet friendbot).
-if ! stellar keys address "$IDENTITY" >/dev/null 2>&1; then
-  echo "==> Generating and funding identity '$IDENTITY'..."
-  stellar keys generate --network "$NETWORK" --fund "$IDENTITY"
+if [ "$DRY_RUN" = "1" ]; then
+  echo "DRY_RUN: would ensure identity '$IDENTITY' exists and is funded on $NETWORK"
+  ADMIN_ADDR="<admin-address>"
+else
+  if ! stellar keys address "$IDENTITY" >/dev/null 2>&1; then
+    echo "==> Generating and funding identity '$IDENTITY'..."
+    stellar keys generate --network "$NETWORK" --fund "$IDENTITY"
+  fi
+  ADMIN_ADDR="$(stellar keys address "$IDENTITY")"
 fi
-ADMIN_ADDR="$(stellar keys address "$IDENTITY")"
 echo "==> Admin address: $ADMIN_ADDR"
 
 # 2. Build all contracts to wasm.
 echo "==> Building contracts..."
-stellar contract build >/dev/null
+run "build contracts" stellar contract build >/dev/null
 
 deploy() {
   # deploy <wasm-name> -> echoes the contract id
   local wasm="$1"
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "DRY_RUN: stellar contract deploy --wasm $WASM_DIR/${wasm}.wasm --source $IDENTITY --network $NETWORK" >&2
+    echo "<${wasm}-contract-id>"
+    return
+  fi
   stellar contract deploy \
     --wasm "$WASM_DIR/${wasm}.wasm" \
     --source "$IDENTITY" \
@@ -45,6 +89,10 @@ deploy() {
 invoke() {
   # invoke <contract-id> <fn> [args...]
   local id="$1"; shift
+  if [ "$DRY_RUN" = "1" ]; then
+    echo "DRY_RUN: stellar contract invoke --id $id --source $IDENTITY --network $NETWORK -- $*"
+    return
+  fi
   stellar contract invoke \
     --id "$id" \
     --source "$IDENTITY" \
