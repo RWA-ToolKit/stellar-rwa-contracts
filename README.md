@@ -19,6 +19,8 @@ via a cross-contract call into the compliance contract.
 | **dividend** | Proportional yield/dividend distribution | [docs](docs/dividend.md) | `CAR4XY3CEBQWFOL27JEWFW34KXSIZA7RFKDQMEIV7ZU723RWY37I2SYX` |
 
 Full addresses and the sample asset are in [DEPLOYMENTS.md](DEPLOYMENTS.md).
+Unit and timestamp conventions (USD cents, token decimals, ledger sequences)
+are collected in [docs/CONVENTIONS.md](docs/CONVENTIONS.md).
 
 ## How compliance gating works
 
@@ -51,7 +53,8 @@ platform — and lean directly on Stellar primitives:
 - **Persistent + instance storage** with TTL bumping keeps asset, KYC and
   distribution state alive on-ledger.
 - **Value scaling:** valuations are stored as USD cents (`i128`); token amounts are
-  integers in each token's own `decimals` base.
+  integers in each token's own `decimals` base; time is ledger sequence numbers,
+  not wall-clock. Worked examples: [docs/CONVENTIONS.md](docs/CONVENTIONS.md).
 
 ### Network & deployment (Testnet)
 

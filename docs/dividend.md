@@ -29,6 +29,7 @@ division floors the result. Each holder can claim a given distribution **once**.
 | `snapshot_ledger`| `u32`     | Ledger at creation (reference)       |
 | `created_at`     | `u32`     | Ledger at creation                   |
 | `completed`      | `bool`    | True once `distributed >= total`     |
+| `claim_deadline` | `Option<u32>` | Ledger after which claims are rejected; `None` = never expires |
 
 ## Cross-contract interfaces
 
@@ -52,11 +53,16 @@ pub trait TokenInterface {
   admin auth; pulls `total_amount` of `payment_token` from the admin into the
   contract's escrow and records the distribution. `InvalidAmount (#5)` if
   `total_amount <= 0`.
+- `create_distribution_deadline(admin, asset_token, payment_token, total_amount, eligible, claim_deadline) -> u64` —
+  same as `create_distribution`, but sets `claim_deadline` (a ledger sequence
+  that must be strictly after the current one — `InvalidDeadline (#12)`
+  otherwise), after which claims are rejected.
 - `claimable(distribution_id, holder) -> i128` — the holder's remaining share
   (0 if already claimed / holds nothing / empty supply). Never panics.
 - `claim(distribution_id, holder)` — holder auth; pays the claimable amount from
   escrow, marks claimed, updates `distributed`/`completed`. Errors:
-  `AlreadyClaimed (#7)`, `NothingToClaim (#6)`.
+  `AlreadyClaimed (#7)`, `NothingToClaim (#6)`, `DistributionExpired (#11)` if
+  claimed after `claim_deadline`.
 - `get_distribution(distribution_id) -> Distribution` — `DistributionNotFound (#4)`.
 - `get_distributions_for_asset(asset_token) -> Vec<Distribution>`
 - `has_claimed(distribution_id, holder) -> bool`
@@ -73,6 +79,11 @@ pub trait TokenInterface {
 | 5    | InvalidAmount        | `total_amount <= 0`                  |
 | 6    | NothingToClaim       | claimable is zero                    |
 | 7    | AlreadyClaimed       | holder already claimed this dist     |
+| 8    | ZeroSupply           | `asset_token` has zero total supply  |
+| 9    | OverDistributed      | claims would exceed `total_amount`   |
+| 10   | ArithmeticOverflow   | `total_amount * balance` overflows   |
+| 11   | DistributionExpired  | claim made after `claim_deadline`    |
+| 12   | InvalidDeadline      | `claim_deadline` not after current ledger |
 
 ## Events
 

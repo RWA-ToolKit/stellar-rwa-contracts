@@ -8,7 +8,9 @@
 //!
 //! Balances are read at claim time from the asset token; there is no balance
 //! snapshot. `created_at` records the ledger at which the distribution was
-//! created for reference.
+//! created for reference. `create_distribution_deadline` additionally
+//! accepts a `claim_deadline` ledger, after which claims are rejected so the
+//! issuer can eventually close the books on the distribution (issue #263).
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
@@ -39,6 +41,9 @@ pub struct Distribution {
     pub distributed: i128,
     pub created_at: u32,
     pub completed: bool,
+    /// Ledger sequence after which claims are rejected (issue #263). `None`
+    /// means the distribution never expires, matching prior behavior.
+    pub claim_deadline: Option<u32>,
 }
 
 #[contracttype]
@@ -79,6 +84,10 @@ pub enum Error {
     OverDistributed = 9,
     /// `total_amount * balance` would overflow i128 (issue #165).
     ArithmeticOverflow = 10,
+    /// Claim attempted after the distribution's `claim_deadline` (issue #263).
+    DistributionExpired = 11,
+    /// `claim_deadline` is not strictly after the current ledger (issue #263).
+    InvalidDeadline = 12,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -87,7 +96,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 #[contract]
 pub struct DividendContract;
@@ -125,6 +134,54 @@ impl DividendContract {
         payment_token: Address,
         total_amount: i128,
         eligible: Vec<(Address, i128)>,
+    ) -> u64 {
+        Self::create_distribution_impl(
+            env,
+            admin,
+            asset_token,
+            payment_token,
+            total_amount,
+            eligible,
+            None,
+        )
+    }
+
+    /// Same as `create_distribution`, but with a `claim_deadline` ledger
+    /// sequence: claims made after that ledger are rejected, so the issuer
+    /// can eventually close the books on the distribution (issue #263).
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_distribution_deadline(
+        env: Env,
+        admin: Address,
+        asset_token: Address,
+        payment_token: Address,
+        total_amount: i128,
+        eligible: Vec<(Address, i128)>,
+        claim_deadline: u32,
+    ) -> u64 {
+        if claim_deadline <= env.ledger().sequence() {
+            panic_err(&env, Error::InvalidDeadline);
+        }
+        Self::create_distribution_impl(
+            env,
+            admin,
+            asset_token,
+            payment_token,
+            total_amount,
+            eligible,
+            Some(claim_deadline),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_distribution_impl(
+        env: Env,
+        admin: Address,
+        asset_token: Address,
+        payment_token: Address,
+        total_amount: i128,
+        eligible: Vec<(Address, i128)>,
+        claim_deadline: Option<u32>,
     ) -> u64 {
         Self::require_admin(&env, &admin);
         if total_amount <= 0 {
@@ -175,6 +232,7 @@ impl DividendContract {
             distributed: 0,
             created_at: env.ledger().sequence(),
             completed: false,
+            claim_deadline,
         };
         env.storage().persistent().set(&DataKey::Dist(id), &dist);
         env.storage().persistent().extend_ttl(
@@ -233,6 +291,11 @@ impl DividendContract {
     pub fn claim(env: Env, distribution_id: u64, holder: Address) {
         holder.require_auth();
         let mut dist = Self::load(&env, distribution_id);
+        if let Some(deadline) = dist.claim_deadline {
+            if env.ledger().sequence() > deadline {
+                panic_err(&env, Error::DistributionExpired);
+            }
+        }
         if Self::has_claimed(env.clone(), distribution_id, holder.clone()) {
             panic_err(&env, Error::AlreadyClaimed);
         }

@@ -5,10 +5,25 @@
 //! issuer registers their asset-token contract here; the registry assigns a
 //! monotonically increasing id and tracks issuer, type, valuation and active
 //! status. It also reports total value locked (TVL) across active assets.
+//!
+//! `valuation` is duplicated from the asset token for cheap reads (TVL is a
+//! single storage read rather than a fan-out over every asset); `update_valuation`
+//! is the one path for changing it post-registration, and keeps both copies
+//! in sync by cross-invoking the token's own `update_valuation` in the same
+//! call (issues #264, #265).
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
+    Env, String, Vec,
 };
+
+/// Cross-contract client for the asset token's own valuation, used by
+/// `update_valuation` to keep the registry's copy and the token's copy from
+/// drifting apart (issues #264, #265).
+#[contractclient(name = "AssetTokenClient")]
+pub trait AssetTokenInterface {
+    fn update_valuation(env: Env, admin: Address, new_valuation: i128);
+}
 
 // NOTE: The `Ids` instance-storage key is retained in the enum only for
 // forward-compatibility reads of contracts already deployed; it is no longer
@@ -62,7 +77,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[contract]
 pub struct RegistryContract;
@@ -281,6 +296,61 @@ impl RegistryContract {
         bump(&env);
         env.events()
             .publish((symbol_short!("deactvate"),), asset_id);
+    }
+
+    /// Update an asset's valuation, keeping the registry's copy and the
+    /// underlying asset token's copy from drifting apart (issues #264, #265).
+    /// Issuer-authorized. This call is the single path for changing
+    /// valuation post-registration: it cross-invokes the token contract's own
+    /// `update_valuation` — which independently requires `issuer` to
+    /// authorize as the token's admin — before touching the registry's
+    /// entry, so a caller who isn't also the token's admin fails before
+    /// either copy changes, and the two never observably disagree.
+    pub fn update_valuation(env: Env, issuer: Address, asset_id: u64, new_valuation: i128) {
+        issuer.require_auth();
+        if new_valuation < 0 {
+            panic_err(&env, Error::InvalidValuation);
+        }
+        let mut entry: AssetEntry = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Asset(asset_id))
+            .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
+        if entry.issuer != issuer {
+            panic_err(&env, Error::Unauthorized);
+        }
+        AssetTokenClient::new(&env, &entry.token_contract)
+            .update_valuation(&issuer, &new_valuation);
+
+        let old_valuation = entry.valuation;
+        entry.valuation = new_valuation;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Asset(asset_id), &entry);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Asset(asset_id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+
+        if entry.active {
+            let tvl: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::TotalValuation)
+                .unwrap_or(0);
+            let new_tvl = tvl
+                .checked_sub(old_valuation)
+                .and_then(|v| v.checked_add(new_valuation))
+                .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalValuation, &new_tvl);
+        }
+
+        bump(&env);
+        env.events()
+            .publish((symbol_short!("valuation"), asset_id), new_valuation);
     }
 
     /// Sum of valuations across all active assets, in USD cents. Maintained
