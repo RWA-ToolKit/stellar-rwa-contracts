@@ -32,16 +32,20 @@ and reports total value locked (TVL).
 - `total_value_locked() -> i128` — sum of `valuation` over active assets.
 - `asset_count() -> u64`
 - `get_admin() -> Address`
+- `upgrade(admin, new_wasm_hash)` — admin auth; deploys new Wasm in place (see
+  `scripts/deploy.sh --upgrade`).
 
 ## Errors
 
-| Code | Name               | Cause                          |
-|------|--------------------|--------------------------------|
-| 1    | AlreadyInitialized | double init                    |
-| 2    | NotInitialized     | used before init               |
-| 3    | Unauthorized       | non-admin deactivation         |
-| 4    | AssetNotFound      | unknown id                     |
-| 5    | InvalidValuation   | negative valuation             |
+| Code | Name | Cause |
+|------|------|-------|
+| 1 | AlreadyInitialized | double init |
+| 2 | NotInitialized | used before init |
+| 3 | Unauthorized | non-admin deactivation |
+| 4 | AssetNotFound | unknown id |
+| 5 | InvalidValuation | negative valuation |
+| 6 | Overflow | total valuation overflow on registration |
+| 7 | InvalidInput | empty name or unrecognised `asset_type` (issue #48) |
 
 ## Events
 

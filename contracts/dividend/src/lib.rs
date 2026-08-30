@@ -12,7 +12,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
-    Env, Vec,
+    BytesN, Env, Vec,
 };
 
 /// Read-only view of the asset token needed to size a holder's share.
@@ -66,12 +66,19 @@ enum DataKey {
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// double init
     AlreadyInitialized = 1,
+    /// used before init
     NotInitialized = 2,
+    /// non-admin create
     Unauthorized = 3,
+    /// unknown distribution id
     DistributionNotFound = 4,
+    /// `total_amount <= 0`
     InvalidAmount = 5,
+    /// claimable is zero
     NothingToClaim = 6,
+    /// holder already claimed this distribution
     AlreadyClaimed = 7,
     /// `asset_token` has zero total supply; no holder can ever claim (issue #49).
     ZeroSupply = 8,
@@ -87,7 +94,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 #[contract]
 pub struct DividendContract;
@@ -344,6 +351,17 @@ impl DividendContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_err(&env, Error::NotInitialized))
+    }
+
+    /// Deploy new Wasm bytecode to this contract instance in place, keeping the
+    /// same contract id and storage. Admin only. See `deploy.sh --upgrade`.
+    ///
+    /// The storage layout (`DataKey`) must stay compatible with the previous
+    /// version, or existing data becomes unreadable; bump `VERSION` when it
+    /// changes.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     // ---- internal helpers ----

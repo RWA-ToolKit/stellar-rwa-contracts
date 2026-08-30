@@ -1,0 +1,43 @@
+# Configuration for `cargo deny check` (https://embarkstudios.github.io/cargo-deny/).
+# Run locally with `cargo install cargo-deny --locked && cargo deny check`.
+# Enforced in CI by the `deny` job in .github/workflows/ci.yml.
+
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# SPDX identifiers used by this workspace's dependency tree. Add to this list
+# deliberately, not to silence a failure without checking the license.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "MPL-2.0",
+  "CC0-1.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

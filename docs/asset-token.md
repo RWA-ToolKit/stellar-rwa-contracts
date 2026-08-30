@@ -59,20 +59,24 @@ in metadata and can be swapped with `set_compliance`.
 - `get_metadata() -> AssetMetadata`
 - `update_valuation(admin, new_valuation)` — admin auth.
 - `set_compliance(admin, compliance)` — admin auth; repoints the gate.
+- `upgrade(admin, new_wasm_hash)` — admin auth; deploys new Wasm in place (see
+  `scripts/deploy.sh --upgrade`).
 
 ## Errors
 
-| Code | Name                   | Cause                                |
-|------|------------------------|--------------------------------------|
-| 1    | AlreadyInitialized     | double init                          |
-| 2    | NotInitialized         | used before init                     |
-| 3    | Unauthorized           | non-admin admin-only call            |
-| 4    | InsufficientBalance    | transfer/burn over balance           |
-| 5    | InvalidAmount          | amount <= 0 (or negative supply/val) |
-| 6    | Paused                 | transfer/mint while paused           |
-| 7    | SenderNotCompliant     | sender fails `is_allowed`            |
-| 8    | RecipientNotCompliant  | recipient fails `is_allowed`         |
-| 9    | Overflow               | supply overflow on mint              |
+| Code | Name | Cause |
+|------|------|-------|
+| 1 | AlreadyInitialized | double init |
+| 2 | NotInitialized | used before init |
+| 3 | Unauthorized | non-admin admin-only call |
+| 4 | InsufficientBalance | transfer/burn over balance |
+| 5 | InvalidAmount | amount <= 0 (or negative supply/valuation) |
+| 6 | Paused | transfer/mint while paused |
+| 7 | SenderNotCompliant | sender fails `is_allowed` |
+| 8 | RecipientNotCompliant | recipient fails `is_allowed` |
+| 9 | Overflow | supply overflow on mint |
+| 10 | InvalidInput | metadata string is empty or exceeds its max length (issue #46) |
+| 11 | InvalidCompliance | `set_compliance` target does not implement `is_allowed` |
 
 ## Events
 

@@ -10,7 +10,8 @@
 //! An `expires_at` of `0` means the KYC approval never expires.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    String, Vec,
 };
 
 /// Approval state of an address.
@@ -64,11 +65,17 @@ const ALLOWLIST_PAGE_SIZE: u32 = 200;
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` called twice.
     AlreadyInitialized = 1,
+    /// Used before `initialize`.
     NotInitialized = 2,
+    /// Operating on a missing record.
     RecordNotFound = 3,
+    /// `expires_at` already in the past.
     InvalidExpiry = 4,
+    /// Caller is not the stored admin.
     Unauthorized = 5,
+    /// Jurisdiction is not a 2-letter ISO-3166-1 alpha-2 code.
     InvalidJurisdiction = 6,
 }
 
@@ -78,7 +85,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[contract]
 pub struct ComplianceContract;
@@ -357,6 +364,17 @@ impl ComplianceContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_with_error(&env, Error::NotInitialized))
+    }
+
+    /// Deploy new Wasm bytecode to this contract instance in place, keeping the
+    /// same contract id and storage. Admin only. See `deploy.sh --upgrade`.
+    ///
+    /// The storage layout (`DataKey`) must stay compatible with the previous
+    /// version, or existing data becomes unreadable; bump `VERSION` when it
+    /// changes.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     // ---- internal helpers ----

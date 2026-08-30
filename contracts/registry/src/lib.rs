@@ -7,7 +7,8 @@
 //! status. It also reports total value locked (TVL) across active assets.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    String, Vec,
 };
 
 // NOTE: The `Ids` instance-storage key is retained in the enum only for
@@ -47,12 +48,19 @@ enum DataKey {
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// double init
     AlreadyInitialized = 1,
+    /// used before init
     NotInitialized = 2,
+    /// non-admin deactivation
     Unauthorized = 3,
+    /// unknown id
     AssetNotFound = 4,
+    /// negative valuation
     InvalidValuation = 5,
+    /// total valuation overflow on registration
     Overflow = 6,
+    /// empty name or unrecognised `asset_type` (issue #48)
     InvalidInput = 7,
 }
 
@@ -62,7 +70,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[contract]
 pub struct RegistryContract;
@@ -312,6 +320,17 @@ impl RegistryContract {
             .instance()
             .get(&DataKey::Admin)
             .unwrap_or_else(|| panic_err(&env, Error::NotInitialized))
+    }
+
+    /// Deploy new Wasm bytecode to this contract instance in place, keeping the
+    /// same contract id and storage. Admin only. See `deploy.sh --upgrade`.
+    ///
+    /// The storage layout (`DataKey`) must stay compatible with the previous
+    /// version, or existing data becomes unreadable; bump `VERSION` when it
+    /// changes.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     // ---- internal helpers ----

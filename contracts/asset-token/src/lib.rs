@@ -12,7 +12,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
-    Env, String, Vec,
+    BytesN, Env, String, Vec,
 };
 
 /// Cross-contract client for the compliance contract. Only the method the asset
@@ -51,16 +51,27 @@ enum DataKey {
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// double init
     AlreadyInitialized = 1,
+    /// used before init
     NotInitialized = 2,
+    /// non-admin admin-only call
     Unauthorized = 3,
+    /// transfer/burn over balance
     InsufficientBalance = 4,
+    /// amount <= 0 (or negative supply/valuation)
     InvalidAmount = 5,
+    /// transfer/mint while paused
     Paused = 6,
+    /// sender fails `is_allowed`
     SenderNotCompliant = 7,
+    /// recipient fails `is_allowed`
     RecipientNotCompliant = 8,
+    /// supply overflow on mint
     Overflow = 9,
+    /// metadata string is empty or exceeds its max length (issue #46)
     InvalidInput = 10,
+    /// `set_compliance` target does not implement `is_allowed`
     InvalidCompliance = 11,
 }
 
@@ -76,7 +87,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[contract]
 pub struct AssetTokenContract;
@@ -339,6 +350,17 @@ impl AssetTokenContract {
         Self::bump(&env);
         env.events()
             .publish((symbol_short!("setcomp"),), compliance);
+    }
+
+    /// Deploy new Wasm bytecode to this contract instance in place, keeping the
+    /// same contract id and storage. Admin only. See `deploy.sh --upgrade`.
+    ///
+    /// The storage layout (`DataKey`) must stay compatible with the previous
+    /// version, or existing data becomes unreadable; bump `VERSION` when it
+    /// changes.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env, &admin);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     // ---- internal helpers ----

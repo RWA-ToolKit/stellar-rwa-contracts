@@ -61,18 +61,23 @@ pub trait TokenInterface {
 - `get_distributions_for_asset(asset_token) -> Vec<Distribution>`
 - `has_claimed(distribution_id, holder) -> bool`
 - `get_admin() -> Address`
+- `upgrade(admin, new_wasm_hash)` — admin auth; deploys new Wasm in place (see
+  `scripts/deploy.sh --upgrade`).
 
 ## Errors
 
-| Code | Name                 | Cause                                |
-|------|----------------------|--------------------------------------|
-| 1    | AlreadyInitialized   | double init                          |
-| 2    | NotInitialized       | used before init                     |
-| 3    | Unauthorized         | non-admin create                     |
-| 4    | DistributionNotFound | unknown distribution id              |
-| 5    | InvalidAmount        | `total_amount <= 0`                  |
-| 6    | NothingToClaim       | claimable is zero                    |
-| 7    | AlreadyClaimed       | holder already claimed this dist     |
+| Code | Name | Cause |
+|------|------|-------|
+| 1 | AlreadyInitialized | double init |
+| 2 | NotInitialized | used before init |
+| 3 | Unauthorized | non-admin create |
+| 4 | DistributionNotFound | unknown distribution id |
+| 5 | InvalidAmount | `total_amount <= 0` |
+| 6 | NothingToClaim | claimable is zero |
+| 7 | AlreadyClaimed | holder already claimed this distribution |
+| 8 | ZeroSupply | `asset_token` has zero total supply; no holder can ever claim (issue #49). |
+| 9 | OverDistributed | Total distributed would exceed the distribution's `total_amount` (issue #164). |
+| 10 | ArithmeticOverflow | `total_amount * balance` would overflow i128 (issue #165). |
 
 ## Events
 

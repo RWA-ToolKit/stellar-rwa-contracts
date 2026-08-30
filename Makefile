@@ -1,4 +1,4 @@
-.PHONY: build test fmt fmt-check clean deploy
+.PHONY: build test fmt fmt-check clean deploy deny
 
 # Build all contracts to wasm.
 build:
@@ -26,3 +26,10 @@ deploy:
 
 update-doc-addresses:
 	python3 scripts/generate_addresses.py
+
+update-doc-errors:
+	python3 scripts/generate_error_docs.py
+
+# Check dependency advisories and license compatibility (see deny.toml).
+deny:
+	cargo deny check

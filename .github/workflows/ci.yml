@@ -76,3 +76,13 @@ jobs:
       # CLI from source (which needs the libdbus system library and is slow).
       - name: Build contracts (wasm)
         run: cargo build --workspace --release --target wasm32v1-none
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Advisories (RUSTSEC), license compatibility, banned/duplicate crates,
+      # and dependency source allowlist — configured in deny.toml.
+      - name: cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2

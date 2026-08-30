@@ -106,6 +106,16 @@ behind one interface without touching the token.
   stored admin.
 - Emit events for all state changes.
 
+## Pull request checklist
+
+Every PR that touches `contracts/` opens with the checklist in
+[`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md):
+tests added, new/changed events documented, storage layout unchanged (or
+`VERSION` bumped), generated docs (`scripts/generate_error_docs.py`,
+`scripts/generate_storage_docs.py`) re-run if their source changed, and
+`CHANGELOG.md` updated. CI also runs `cargo deny check` (see `deny.toml`) to
+catch dependency advisories and license issues.
+
 ## Sister repos
 
 - **Web app:** https://github.com/RWA-ToolKit/stellar-rwa-web

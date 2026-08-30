@@ -72,15 +72,21 @@ Whether a jurisdiction is currently blocked.
 ### `get_admin() -> Address`
 The configured admin. Errors: `NotInitialized (#2)`.
 
+### `upgrade(admin, new_wasm_hash)`
+Deploys new Wasm bytecode to this contract instance in place, keeping the
+contract id and storage. Admin only. See [`scripts/deploy.sh`](../scripts/deploy.sh)'s
+`--upgrade` flag.
+
 ## Errors
 
-| Code | Name                | Cause                                   |
-|------|---------------------|-----------------------------------------|
-| 1    | AlreadyInitialized  | `initialize` called twice               |
-| 2    | NotInitialized      | Used before `initialize`                |
-| 3    | RecordNotFound      | Operating on a missing record           |
-| 4    | InvalidExpiry       | `expires_at` already in the past        |
-| 5    | Unauthorized        | Caller is not the stored admin          |
+| Code | Name | Cause |
+|------|------|-------|
+| 1 | AlreadyInitialized | `initialize` called twice. |
+| 2 | NotInitialized | Used before `initialize`. |
+| 3 | RecordNotFound | Operating on a missing record. |
+| 4 | InvalidExpiry | `expires_at` already in the past. |
+| 5 | Unauthorized | Caller is not the stored admin. |
+| 6 | InvalidJurisdiction | Jurisdiction is not a 2-letter ISO-3166-1 alpha-2 code. |
 
 ## Events
 

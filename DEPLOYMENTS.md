@@ -38,6 +38,12 @@ initializes all four contracts, approves the issuer on the compliance contract,
 deploys a sample asset token, and registers it in the registry. It prints the
 resulting contract ids; paste them into this file.
 
+To redeploy against the ids already listed above instead of orphaning them
+(e.g. to deploy a new asset-token against the existing compliance contract),
+pass the ones to keep as env vars — `COMPLIANCE_ID=... REGISTRY_ID=... ./scripts/deploy.sh`
+— or pass `--upgrade` to install new Wasm behind those same ids in place. See
+the header of `scripts/deploy.sh` for details.
+
 ## Mainnet
 
 Not yet deployed.
