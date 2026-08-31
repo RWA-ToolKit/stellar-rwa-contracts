@@ -13,7 +13,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
-    Env, Vec,
+    Env, Map, Vec,
 };
 
 /// Read-only view of the asset token needed to size a holder's share.
@@ -79,6 +79,11 @@ pub enum Error {
     OverDistributed = 9,
     /// `total_amount * balance` would overflow i128 (issue #165).
     ArithmeticOverflow = 10,
+    /// The `eligible` list contains more than one entry for the same address
+    /// (issue #290). `snapshot_balance` only ever returns the first match, so a
+    /// duplicate would inflate the denominator while its amount stays
+    /// unclaimable — permanently stranding that slice of the escrow.
+    DuplicateHolder = 11,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -87,7 +92,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 #[contract]
 pub struct DividendContract;
@@ -118,6 +123,19 @@ impl DividendContract {
     /// asset-token interface defined in this crate). `payment_token` must
     /// implement the standard SAC / SEP-41 token interface; in particular its
     /// `transfer` must not trap on the outbound leg when holders claim (issue #50).
+    ///
+    /// # Trust assumption on `eligible` (issue #293)
+    ///
+    /// `eligible` is an admin-supplied `(Address, balance)` list that is frozen
+    /// verbatim as the entitlement snapshot; every holder's share is sized
+    /// against it. This contract does **not** call `AssetClient::balance` to
+    /// cross-check any entry against the asset token's real holdings, so a
+    /// malicious or buggy admin can hand shares to arbitrary addresses in
+    /// arbitrary amounts. Producing an `eligible` list that faithfully mirrors
+    /// the asset token's holders at creation time is the caller's
+    /// responsibility. The contract only enforces structural sanity: entries
+    /// must be non-negative (issue #291) and each address may appear at most
+    /// once (issue #290).
     pub fn create_distribution(
         env: Env,
         admin: Address,
@@ -135,22 +153,39 @@ impl DividendContract {
         if supply <= 0 {
             panic_err(&env, Error::ZeroSupply);
         }
+        // Validate the eligible list and total its balances *before* pulling any
+        // funds, so a rejected list never leaves escrow moved. This total is
+        // frozen as the distribution's denominator (issue #163): every holder's
+        // share is sized against this list, not the asset token's live balances,
+        // so a post-creation transfer can neither inflate nor dilute anyone.
+        let mut snapshot_supply: i128 = 0;
+        let mut seen: Map<Address, ()> = Map::new(&env);
+        for (addr, balance) in eligible.iter() {
+            // Reject negative entries (issue #291): a negative balance shrinks
+            // the denominator shared by every other holder, silently inflating
+            // their payouts while the negative holder's own share floors at 0.
+            if balance < 0 {
+                panic_err(&env, Error::InvalidAmount);
+            }
+            // Reject duplicate holders (issue #290): `snapshot_balance` returns
+            // the first matching entry only, so a second entry for the same
+            // address would be counted in `snapshot_supply` but never be
+            // claimable by anyone — that slice of the escrow would be stranded.
+            if seen.contains_key(addr.clone()) {
+                panic_err(&env, Error::DuplicateHolder);
+            }
+            seen.set(addr, ());
+            snapshot_supply = snapshot_supply
+                .checked_add(balance)
+                .unwrap_or_else(|| panic_err(&env, Error::ArithmeticOverflow));
+        }
+
         // Escrow the funds in this contract.
         let this = env.current_contract_address();
         TokenClient::new(&env, &payment_token).transfer(&admin, &this, &total_amount);
 
         let id: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0) + 1;
 
-        // Freeze the eligible-holder snapshot and its total (issue #163): every
-        // holder's share is sized against this frozen list, not against the
-        // asset token's live balances, so a post-creation transfer can neither
-        // inflate nor dilute anyone's entitlement.
-        let mut snapshot_supply: i128 = 0;
-        for (_, balance) in eligible.iter() {
-            snapshot_supply = snapshot_supply
-                .checked_add(balance)
-                .unwrap_or_else(|| panic_err(&env, Error::ArithmeticOverflow));
-        }
         env.storage()
             .persistent()
             .set(&DataKey::Snapshot(id), &eligible);
@@ -250,7 +285,10 @@ impl DividendContract {
         dist.distributed = dist
             .distributed
             .checked_add(amount)
-            .unwrap_or_else(|| panic_err(&env, Error::InvalidAmount));
+            // Overflow of the running total is an arithmetic fault, not bad
+            // input — report it as such so callers can tell the two apart, and
+            // to match `claimable`'s use of the same variant (issue #292).
+            .unwrap_or_else(|| panic_err(&env, Error::ArithmeticOverflow));
         if dist.distributed > dist.total_amount {
             panic_err(&env, Error::OverDistributed);
         }
