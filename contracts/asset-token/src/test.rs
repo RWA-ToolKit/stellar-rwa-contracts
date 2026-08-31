@@ -692,6 +692,60 @@ fn test_mint_batch_credits_repeated_recipient_cumulatively() {
     assert_eq!(s.token.total_supply(), supply_before + 150);
 }
 
+// ---- issue #310: get_metadata must reflect every mutated field simultaneously ----
+
+/// Calls update_valuation, pause, unpause, set_compliance, and mint in sequence,
+/// then asserts every AssetMetadata field in a single get_metadata call.
+/// This catches a setter that accidentally overwrites an unrelated field —
+/// something that per-field tests cannot detect because they read metadata
+/// in isolation immediately after their own setter.
+#[test]
+fn test_get_metadata_reflects_all_mutations() {
+    let s = setup(1_000);
+
+    // ── Step 1: update_valuation ─────────────────────────────────────────────
+    s.token.update_valuation(&s.admin, &99_000_000);
+
+    // ── Step 2: pause then unpause (paused must end up false) ────────────────
+    s.token.pause(&s.admin);
+    s.token.unpause(&s.admin);
+
+    // ── Step 3: swap compliance contract ────────────────────────────────────
+    let comp2_id = env_register_empty_compliance(&s.env, &s.admin);
+    let comp2 = ComplianceContractClient::new(&s.env, &comp2_id);
+    // Admin must be approved under the new contract or set_compliance will
+    // panic InvalidCompliance.
+    approve(&s.env, &comp2, &s.admin, &s.admin);
+    s.token.set_compliance(&s.admin, &comp2_id);
+
+    // ── Step 4: mint to a compliant recipient (increases total_supply) ───────
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &comp2, &s.admin, &bob);
+    s.token.mint(&s.admin, &bob, &500);
+
+    // ── Single get_metadata snapshot: every field checked together ───────────
+    let meta = s.token.get_metadata();
+
+    // Fields touched by the setters above.
+    assert_eq!(meta.valuation, 99_000_000,       "valuation not updated");
+    assert!(!meta.paused,                         "paused flag should be false after unpause");
+    assert_eq!(meta.compliance_contract, comp2_id,"compliance_contract not switched");
+    assert_eq!(meta.total_supply, 1_500,          "total_supply not updated after mint");
+
+    // Fields that must be unchanged — another setter silently clobbering one
+    // of these would be caught here but not by the individual setter tests.
+    assert_eq!(meta.name,         String::from_str(&s.env, "Manhattan Loft"), "name was clobbered");
+    assert_eq!(meta.symbol,       String::from_str(&s.env, "MLOFT"),          "symbol was clobbered");
+    assert_eq!(meta.asset_type,   String::from_str(&s.env, "real_estate"),    "asset_type was clobbered");
+    assert_eq!(meta.decimals,     2u32,                                        "decimals was clobbered");
+    assert_eq!(meta.admin,        s.admin,                                     "admin was clobbered");
+    assert_eq!(
+        meta.asset_description,
+        String::from_str(&s.env, "A tokenized NYC loft"),
+        "asset_description was clobbered",
+    );
+}
+
 // ---- issue #309: total_supply() is its own public ABI entry point ----
 
 /// Directly exercises `AssetTokenContract::total_supply` (a separate public

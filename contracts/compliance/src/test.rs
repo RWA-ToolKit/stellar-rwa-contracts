@@ -185,6 +185,21 @@ fn test_get_admin_before_init_panics_not_initialized() {
     client.get_admin();
 }
 
+/// Issue #305: get_admin success path was untested.
+/// After initialize has run, get_admin must return exactly the address that
+/// was passed to initialize — not a default, not a different address.
+#[test]
+fn test_get_admin_returns_correct_address_after_initialize() {
+    let (env, client, admin) = setup();
+    // The primary assertion: get_admin must echo back the exact admin address.
+    assert_eq!(client.get_admin(), admin);
+
+    // Confirm that a second, distinct address is NOT reported as the admin,
+    // which would catch an implementation that ignores the stored value.
+    let other = Address::generate(&env);
+    assert_ne!(client.get_admin(), other);
+}
+
 #[test]
 #[should_panic(expected = "Error(Contract, #6)")]
 fn test_invalid_jurisdiction_rejected() {
