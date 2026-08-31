@@ -201,6 +201,8 @@ impl RegistryContract {
 
     /// All assets registered by a given issuer. Backed by a per-issuer index,
     /// so cost scales with that issuer's asset count, not the whole registry.
+    /// Note: This includes both active and deactivated assets. Deactivated assets
+    /// are never removed from the index; use the `active` field to filter if needed.
     pub fn get_assets_by_issuer(env: Env, issuer: Address) -> Vec<AssetEntry> {
         let ids = Self::index_ids(&env, &DataKey::IssuerIndex(issuer));
         Self::fetch_assets(&env, &ids)
@@ -209,6 +211,8 @@ impl RegistryContract {
     /// All assets of a given asset type (e.g. "real_estate"). Backed by a
     /// per-type index, so cost scales with that type's asset count, not the
     /// whole registry.
+    /// Note: This includes both active and deactivated assets. Deactivated assets
+    /// are never removed from the index; use the `active` field to filter if needed.
     pub fn get_assets_by_type(env: Env, asset_type: String) -> Vec<AssetEntry> {
         let ids = Self::index_ids(&env, &DataKey::TypeIndex(asset_type));
         Self::fetch_assets(&env, &ids)
