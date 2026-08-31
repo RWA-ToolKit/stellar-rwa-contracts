@@ -239,6 +239,7 @@ impl RegistryContract {
     }
 
     /// Deactivate an asset. Admin only. Excluded from TVL afterwards.
+    /// Does nothing if the asset is already inactive (no event emitted).
     pub fn deactivate_asset(env: Env, admin: Address, asset_id: u64) {
         Self::require_admin(&env, &admin);
         let mut entry: AssetEntry = env
@@ -247,6 +248,9 @@ impl RegistryContract {
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
         let was_active = entry.active;
+        if !was_active {
+            return;
+        }
         entry.active = false;
         env.storage()
             .persistent()
@@ -256,28 +260,26 @@ impl RegistryContract {
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
-        if was_active {
-            let active_count: u64 = env
-                .storage()
-                .instance()
-                .get(&DataKey::ActiveCount)
-                .unwrap_or(0u64)
-                .saturating_sub(1);
-            env.storage()
-                .instance()
-                .set(&DataKey::ActiveCount, &active_count);
-            let tvl: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::TotalValuation)
-                .unwrap_or(0);
-            let new_tvl = tvl
-                .checked_sub(entry.valuation)
-                .unwrap_or_else(|| panic_err(&env, Error::Overflow));
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalValuation, &new_tvl);
-        }
+        let active_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ActiveCount)
+            .unwrap_or(0u64)
+            .saturating_sub(1);
+        env.storage()
+            .instance()
+            .set(&DataKey::ActiveCount, &active_count);
+        let tvl: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalValuation)
+            .unwrap_or(0);
+        let new_tvl = tvl
+            .checked_sub(entry.valuation)
+            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalValuation, &new_tvl);
         bump(&env);
         env.events()
             .publish((symbol_short!("deactvate"),), asset_id);
@@ -385,6 +387,10 @@ const VALID_ASSET_TYPES: &[&str] = &[
     "fund",
 ];
 
+/// Validates that the given asset_type matches one of the allowed types.
+/// This is a **byte-exact comparison** (case- and whitespace-sensitive).
+/// For example, "Real_Estate" or "real_estate " will be rejected.
+/// Only exact matches like "real_estate" (in lowercase, no leading/trailing whitespace) are accepted.
 fn validate_asset_type(env: &Env, asset_type: &String) {
     let bytes = asset_type.to_bytes();
     for &valid in VALID_ASSET_TYPES {
