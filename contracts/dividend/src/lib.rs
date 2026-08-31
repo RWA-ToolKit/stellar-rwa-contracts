@@ -6,9 +6,10 @@
 //! then claims `total_amount * balance / total_supply`, paid from the escrow
 //! this contract holds. Each holder can claim a given distribution once.
 //!
-//! Balances are read at claim time from the asset token; there is no balance
-//! snapshot. `created_at` records the ledger at which the distribution was
-//! created for reference.
+//! Balances are frozen in a snapshot at distribution creation time; each holder's
+//! entitlement is sized against this snapshot rather than live balances, preventing
+//! post-creation transfers from inflating or diluting any holder's claim.
+//! `created_at` records the ledger at which the distribution was created for reference.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
@@ -18,7 +19,6 @@ use soroban_sdk::{
 /// Read-only view of the asset token needed to size a holder's share.
 #[contractclient(name = "AssetClient")]
 pub trait AssetInterface {
-    fn balance(env: Env, id: Address) -> i128;
     fn total_supply(env: Env) -> i128;
 }
 
@@ -256,6 +256,12 @@ impl DividendContract {
         }
         if dist.distributed >= dist.total_amount {
             dist.completed = true;
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Snapshot(distribution_id));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Supply(distribution_id));
         }
         env.storage()
             .persistent()
