@@ -92,6 +92,16 @@ fn test_initialize_admin() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_get_admin_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let div_id = env.register(DividendContract, ());
+    let dividend = DividendContractClient::new(&env, &div_id);
+    dividend.get_admin();
+}
+
+#[test]
 fn test_version() {
     let ctx = setup();
     assert_eq!(ctx.dividend.version(), VERSION);
