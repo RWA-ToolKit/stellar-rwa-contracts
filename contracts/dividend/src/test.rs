@@ -2,6 +2,7 @@
 use super::*;
 use asset_token::{AssetTokenContract, AssetTokenContractClient};
 use compliance::{ComplianceContract, ComplianceContractClient};
+use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{Address as _, AuthorizedFunction},
     token, Address, Env, String, Symbol, Vec,
@@ -127,6 +128,47 @@ fn test_claim_is_proportional() {
     assert_eq!(pay_balance(&ctx, &ctx.h1), 300);
     assert_eq!(ctx.dividend.claimable(&id, &ctx.h1), 0);
     assert_eq!(ctx.dividend.get_distribution(&id).distributed, 300);
+}
+
+proptest! {
+    #[test]
+    fn prop_distribution_claims_never_exceed_proportional_share(
+        steps in prop::collection::vec(any::<u8>(), 1..16),
+    ) {
+        let ctx = setup();
+        let snapshot = Vec::from_array(
+            &ctx.env,
+            [
+                (ctx.admin.clone(), 500i128),
+                (ctx.h1.clone(), 300i128),
+                (ctx.h2.clone(), 200i128),
+            ],
+        );
+        let total_amount = 1_000i128;
+        let id = ctx.dividend.create_distribution(
+            &ctx.admin,
+            &ctx.asset_id,
+            &ctx.pay_id,
+            &total_amount,
+            &snapshot,
+        );
+
+        let mut received = vec![0i128; snapshot.len() as usize];
+        for step in steps {
+            let idx = (step as usize) % snapshot.len() as usize;
+            let (holder, balance) = snapshot.get(idx as u32).unwrap();
+            if received[idx] > 0 {
+                continue;
+            }
+            let expected_share = total_amount.checked_mul(*balance).unwrap() / 1_000;
+            let claimable = ctx.dividend.claimable(&id, holder);
+            if claimable > 0 {
+                ctx.dividend.claim(&id, holder);
+                received[idx] = claimable;
+                assert!(received[idx] <= expected_share);
+            }
+        }
+    }
 }
 
 #[test]
