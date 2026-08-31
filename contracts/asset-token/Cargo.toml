@@ -16,6 +16,7 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+proptest = "1.5"
 # Used only in tests to deploy a real compliance contract for the
 # cross-contract compliance checks.
 compliance = { path = "../compliance", features = ["testutils"] }
