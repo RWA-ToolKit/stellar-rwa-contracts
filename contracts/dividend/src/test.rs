@@ -552,3 +552,90 @@ fn test_distributions_for_one_asset_excluded_from_another() {
     assert!(!main_list.iter().any(|d| d.id == other_id));
     assert!(!other_list.iter().any(|d| d.id == main_id));
 }
+
+// ---- issue #290: a duplicate address in `eligible` would be counted in the
+// denominator but never be claimable, stranding that slice of the escrow.
+// Creation must reject the list outright (Error #11, DuplicateHolder). ----
+
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_create_distribution_rejects_duplicate_holder() {
+    let ctx = setup();
+
+    // h1 appears twice (300 + 100). Summed, snapshot_supply would be 600, but
+    // `snapshot_balance` only ever returns the first h1 entry (300), so the
+    // extra 100 is in the denominator yet unclaimable — stranded escrow.
+    let mut dup = Vec::new(&ctx.env);
+    dup.push_back((ctx.h1.clone(), 300i128));
+    dup.push_back((ctx.h2.clone(), 200i128));
+    dup.push_back((ctx.h1.clone(), 100i128));
+
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &dup);
+}
+
+// A duplicate that is not adjacent to its twin is still caught (the check is
+// all-pairs, not just neighbours).
+#[test]
+#[should_panic(expected = "Error(Contract, #11)")]
+fn test_create_distribution_rejects_non_adjacent_duplicate_holder() {
+    let ctx = setup();
+    let mut dup = Vec::new(&ctx.env);
+    dup.push_back((ctx.h1.clone(), 300i128));
+    dup.push_back((ctx.h2.clone(), 200i128));
+    dup.push_back((ctx.admin.clone(), 500i128));
+    dup.push_back((ctx.h1.clone(), 1i128));
+
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &dup);
+}
+
+// ---- issue #291: a negative entry in `eligible` lowers the shared denominator
+// and silently inflates every other holder's payout. Reject it at creation
+// (Error #5, InvalidAmount). ----
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_create_distribution_rejects_negative_balance() {
+    let ctx = setup();
+
+    let mut neg = Vec::new(&ctx.env);
+    neg.push_back((ctx.h1.clone(), 300i128));
+    neg.push_back((ctx.h2.clone(), -50i128));
+    neg.push_back((ctx.admin.clone(), 500i128));
+
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &neg);
+}
+
+// A negative entry in the very first slot is rejected too (loop covers index 0).
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_create_distribution_rejects_negative_balance_first_entry() {
+    let ctx = setup();
+    let mut neg = Vec::new(&ctx.env);
+    neg.push_back((ctx.h1.clone(), -1i128));
+    neg.push_back((ctx.h2.clone(), 200i128));
+
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &neg);
+}
+
+// A zero balance is a valid (if pointless) entry — it must not be rejected as
+// "negative", and it contributes nothing to the denominator.
+#[test]
+fn test_create_distribution_allows_zero_balance_entry() {
+    let ctx = setup();
+    let mut v = Vec::new(&ctx.env);
+    v.push_back((ctx.h1.clone(), 300i128));
+    v.push_back((ctx.h2.clone(), 0i128));
+    v.push_back((ctx.admin.clone(), 500i128));
+
+    let id = ctx
+        .dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &800, &v);
+    // Denominator is 800 (300 + 0 + 500); h1 gets 300/800 * 800 = 300.
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h1), 300);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 0);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.admin), 500);
+}
