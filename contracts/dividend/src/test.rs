@@ -2,6 +2,7 @@
 use super::*;
 use asset_token::{AssetTokenContract, AssetTokenContractClient};
 use compliance::{ComplianceContract, ComplianceContractClient};
+use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{Address as _, AuthorizedFunction},
     token, Address, Env, String, Symbol, Vec,
@@ -312,6 +313,64 @@ fn test_full_distribution_completes() {
     assert!(d.completed);
     assert_eq!(pay_balance(&ctx, &ctx.h2), 200);
     assert_eq!(pay_balance(&ctx, &ctx.admin), 100_000 - 1000 + 500);
+}
+
+proptest! {
+    #[test]
+    fn prop_distributed_never_exceeds_total_amount(steps in prop::collection::vec(0u8..6, 1..32)) {
+        let ctx = setup();
+        let id = ctx.dividend.create_distribution(
+            &ctx.admin,
+            &ctx.asset_id,
+            &ctx.pay_id,
+            &1000,
+            &eligible(&ctx),
+        );
+        let asset = AssetTokenContractClient::new(&ctx.env, &ctx.asset_id);
+
+        for step in steps {
+            match step % 6 {
+                0 => {
+                    asset.transfer(&ctx.admin, &ctx.h1, &1);
+                }
+                1 => {
+                    asset.transfer(&ctx.admin, &ctx.h2, &1);
+                }
+                2 => {
+                    if asset.balance(&ctx.h1) > 0 {
+                        let amount = i128::from((step as u8 % 10) + 1).min(asset.balance(&ctx.h1));
+                        if amount > 0 {
+                            asset.transfer(&ctx.h1, &ctx.h2, &amount);
+                        }
+                    }
+                }
+                3 => {
+                    if !ctx.dividend.has_claimed(&id, &ctx.h1)
+                        && ctx.dividend.claimable(&id, &ctx.h1) > 0
+                    {
+                        ctx.dividend.claim(&id, &ctx.h1);
+                    }
+                }
+                4 => {
+                    if !ctx.dividend.has_claimed(&id, &ctx.h2)
+                        && ctx.dividend.claimable(&id, &ctx.h2) > 0
+                    {
+                        ctx.dividend.claim(&id, &ctx.h2);
+                    }
+                }
+                _ => {
+                    if !ctx.dividend.has_claimed(&id, &ctx.admin)
+                        && ctx.dividend.claimable(&id, &ctx.admin) > 0
+                    {
+                        ctx.dividend.claim(&id, &ctx.admin);
+                    }
+                }
+            }
+
+            let dist = ctx.dividend.get_distribution(&id);
+            prop_assert!(dist.distributed <= dist.total_amount);
+        }
+    }
 }
 
 // ---- issue #49: reject zero-supply asset token ----
