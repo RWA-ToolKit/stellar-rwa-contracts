@@ -459,10 +459,10 @@ fn test_claim_on_nonexistent_distribution_fails() {
     // No distribution has been created yet, so the counter is still 0 —
     // both an id above the counter and id 0 itself must fail the same way.
     let above_counter = ctx.dividend.try_claim(&99, &ctx.h1);
-    assert_eq!(above_counter, Err(Ok(Error::DistributionNotFound)));
+    assert_eq!(above_counter, Err(Ok(Error::DistributionNotFound.into())));
 
     let zero_id = ctx.dividend.try_claim(&0, &ctx.h1);
-    assert_eq!(zero_id, Err(Ok(Error::DistributionNotFound)));
+    assert_eq!(zero_id, Err(Ok(Error::DistributionNotFound.into())));
 }
 
 // ---- issue #216: has_claimed flips from false to true exactly once ----
@@ -484,7 +484,7 @@ fn test_has_claimed_flips_once_and_second_claim_moves_no_funds() {
     let escrow_after_first_claim = pay_balance(&ctx, &div_addr);
 
     let result = ctx.dividend.try_claim(&id, &ctx.h1);
-    assert_eq!(result, Err(Ok(Error::AlreadyClaimed)));
+    assert_eq!(result, Err(Ok(Error::AlreadyClaimed.into())));
 
     // Still claimed, and no additional funds moved on the rejected second claim.
     assert!(ctx.dividend.has_claimed(&id, &ctx.h1));
@@ -507,7 +507,7 @@ fn test_create_distribution_rejects_zero_and_negative_amount() {
         &0,
         &eligible(&ctx),
     );
-    assert_eq!(zero_result, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(zero_result, Err(Ok(Error::InvalidAmount.into())));
 
     let negative_result = ctx.dividend.try_create_distribution(
         &ctx.admin,
@@ -516,7 +516,7 @@ fn test_create_distribution_rejects_zero_and_negative_amount() {
         &-1,
         &eligible(&ctx),
     );
-    assert_eq!(negative_result, Err(Ok(Error::InvalidAmount)));
+    assert_eq!(negative_result, Err(Ok(Error::InvalidAmount.into())));
 
     // Neither rejected call should have moved any payment-token funds.
     assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);

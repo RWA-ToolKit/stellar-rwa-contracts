@@ -433,7 +433,7 @@ fn test_self_transfer_exceeding_balance_fails() {
     // Bob has zero balance; a self-transfer must still hit the balance check
     // before the self-transfer short-circuit.
     let res = s.token.try_transfer(&bob, &bob, &1);
-    assert_eq!(res, Err(Ok(Error::InsufficientBalance)));
+    assert_eq!(res, Err(Ok(Error::InsufficientBalance.into())));
 }
 
 #[test]
@@ -446,7 +446,7 @@ fn test_self_transfer_by_suspended_holder_fails() {
     // The sender-compliance check must still run before the self-transfer
     // short-circuit.
     let res = s.token.try_transfer(&bob, &bob, &100);
-    assert_eq!(res, Err(Ok(Error::SenderNotCompliant)));
+    assert_eq!(res, Err(Ok(Error::SenderNotCompliant.into())));
 }
 
 // ---- issue #186: mint_batch reverts entirely when one recipient fails compliance ----
@@ -464,7 +464,7 @@ fn test_mint_batch_reverts_entirely_on_noncompliant_recipient() {
     recipients.push_back((eve, 50i128));
 
     let res = s.token.try_mint_batch(&s.admin, &recipients);
-    assert_eq!(res, Err(Ok(Error::RecipientNotCompliant)));
+    assert_eq!(res, Err(Ok(Error::RecipientNotCompliant.into())));
 
     // The whole batch must revert: bob's balance and total_supply are untouched.
     assert_eq!(s.token.balance(&bob), 0);
@@ -523,11 +523,11 @@ fn test_mint_batch_succeeds_after_unpause() {
 fn test_mint_batch_empty_is_noop() {
     let s = setup(1_000);
     let supply_before = s.token.total_supply();
-    let events_before = s.env.events().all().len();
+    let events_before = s.env.events().all().events().len();
     let recipients: Vec<(Address, i128)> = Vec::new(&s.env);
     s.token.mint_batch(&s.admin, &recipients);
     assert_eq!(s.token.total_supply(), supply_before);
-    assert_eq!(s.env.events().all().len(), events_before);
+    assert_eq!(s.env.events().all().events().len(), events_before);
 }
 
 #[test]
@@ -543,3 +543,43 @@ fn test_mint_batch_credits_repeated_recipient_cumulatively() {
     assert_eq!(s.token.balance(&bob), 150);
     assert_eq!(s.token.total_supply(), supply_before + 150);
 }
+
+// ---- issue #309: total_supply() is its own public ABI entry point ----
+
+/// Directly exercises `AssetTokenContract::total_supply` (a separate public
+/// entry point with its own ABI surface, independent of `get_metadata`) and
+/// asserts it tracks the initial supply together with mint, mint_batch, and
+/// burn in a single flow. Supply changes always land on the same underlying
+/// ledger key as the metadata-reported supply, so both read paths must agree.
+#[test]
+fn test_total_supply_tracks_mint_burn_mint_batch() {
+    let s = setup(1_000);
+
+    // Constructor: total_supply mirrors the initial supply.
+    assert_eq!(s.token.total_supply(), 1_000);
+    assert_eq!(s.token.get_metadata().total_supply, 1_000);
+
+    // mint: 1,000 + 250 = 1,250.
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.mint(&s.admin, &bob, &250);
+    assert_eq!(s.token.balance(&bob), 250);
+    assert_eq!(s.token.total_supply(), 1_250);
+
+    // mint_batch: 1,250 + (100 + 50) = 1,400 — repeated recipient is cumulative.
+    let mut recipients = Vec::new(&s.env);
+    recipients.push_back((bob.clone(), 100));
+    recipients.push_back((bob.clone(), 50));
+    s.token.mint_batch(&s.admin, &recipients);
+    assert_eq!(s.token.balance(&bob), 400);
+    assert_eq!(s.token.total_supply(), 1_400);
+
+    // burn (from admin's balance): 1,400 - 200 = 1,200.
+    s.token.burn(&s.admin, &200);
+    assert_eq!(s.token.balance(&s.admin), 800);
+    assert_eq!(s.token.total_supply(), 1_200);
+
+    // The metadata-reported supply stays in lockstep with the direct ABI read.
+    assert_eq!(s.token.get_metadata().total_supply, s.token.total_supply());
+}
+

@@ -87,6 +87,18 @@
                       "val": {
                         "u64": "0"
                       }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "TotalValuation"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "i128": "0"
+                      }
                     }
                   ]
                 }
