@@ -64,6 +64,32 @@ Deployed contract ids are in the [Contracts](#contracts) table above and in
 with the [Stellar CLI](https://developers.stellar.org/docs/tools/cli) via
 `scripts/deploy.sh`.
 
+### Deployment order and required env vars
+
+The root deployment script expects two environment variables:
+
+```bash
+NETWORK=testnet IDENTITY=rwa-admin ./scripts/deploy.sh
+```
+
+It funds the configured identity, builds the workspace, and deploys the contracts
+in this order:
+
+1. `compliance` — initialize it with the admin address before any asset can be
+   created.
+2. `registry` — initialize it with the same admin.
+3. `dividend` — initialize it with the same admin.
+4. `asset-token` — initialize it with the compliance contract id from step 1 and
+   the asset metadata.
+5. `registry.register_asset` — register the sample asset after the token exists.
+
+The compliance contract must exist before the asset-token because every transfer
+and mint checks `compliance.is_allowed(...)`; the asset token stores the live
+compliance contract id at initialization. The registry and dividend contracts are
+initialized separately but both need their deployed contract ids and the same
+admin address; only once the sample asset has been created does the script
+register it in the registry.
+
 ### How the rest of the toolkit consumes these contracts
 
 - The **[web app](https://github.com/RWA-ToolKit/stellar-rwa-web)** reads state by

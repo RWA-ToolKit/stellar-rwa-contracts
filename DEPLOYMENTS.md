@@ -33,10 +33,14 @@ The deployment script registers one sample asset for demonstration:
 NETWORK=testnet IDENTITY=rwa-admin ./scripts/deploy.sh
 ```
 
-The script funds a fresh identity via friendbot, builds the wasm, deploys and
-initializes all four contracts, approves the issuer on the compliance contract,
-deploys a sample asset token, and registers it in the registry. It prints the
-resulting contract ids; paste them into this file.
+The script expects the `NETWORK` and `IDENTITY` environment variables shown above.
+It funds the identity via friendbot, builds the wasm, and deploys the contracts
+in order: compliance, registry, dividend, then the sample asset-token. The
+compliance contract is initialized first because the asset token stores its
+contract id at initialization and every transfer/mint checks it. The registry and
+dividend contracts are initialized immediately after, and the sample asset is
+registered only once the token exists. The script prints the resulting contract
+ids; paste them into this file.
 
 ## Mainnet
 
