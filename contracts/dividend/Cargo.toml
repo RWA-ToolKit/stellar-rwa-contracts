@@ -13,6 +13,7 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+proptest = "1.5"
 # Used only in tests: a real asset token (for holder balances / supply) and
 # the compliance contract it depends on.
 compliance = { path = "../compliance", features = ["testutils"] }

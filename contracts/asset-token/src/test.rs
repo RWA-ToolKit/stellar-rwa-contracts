@@ -1,6 +1,7 @@
 #![cfg(test)]
 use super::*;
 use compliance::{ComplianceContract, ComplianceContractClient};
+use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{Address as _, AuthorizedFunction, Events},
     Address, Env, String, Symbol, Vec,
@@ -172,6 +173,153 @@ fn test_self_transfer_no_inflation() {
     s.token.transfer(&s.admin, &s.admin, &100);
     assert_eq!(s.token.balance(&s.admin), bal_before);
     assert_eq!(s.token.total_supply(), supply_before);
+}
+
+proptest! {
+    #[test]
+    fn prop_balances_sum_to_total_supply(
+        ops in prop::collection::vec((any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>()), 1..20),
+    ) {
+        let s = setup(1_000);
+        let holders = [
+            s.admin.clone(),
+            Address::generate(&s.env),
+            Address::generate(&s.env),
+            Address::generate(&s.env),
+            Address::generate(&s.env),
+        ];
+        for holder in &holders[1..] {
+            approve(&s.env, &s.compliance, &s.admin, holder);
+        }
+
+        let mut expected = vec![0i128; holders.len()];
+        expected[0] = 1_000;
+
+        for op in ops {
+            let action = op.0 % 4;
+            let subject = (op.1 as usize) % holders.len();
+            let other = (op.2 as usize) % holders.len();
+            let amount = (op.3 as i128 % 50) + 1;
+
+            match action {
+                0 => {
+                    let amt = if expected[subject] == 0 {
+                        0
+                    } else {
+                        1 + (amount % expected[subject].max(1))
+                    };
+                    if amt > 0 {
+                        if subject == other {
+                            s.token.transfer(&holders[subject], &holders[other], &amt);
+                        } else {
+                            s.token.transfer(&holders[subject], &holders[other], &amt);
+                            expected[subject] -= amt;
+                            expected[other] += amt;
+                        }
+                    }
+                }
+                1 => {
+                    let amt = amount;
+                    s.token.mint(&s.admin, &holders[subject], &amt);
+                    expected[subject] += amt;
+                }
+                2 => {
+                    let mut recipients = Vec::new(&s.env);
+                    for offset in 0..3 {
+                        let target = ((subject + offset + other) % holders.len()) % holders.len();
+                        let payout = (amount + offset as i128) % 50 + 1;
+                        recipients.push_back((holders[target].clone(), payout));
+                        expected[target] += payout;
+                    }
+                    s.token.mint_batch(&s.admin, &recipients);
+                }
+                _ => {
+                    let amt = if expected[subject] == 0 {
+                        0
+                    } else {
+                        1 + (amount % expected[subject].max(1))
+                    };
+                    if amt > 0 {
+                        s.token.burn(&holders[subject], &amt);
+                        expected[subject] -= amt;
+                    }
+                }
+            }
+
+            let mut sum = 0i128;
+            for holder in &holders {
+                sum += s.token.balance(holder);
+            }
+            let mut tracking = 0i128;
+            for bal in expected.iter() {
+                tracking += *bal;
+            }
+            assert_eq!(sum, s.token.total_supply());
+            assert_eq!(sum, tracking);
+        }
+    }
+}
+
+proptest! {
+    #[test]
+    fn prop_paused_token_permits_no_balance_movement(
+        ops in prop::collection::vec((any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>()), 1..20),
+    ) {
+        let s = setup(1_000);
+        let holders = [
+            s.admin.clone(),
+            Address::generate(&s.env),
+            Address::generate(&s.env),
+            Address::generate(&s.env),
+            Address::generate(&s.env),
+        ];
+        for holder in &holders[1..] {
+            approve(&s.env, &s.compliance, &s.admin, holder);
+        }
+        s.token.pause(&s.admin);
+
+        let before_supply = s.token.total_supply();
+        let before_balances: std::vec::Vec<i128> = holders
+            .iter()
+            .map(|holder| s.token.balance(holder))
+            .collect();
+
+        for op in ops {
+            let action = op.0 % 4;
+            let subject = (op.1 as usize) % holders.len();
+            let other = (op.2 as usize) % holders.len();
+            let amount = (op.3 as i128 % 50) + 1;
+            match action {
+                0 => {
+                    let res = s.token.try_transfer(&holders[subject], &holders[other], &amount);
+                    assert!(matches!(res, Err(Ok(Error::Paused))));
+                }
+                1 => {
+                    let res = s.token.try_mint(&s.admin, &holders[subject], &amount);
+                    assert!(matches!(res, Err(Ok(Error::Paused))));
+                }
+                2 => {
+                    let mut recipients = Vec::new(&s.env);
+                    for offset in 0..2 {
+                        let target = ((subject + offset + other) % holders.len()) % holders.len();
+                        let payout = amount + offset as i128;
+                        recipients.push_back((holders[target].clone(), payout));
+                    }
+                    let res = s.token.try_mint_batch(&s.admin, &recipients);
+                    assert!(matches!(res, Err(Ok(Error::Paused))));
+                }
+                _ => {
+                    let res = s.token.try_burn(&holders[subject], &amount);
+                    assert!(matches!(res, Err(Ok(Error::Paused))));
+                }
+            }
+
+            for (idx, holder) in holders.iter().enumerate() {
+                assert_eq!(s.token.balance(holder), before_balances[idx]);
+            }
+            assert_eq!(s.token.total_supply(), before_supply);
+        }
+    }
 }
 
 #[test]
