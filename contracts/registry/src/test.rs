@@ -139,7 +139,7 @@ fn test_get_all_and_tvl() {
     let issuer = Address::generate(&env);
     register(&env, &client, &issuer, "real_estate", 100);
     register(&env, &client, &issuer, "invoice", 250);
-    assert_eq!(client.get_all_assets().len(), 2);
+    assert_eq!(client.get_all_assets(&0, &2).len(), 2);
     assert_eq!(client.total_value_locked(), 350);
 }
 
@@ -267,11 +267,11 @@ fn test_get_asset_on_unknown_id_fails_asset_not_found() {
 
     assert_eq!(
         client.try_get_asset(&0),
-        Err(Ok(Error::AssetNotFound))
+        Err(Ok(Error::AssetNotFound.into()))
     );
     assert_eq!(
         client.try_get_asset(&2),
-        Err(Ok(Error::AssetNotFound))
+        Err(Ok(Error::AssetNotFound.into()))
     );
 }
 
@@ -298,7 +298,7 @@ fn test_deactivate_asset_on_unknown_id_fails_and_active_count_unchanged() {
 
     assert_eq!(
         client.try_deactivate_asset(&admin, &99),
-        Err(Ok(Error::AssetNotFound))
+        Err(Ok(Error::AssetNotFound.into()))
     );
     assert_eq!(client.active_count(), 1);
 }
