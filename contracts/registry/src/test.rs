@@ -44,6 +44,16 @@ fn test_initialize_admin() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn test_get_admin_before_init_panics_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register(RegistryContract, ());
+    let client = RegistryContractClient::new(&env, &id);
+    client.get_admin();
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #1)")]
 fn test_double_init() {
     let (env, client, _admin) = setup();
@@ -141,6 +151,37 @@ fn test_get_all_and_tvl() {
     register(&env, &client, &issuer, "invoice", 250);
     assert_eq!(client.get_all_assets(&0, &2).len(), 2);
     assert_eq!(client.total_value_locked(), 350);
+}
+
+#[test]
+fn test_get_all_assets_pagination_edge_cases() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "real_estate", 100);
+    register(&env, &client, &issuer, "invoice", 250);
+    register(&env, &client, &issuer, "commodity", 300);
+
+    // Test start_id = 0 (should clamp to 1)
+    let result = client.get_all_assets(&0, &10);
+    assert_eq!(result.len(), 3);
+
+    // Test limit = 0 (should return empty)
+    let result = client.get_all_assets(&1, &0);
+    assert_eq!(result.len(), 0);
+
+    // Test start_id past counter (should return empty)
+    let result = client.get_all_assets(&99, &10);
+    assert_eq!(result.len(), 0);
+
+    // Test limit past counter (should cap at counter + 1)
+    let result = client.get_all_assets(&2, &1000);
+    assert_eq!(result.len(), 2);
+
+    // Test normal pagination
+    let result = client.get_all_assets(&1, &2);
+    assert_eq!(result.len(), 2);
+    let result = client.get_all_assets(&3, &2);
+    assert_eq!(result.len(), 1);
 }
 
 #[test]
@@ -301,4 +342,25 @@ fn test_deactivate_asset_on_unknown_id_fails_and_active_count_unchanged() {
         Err(Ok(Error::AssetNotFound.into()))
     );
     assert_eq!(client.active_count(), 1);
+}
+
+#[test]
+fn test_deactivate_already_inactive_asset_is_noop() {
+    // Issue #298: deactivating an already-inactive asset should be a no-op (no event emitted).
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "real_estate", 100);
+    assert_eq!(client.active_count(), 1);
+    assert_eq!(client.total_value_locked(), 100);
+
+    client.deactivate_asset(&admin, &id);
+    assert_eq!(client.active_count(), 0);
+    assert_eq!(client.total_value_locked(), 0);
+    assert!(!client.get_asset(&id).active);
+
+    // Deactivate again — should be a no-op (counts and TVL unchanged)
+    client.deactivate_asset(&admin, &id);
+    assert_eq!(client.active_count(), 0);
+    assert_eq!(client.total_value_locked(), 0);
+    assert!(!client.get_asset(&id).active);
 }
