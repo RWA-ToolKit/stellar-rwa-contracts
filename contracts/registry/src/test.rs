@@ -1,5 +1,6 @@
 #![cfg(test)]
 use super::*;
+use proptest::prelude::*;
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 fn setup() -> (Env, RegistryContractClient<'static>, Address) {
@@ -91,6 +92,49 @@ fn test_ids_increment() {
     assert_eq!(b, 2);
     assert_eq!(c, 3);
     assert_eq!(client.asset_count(), 3);
+}
+
+proptest! {
+    #[test]
+    fn prop_active_count_matches_active_entries(
+        ops in prop::collection::vec((any::<u8>(), any::<u8>()), 1..20),
+    ) {
+        let (env, client, admin) = setup();
+        let mut active_ids = Vec::new(&env);
+        for op in ops {
+            if active_ids.len() == 0 || op.0 % 2 == 0 {
+                let issuer = Address::generate(&env);
+                let token = Address::generate(&env);
+                let id = client.register_asset(
+                    &issuer,
+                    &token,
+                    &String::from_str(&env, "Asset"),
+                    &String::from_str(&env, "real_estate"),
+                    &1_000,
+                );
+                active_ids.push_back(id);
+            } else {
+                let idx = (op.1 as usize) % active_ids.len() as usize;
+                let id = active_ids.get(idx as u32).unwrap();
+                client.deactivate_asset(&admin, &id);
+                let mut filtered = Vec::new(&env);
+                for active_id in active_ids.iter() {
+                    if active_id != id {
+                        filtered.push_back(active_id);
+                    }
+                }
+                active_ids = filtered;
+            }
+
+            let active_in_registry = client
+                .get_all_assets(&0, &u32::MAX)
+                .iter()
+                .filter(|entry| entry.active)
+                .count() as u64;
+            assert_eq!(client.active_count(), active_in_registry);
+            assert_eq!(client.active_count(), active_ids.len() as u64);
+        }
+    }
 }
 
 #[test]
