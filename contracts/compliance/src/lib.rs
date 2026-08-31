@@ -248,15 +248,24 @@ impl ComplianceContract {
     }
 
     /// Return every address currently on the allowlist.
+    ///
+    /// Issue #306: previously this iterated every page ever allocated
+    /// (0..=current_page) unconditionally, meaning cost scaled with total
+    /// historical pages rather than current membership. We now skip any page
+    /// whose persistent entry is absent or empty, so pages emptied by heavy
+    /// `remove` churn are not charged to callers.
     pub fn get_allowlist(env: Env) -> Vec<Address> {
         let mut all = Vec::new(&env);
         let (current_page, _) = Self::allowlist_meta(&env);
         for page_idx in 0..=current_page {
-            let page: Vec<Address> = env
+            let page: Option<Vec<Address>> = env
                 .storage()
                 .persistent()
-                .get(&DataKey::AllowlistPage(page_idx))
-                .unwrap_or_else(|| Vec::new(&env));
+                .get(&DataKey::AllowlistPage(page_idx));
+            let page = match page {
+                Some(p) if !p.is_empty() => p,
+                _ => continue,
+            };
             for a in page.iter() {
                 all.push_back(a);
             }
@@ -301,16 +310,23 @@ impl ComplianceContract {
     /// Prune all expired records from the allowlist. Admin only (issue #21).
     /// Removes expired entries from persistent storage and the allowlist vector
     /// so indexers and `get_allowlist` no longer count them as Approved.
+    ///
+    /// Issue #306: previously iterated every allocated page unconditionally.
+    /// We now skip absent or already-empty pages so cost scales with live
+    /// pages, not historical page count.
     pub fn prune_expired(env: Env, admin: Address) {
         Self::require_admin(&env, &admin);
         let now = env.ledger().sequence();
         let (current_page, _) = Self::allowlist_meta(&env);
         for page_idx in 0..=current_page {
-            let page: Vec<Address> = env
+            let page: Option<Vec<Address>> = env
                 .storage()
                 .persistent()
-                .get(&DataKey::AllowlistPage(page_idx))
-                .unwrap_or_else(|| Vec::new(&env));
+                .get(&DataKey::AllowlistPage(page_idx));
+            let page = match page {
+                Some(p) if !p.is_empty() => p,
+                _ => continue,
+            };
             let mut next = Vec::new(&env);
             let mut changed = false;
             for addr in page.iter() {
@@ -425,6 +441,28 @@ impl ComplianceContract {
     /// Remove an address from whichever page it lives on. Leaves the page
     /// under-full rather than repacking pages, which keeps removal O(page
     /// size) instead of O(list size) (issue #177).
+    ///
+    /// # Fragmentation tradeoff (issue #308)
+    ///
+    /// This is an intentional design decision: removal rewrites the page
+    /// without the evicted address but never compacts it into a neighbouring
+    /// page or decrements the append cursor. As a consequence, on a
+    /// long-lived allowlist with heavy churn a page can end up mostly empty
+    /// while `append_to_allowlist` has already moved on to a later page.
+    /// That permanently under-full page will still be visited by
+    /// `get_allowlist` and `prune_expired` on every call (though both now
+    /// skip pages that are absent or empty — issue #306).
+    ///
+    /// The alternative — compacting two half-full pages into one and
+    /// rewriting `AllowlistPageOf` for every moved address — costs O(page
+    /// size) writes per removal and re-introduces the O(list size) worst
+    /// case that paging was designed to avoid.
+    ///
+    /// If fragmentation becomes a practical concern (e.g. a significant
+    /// fraction of pages have fewer than ~10 live entries), operators can
+    /// run a periodic off-chain reorganisation by removing and re-adding
+    /// all current members, or a future contract upgrade can add an explicit
+    /// `compact` admin operation.
     fn remove_from_allowlist(env: &Env, address: &Address) {
         let page_idx: Option<u32> = env
             .storage()
