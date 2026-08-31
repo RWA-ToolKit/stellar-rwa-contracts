@@ -1,5 +1,6 @@
 #![cfg(test)]
 use super::*;
+use proptest::prelude::*;
 use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Env};
 
 fn setup() -> (Env, ComplianceContractClient<'static>, Address) {
@@ -239,4 +240,72 @@ fn test_status_of_distinguishes_unseen_from_approved_and_suspended() {
 
     client.suspend(&admin, &user);
     assert_eq!(client.status_of(&user), Some(ComplianceStatus::Suspended));
+}
+
+fn assert_allowlist_invariant(env: &Env, client: &ComplianceContractClient) {
+    for addr in client.get_allowlist().iter() {
+        let record = client.get_record(&addr).unwrap();
+        let expected = record.status == ComplianceStatus::Approved
+            && (record.expires_at == 0 || env.ledger().sequence() < record.expires_at)
+            && !client.is_jurisdiction_blocked(&record.jurisdiction.clone());
+        assert_eq!(client.is_allowed(&addr), expected);
+    }
+}
+
+proptest! {
+    #[test]
+    fn prop_allowlist_membership_is_stricter_than_is_allowed(
+        steps in prop::collection::vec(0u8..10, 1..32),
+    ) {
+        let (env, client, admin) = setup();
+        let users = [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        ];
+
+        for step in steps {
+            let user = users[(step as usize) % users.len()].clone();
+            let country = match step % 4 {
+                0 => String::from_str(&env, "US"),
+                1 => String::from_str(&env, "KE"),
+                2 => String::from_str(&env, "IR"),
+                _ => String::from_str(&env, "DE"),
+            };
+
+            match step % 6 {
+                0 => {
+                    client.add_to_allowlist(
+                        &admin,
+                        &user,
+                        &country,
+                        &(env.ledger().sequence() + 10 + u32::from(step % 5)),
+                    );
+                }
+                1 => {
+                    if client.get_record(&user).is_some() {
+                        client.suspend(&admin, &user);
+                    }
+                }
+                2 => {
+                    if client.get_record(&user).is_some() {
+                        client.remove(&admin, &user);
+                    }
+                }
+                3 => {
+                    client.block_jurisdiction(&admin, &country);
+                }
+                4 => {
+                    client.unblock_jurisdiction(&admin, &country);
+                }
+                _ => {
+                    env.ledger().with_mut(|l| {
+                        l.sequence_number += 1 + u32::from(step % 5);
+                    });
+                }
+            }
+
+            assert_allowlist_invariant(&env, &client);
+        }
+    }
 }
