@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)]
 //! # Compliance Contract
 //!
 //! Maintains the KYC allowlist and jurisdiction rules that gate who may hold or

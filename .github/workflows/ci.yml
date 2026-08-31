@@ -19,7 +19,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -36,6 +36,9 @@ jobs:
       # no longer mask a compile or test failure.
       - name: Test
         run: cargo test --workspace
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       # Committed test_snapshots must match what the tests actually produce, so
       # drift (e.g. a storage layout change without regenerated snapshots)

@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)]
 //! # Dividend Contract
 //!
 //! Distributes yield/dividends to asset-token holders in proportion to their

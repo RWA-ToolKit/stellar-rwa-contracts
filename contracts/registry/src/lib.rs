@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)]
 //! # Registry Contract
 //!
 //! A canonical, on-chain index of every tokenized asset on the platform. Each
@@ -106,7 +107,7 @@ impl RegistryContract {
             panic_err(&env, Error::InvalidValuation);
         }
         // Require non-empty name and a recognised asset type (issue #48).
-        if name.len() == 0 {
+        if name.is_empty() {
             panic_err(&env, Error::InvalidInput);
         }
         validate_asset_type(&env, &asset_type);
@@ -391,8 +392,8 @@ fn validate_asset_type(env: &Env, asset_type: &String) {
         let v = valid.as_bytes();
         if bytes.len() as usize == v.len() {
             let mut matches = true;
-            for i in 0..v.len() {
-                if bytes.get(i as u32).unwrap_or(0) != v[i] {
+            for (i, valid_byte) in v.iter().enumerate() {
+                if bytes.get(i as u32).unwrap_or(0) != *valid_byte {
                     matches = false;
                     break;
                 }

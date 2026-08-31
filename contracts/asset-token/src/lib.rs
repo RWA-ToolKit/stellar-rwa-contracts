@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)]
 //! # Asset Token Contract
 //!
 //! A compliant token representing a tokenized real-world asset (real estate,

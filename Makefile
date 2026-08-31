@@ -1,4 +1,4 @@
-.PHONY: build test fmt fmt-check clean deploy
+.PHONY: build test clippy fmt fmt-check clean deploy
 
 # Build all contracts to wasm.
 build:
@@ -7,6 +7,10 @@ build:
 # Run the full workspace test suite.
 test:
 	cargo test
+
+# Run the workspace clippy lint rules with warnings treated as errors.
+clippy:
+	cargo clippy --workspace --all-targets -- -D warnings
 
 # Format all code.
 fmt:
