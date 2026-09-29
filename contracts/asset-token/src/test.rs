@@ -95,7 +95,9 @@ fn test_transfer_from_after_expiry_rejected() {
 
     let expiration = s.env.ledger().sequence() + 5;
     s.token.approve(&s.admin, &bob, &200, &expiration);
-    s.env.ledger().with_mut(|li| li.sequence_number = expiration + 1);
+    s.env
+        .ledger()
+        .with_mut(|li| li.sequence_number = expiration + 1);
     assert_eq!(s.token.allowance(&s.admin, &bob), 0);
     s.token.transfer_from(&bob, &s.admin, &carol, &50);
 }
@@ -415,7 +417,8 @@ fn test_approve_blocked_when_paused() {
     let s = setup(1_000);
     let bob = Address::generate(&s.env);
     s.token.pause(&s.admin);
-    s.token.approve(&s.admin, &bob, &100, &(s.env.ledger().sequence() + 100));
+    s.token
+        .approve(&s.admin, &bob, &100, &(s.env.ledger().sequence() + 100));
 }
 
 #[test]
@@ -1110,12 +1113,8 @@ fn test_compliance_admin_diverges_from_asset_admin() {
 
     // Neither admin has authority over the other's contract.
     let dave = Address::generate(&env);
-    let res = compliance.try_add_to_allowlist(
-        &asset_admin,
-        &dave,
-        &String::from_str(&env, "US"),
-        &0,
-    );
+    let res =
+        compliance.try_add_to_allowlist(&asset_admin, &dave, &String::from_str(&env, "US"), &0);
     assert_eq!(res, Err(Ok(compliance::Error::Unauthorized.into())));
 
     let res = token.try_mint(&compliance_officer, &carol, &10);
@@ -1425,7 +1424,6 @@ proptest! {
         }
     }
 }
-
 
 /// If the configured compliance contract address holds no contract at all,
 /// the cross-contract call the gate depends on cannot execute and the host

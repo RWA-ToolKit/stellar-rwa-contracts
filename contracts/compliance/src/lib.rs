@@ -136,12 +136,40 @@ pub struct ComplianceContract;
 
 #[contractimpl]
 impl ComplianceContract {
-    /// Current contract version.
+    /// Returns the contract's ABI/behavior version number.
+    ///
+    /// Callers and indexers can use this to detect schema changes without
+    /// having to probe individual storage entries.
+    ///
+    /// # Parameters
+    /// - `_env`: Soroban environment (unused).
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn version(_env: Env) -> u32 {
         VERSION
     }
 
-    /// Initialize the contract with an admin. Callable exactly once.
+    /// Initialize the contract and set the first admin. Callable exactly once.
+    ///
+    /// # Parameters
+    /// - `admin`: Address that will administer KYC records and jurisdiction
+    ///   blocks. Must authorize the call.
+    ///
+    /// # Authority
+    /// `admin` must sign the transaction (`admin.require_auth()`).
+    ///
+    /// # Errors
+    /// - [`Error::AlreadyInitialized`] — contract was already initialized.
+    ///
+    /// # Events
+    /// Emits topic `("init",)` with data `admin`.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error(&env, Error::AlreadyInitialized);
@@ -154,7 +182,38 @@ impl ComplianceContract {
         env.events().publish((symbol_short!("init"),), admin);
     }
 
-    /// Add (or re-approve) an address on the KYC allowlist.
+    /// Add (or re-approve) a single address on the KYC allowlist.
+    ///
+    /// Creates a [`KycRecord`] with status `Approved` for `address`, or
+    /// overwrites an existing record (re-approval / reinstatement via
+    /// replacement). The `jurisdiction` is normalized to an uppercase
+    /// ISO-3166-1 alpha-2 code. Previous record state is captured in the
+    /// emitted event for off-chain audit (issue #20).
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `address`: Address to approve.
+    /// - `jurisdiction`: ISO-3166-1 alpha-2 country code (e.g. `"US"`,
+    ///   `"KE"`). Whitespace is stripped; letters are uppercased. Exactly two
+    ///   ASCII alpha characters required.
+    /// - `expires_at`: Ledger sequence at which approval expires
+    ///   (`expires_at` itself is already expired — see boundary semantics in
+    ///   [`Self::is_allowed`]).  Pass `0` for a non-expiring approval.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::InvalidExpiry`] — `expires_at` is non-zero and already
+    ///   in the past (`expires_at <= current_ledger`).
+    /// - [`Error::InvalidJurisdiction`] — `jurisdiction` is not a valid
+    ///   two-letter ASCII alpha code.
+    ///
+    /// # Events
+    /// Emits topic `("approved", address)` with data
+    /// `(jurisdiction, expires_at, prev_jurisdiction, prev_expires_at, was_suspended)`.
     pub fn add_to_allowlist(
         env: Env,
         admin: Address,
@@ -217,11 +276,13 @@ impl ComplianceContract {
     }
 
     /// Add (or re-approve) several addresses on the KYC allowlist in one
-    /// transaction (issue #338). Each [`AllowlistEntry`] carries its own
-    /// `jurisdiction` and `expires_at`, so every entry is validated and
-    /// normalized exactly as [`Self::add_to_allowlist`] validates a single
-    /// address: same expiry check, same jurisdiction normalization, same
-    /// audit-trail capture, same per-address `approved` event.
+    /// transaction (issue #338).
+    ///
+    /// Each [`AllowlistEntry`] carries its own `jurisdiction` and
+    /// `expires_at`, so every entry is validated and normalized exactly as
+    /// [`Self::add_to_allowlist`] validates a single address: same expiry
+    /// check, same jurisdiction normalization, same audit-trail capture,
+    /// same per-address `approved` event.
     ///
     /// If any entry fails validation (e.g. its `expires_at` is in the past,
     /// or its jurisdiction is malformed), the call panics immediately with
@@ -230,6 +291,25 @@ impl ComplianceContract {
     /// invocation when it panics, so a failing entry never silently skips
     /// itself while leaving earlier entries in the batch committed — the
     /// whole batch either fully applies or fully reverts.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `entries`: Vec of [`AllowlistEntry`] values, each specifying an
+    ///   `address`, `jurisdiction`, and `expires_at`.  Validated identically
+    ///   to the single-address path.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::InvalidExpiry`] — any entry's `expires_at` is already past.
+    /// - [`Error::InvalidJurisdiction`] — any entry's jurisdiction is invalid.
+    ///
+    /// # Events
+    /// Emits one `("approved", address)` event per entry in the batch (same
+    /// payload as [`Self::add_to_allowlist`]).
     pub fn add_to_allowlist_batch(env: Env, admin: Address, entries: Vec<AllowlistEntry>) {
         Self::require_admin(&env, &admin);
         let now = env.ledger().sequence();
@@ -284,8 +364,26 @@ impl ComplianceContract {
         Self::bump_instance(&env);
     }
 
-    /// Suspend an approved address. Its record is retained but `is_allowed`
-    /// returns `false` until it is re-approved.
+    /// Suspend an approved address.
+    ///
+    /// The record is retained but [`Self::is_allowed`] returns `false` until
+    /// the address is re-approved (via [`Self::add_to_allowlist`]) or
+    /// reinstated (via [`Self::reinstate`]).
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `address`: Address to suspend.  Must already have a KYC record.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::RecordNotFound`] — `address` has no KYC record.
+    ///
+    /// # Events
+    /// Emits topic `("suspend", address)` with data `()`.
     pub fn suspend(env: Env, admin: Address, address: Address) {
         Self::require_admin(&env, &admin);
         let mut record = Self::load_record(&env, &address);
@@ -299,11 +397,28 @@ impl ComplianceContract {
     }
 
     /// Reinstate a `Suspended` address without discarding its original KYC
-    /// metadata. Unlike calling `add_to_allowlist` again (which requires the
+    /// metadata.
+    ///
+    /// Unlike calling [`Self::add_to_allowlist`] again (which requires the
     /// caller to resupply `jurisdiction`/`expires_at` and overwrites
     /// `verified_at`), `reinstate` flips the status back to `Approved` and
     /// leaves `jurisdiction`, `verified_at` and `expires_at` untouched.
-    /// Admin only. Errors: `RecordNotFound (#3)`, `NotSuspended (#8)`.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `address`: Address to reinstate.  Must exist and be `Suspended`.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::RecordNotFound`] — `address` has no KYC record.
+    /// - [`Error::NotSuspended`] — `address` exists but is not `Suspended`.
+    ///
+    /// # Events
+    /// Emits topic `("reinstat", address)` with data `()`.
     pub fn reinstate(env: Env, admin: Address, address: Address) {
         Self::require_admin(&env, &admin);
         let mut record = Self::load_record(&env, &address);
@@ -320,6 +435,25 @@ impl ComplianceContract {
     }
 
     /// Remove an address entirely from the allowlist.
+    ///
+    /// Deletes both the [`KycRecord`] and the address's allowlist page slot.
+    /// Use [`Self::suspend`] instead to keep the record for audit while
+    /// blocking transfers.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `address`: Address to remove.  Must have an existing KYC record.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::RecordNotFound`] — `address` has no KYC record.
+    ///
+    /// # Events
+    /// Emits topic `("removed", address)` with data `()`.
     pub fn remove(env: Env, admin: Address, address: Address) {
         Self::require_admin(&env, &admin);
         if !env
@@ -338,9 +472,32 @@ impl ComplianceContract {
             .publish((symbol_short!("removed"), address), ());
     }
 
-    /// Core compliance check used by the asset token on every transfer/mint.
-    /// Returns `true` only if the address is Approved, not expired, and its
-    /// jurisdiction is not blocked.
+    /// Core compliance check called by the asset-token contract on every
+    /// transfer and mint.
+    ///
+    /// Returns `true` only when all three conditions hold:
+    /// 1. `address` has a [`KycRecord`] with status `Approved`.
+    /// 2. The record has not expired (`expires_at == 0`, or
+    ///    `current_ledger < expires_at`).
+    /// 3. The record's jurisdiction is not currently blocked.
+    ///
+    /// Expiry boundary semantics (issue #341): `expires_at` is **exclusive**.
+    /// A record is valid up to ledger `expires_at - 1`; it lapses starting at
+    /// ledger `expires_at` (i.e. `now >= expires_at` means expired).
+    ///
+    /// # Parameters
+    /// - `address`: Address to check.
+    ///
+    /// # Authority
+    /// None — anyone may call (typically the asset-token contract).
+    ///
+    /// # Errors
+    /// None — returns `false` rather than panicking for any non-compliant case.
+    ///
+    /// # Events
+    /// Emits topic `("expired", address)` with data `expires_at` when a
+    /// record is found to have lapsed at check time, so indexers can track
+    /// the expiry transition without polling.
     pub fn is_allowed(env: Env, address: Address) -> bool {
         let record: Option<KycRecord> = env
             .storage()
@@ -372,6 +529,21 @@ impl ComplianceContract {
     }
 
     /// Fetch the raw KYC record for an address, if any.
+    ///
+    /// Returns `None` when the address has never been submitted for KYC.
+    /// Use [`Self::status_of`] for a lighter-weight status-only query.
+    ///
+    /// # Parameters
+    /// - `address`: Address to look up.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_record(env: Env, address: Address) -> Option<KycRecord> {
         env.storage().persistent().get(&DataKey::Record(address))
     }
@@ -381,24 +553,50 @@ impl ComplianceContract {
     ///
     /// Mapping:
     /// - `None` — the address has no KYC record at all (never seen).
-    /// - `Some(Approved)` — currently on the allowlist. Note this does not by
-    ///   itself mean `is_allowed` returns `true`: `is_allowed` additionally
-    ///   checks expiry and jurisdiction blocks, neither of which changes the
-    ///   stored status.
+    /// - `Some(Approved)` — currently on the allowlist.  Note this does not by
+    ///   itself mean [`Self::is_allowed`] returns `true`: `is_allowed`
+    ///   additionally checks expiry and jurisdiction blocks, neither of which
+    ///   changes the stored status.
     /// - `Some(Pending)` / `Some(Rejected)` — reserved for future workflows;
     ///   no current method sets these.
     /// - `Some(Suspended)` — was approved, then suspended via [`Self::suspend`].
+    ///
+    /// # Parameters
+    /// - `address`: Address to query.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn status_of(env: Env, address: Address) -> Option<ComplianceStatus> {
         Self::get_record(env, address).map(|r| r.status)
     }
 
     /// Return every address currently on the allowlist.
     ///
-    /// Issue #306: previously this iterated every page ever allocated
-    /// (0..=current_page) unconditionally, meaning cost scaled with total
-    /// historical pages rather than current membership. We now skip any page
-    /// whose persistent entry is absent or empty, so pages emptied by heavy
-    /// `remove` churn are not charged to callers.
+    /// Iterates all allocated pages, skipping absent or empty pages so that
+    /// pages emptied by heavy `remove` churn are not charged to callers
+    /// (issue #306). Includes suspended addresses (their page slot is
+    /// preserved by [`Self::suspend`]).
+    ///
+    /// For large lists prefer [`Self::get_allowlist_page`] to bound per-call
+    /// resource usage; this function transfers the entire list in one call.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_allowlist(env: Env) -> Vec<Address> {
         let mut all = Vec::new(&env);
         let (current_page, _) = Self::allowlist_meta(&env);
@@ -418,17 +616,26 @@ impl ComplianceContract {
         all
     }
 
-    /// Number of addresses currently on the allowlist, in O(1) — backed by a
-    /// maintained counter rather than walking `get_allowlist`'s pages.
+    /// Number of addresses currently on the allowlist, in O(1).
     ///
-    /// The counter is incremented exactly when a brand-new address is
-    /// appended to a page (`append_to_allowlist`, called from
-    /// `add_to_allowlist` the first time an address is seen) and decremented
-    /// exactly when an address is removed from its page
-    /// (`remove_from_allowlist`, called from `remove`). `suspend` only flips
-    /// `KycRecord::status` — the address's page membership (and thus this
-    /// counter) is untouched, which matches `get_allowlist`'s existing
-    /// behaviour of listing suspended addresses too.
+    /// Backed by a maintained counter rather than walking the allowlist
+    /// pages.  The counter is incremented when a brand-new address is
+    /// appended and decremented when an address is removed.  [`Self::suspend`]
+    /// only flips `KycRecord::status` — the address's page membership (and
+    /// thus this counter) is untouched, so suspended addresses are still
+    /// counted.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_allowlist_count(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -441,9 +648,23 @@ impl ComplianceContract {
     /// `offset` is the number of addresses to skip from the start of the
     /// allowlist; `limit` is the maximum number of addresses to return.
     /// `limit` is clamped to [`MAX_ALLOWLIST_PAGE_SIZE`] — passing `0` or a
-    /// value above the maximum returns up to the maximum page size. Passing
+    /// value above the maximum returns up to the maximum page size.  Passing
     /// an `offset` at or beyond the end of the list returns an empty `Vec`,
     /// which is how callers detect the final page.
+    ///
+    /// # Parameters
+    /// - `offset`: Number of addresses to skip (0-based).
+    /// - `limit`: Maximum number of addresses to return; clamped to
+    ///   [`MAX_ALLOWLIST_PAGE_SIZE`].
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_allowlist_page(env: Env, offset: u32, limit: u32) -> Vec<Address> {
         let limit = if limit == 0 || limit > MAX_ALLOWLIST_PAGE_SIZE {
             MAX_ALLOWLIST_PAGE_SIZE
@@ -479,8 +700,28 @@ impl ComplianceContract {
         result
     }
 
-    /// Block an entire jurisdiction (country code). Approved addresses in a
-    /// blocked jurisdiction fail `is_allowed`.
+    /// Block an entire jurisdiction by ISO-3166-1 alpha-2 country code.
+    ///
+    /// Once blocked, any address whose KYC record carries that jurisdiction
+    /// will fail [`Self::is_allowed`], even if the record itself is
+    /// `Approved` and unexpired.  Idempotent: blocking an already-blocked
+    /// jurisdiction does not emit a second event.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `jurisdiction`: Two-letter ISO country code to block.  Normalized
+    ///   (whitespace stripped, uppercased) before storage.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::InvalidJurisdiction`] — not a valid two-letter alpha code.
+    ///
+    /// # Events
+    /// Emits topic `("blockjur",)` with data `jurisdiction`.
     pub fn block_jurisdiction(env: Env, admin: Address, jurisdiction: String) {
         Self::require_admin(&env, &admin);
         let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
@@ -503,6 +744,26 @@ impl ComplianceContract {
     }
 
     /// Un-block a previously blocked jurisdiction.
+    ///
+    /// Removes the jurisdiction from the blocked set and from the ordered
+    /// blocked-jurisdiction list.  Idempotent: calling on a jurisdiction that
+    /// is not blocked succeeds silently.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `jurisdiction`: Two-letter ISO country code to unblock.  Normalized
+    ///   before the lookup.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::InvalidJurisdiction`] — not a valid two-letter alpha code.
+    ///
+    /// # Events
+    /// Emits topic `("unblkjur",)` with data `jurisdiction`.
     pub fn unblock_jurisdiction(env: Env, admin: Address, jurisdiction: String) {
         Self::require_admin(&env, &admin);
         let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
@@ -522,7 +783,22 @@ impl ComplianceContract {
             .publish((symbol_short!("unblkjur"),), jurisdiction);
     }
 
-    /// Whether a jurisdiction is currently blocked.
+    /// Returns `true` if the given jurisdiction is currently blocked.
+    ///
+    /// The `jurisdiction` is normalized before the lookup, so `"us"` and
+    /// `"US"` are treated identically.
+    ///
+    /// # Parameters
+    /// - `jurisdiction`: Two-letter ISO country code to query.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidJurisdiction`] — not a valid two-letter alpha code.
+    ///
+    /// # Events
+    /// None.
     pub fn is_jurisdiction_blocked(env: Env, jurisdiction: String) -> bool {
         let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
         env.storage()
@@ -531,33 +807,60 @@ impl ComplianceContract {
             .unwrap_or(false)
     }
 
-    /// Every jurisdiction currently blocked, in the order it was first
-    /// blocked. Clients previously had to infer the blocked set from the
-    /// absence of approved addresses in a jurisdiction (a blocked
-    /// jurisdiction with no approved address is invisible that way); this
-    /// reads the contract's authoritative list directly.
+    /// Returns the ordered list of every jurisdiction currently blocked.
+    ///
+    /// The list is maintained in insertion order (earliest block first) and
+    /// is kept in sync with the individual `Blocked(String)` flags, so
+    /// callers read the authoritative set directly rather than inferring it
+    /// from the absence of approved addresses.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_blocked_jurisdictions(env: Env) -> Vec<String> {
         Self::blocked_list(&env)
     }
 
     /// Prune expired records from the allowlist. Admin only (issue #21).
-    /// Removes expired entries from persistent storage and the allowlist vector
-    /// so indexers and `get_allowlist` no longer count them as Approved.
     ///
-    /// Issue #306: previously iterated every allocated page unconditionally.
-    /// We now skip absent or already-empty pages so cost scales with live
-    /// pages, not historical page count.
+    /// Removes expired entries from persistent storage and the allowlist page
+    /// so indexers and [`Self::get_allowlist`] no longer count them as
+    /// Approved.
     ///
-    /// Issue #333: a single invocation can still exceed host resource limits
-    /// once the allowlist is large enough, since the whole thing was scanned
-    /// in one call regardless of size. `max_records` bounds how many
-    /// individual allowlist entries this call will inspect before returning,
-    /// so a large allowlist can be pruned incrementally across several
-    /// transactions. Passing `0` means "no bound" (scan everything), which
-    /// preserves prior behaviour for small allowlists. The return value is
-    /// the number of entries left unexamined (i.e. still possibly expired
-    /// and not yet checked) once the bound is hit, so callers know whether
-    /// to invoke again; it is `0` once a full pass completes.
+    /// `max_records` bounds how many individual allowlist entries this call
+    /// will inspect before returning (issue #333), so a large allowlist can
+    /// be pruned incrementally across several transactions.  Passing `0` means
+    /// "no bound" — scan everything, preserving prior behaviour for small
+    /// allowlists.  The return value is the number of entries left unexamined
+    /// once the bound is hit; callers should invoke again until the return
+    /// value is `0`, which indicates a full pass completed.
+    ///
+    /// Only absent or already-empty pages are skipped to keep cost
+    /// proportional to live pages, not historical page count (issue #306).
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `max_records`: Maximum number of allowlist entries to inspect.
+    ///   `0` means inspect all.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    ///
+    /// # Events
+    /// Emits topic `("expired", address)` with data `expires_at` for each
+    /// record pruned.
     pub fn prune_expired(env: Env, admin: Address, max_records: u32) -> u32 {
         Self::require_admin(&env, &admin);
         let now = env.ledger().sequence();
@@ -640,7 +943,19 @@ impl ComplianceContract {
         0
     }
 
-    /// Return the configured admin address.
+    /// Returns the configured admin address.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    ///
+    /// # Events
+    /// None.
     pub fn get_admin(env: Env) -> Address {
         env.storage()
             .instance()
@@ -648,12 +963,26 @@ impl ComplianceContract {
             .unwrap_or_else(|| panic_with_error(&env, Error::NotInitialized))
     }
 
-    /// Propose a new admin. Requires authorization from the current admin.
-    /// The role does not move yet — `new_admin` must call `accept_admin`
-    /// before the handover takes effect (issue #4). This makes a mistyped
-    /// `new_admin` harmless (it can simply be re-proposed or cancelled)
-    /// instead of a single-step transfer that would permanently brick
-    /// administration.
+    /// Propose a new admin. The role does not transfer until `new_admin` calls
+    /// [`Self::accept_admin`] (issue #4).
+    ///
+    /// The two-step handover makes a mistyped `new_admin` harmless — re-propose
+    /// or cancel — rather than permanently bricking administration in a single
+    /// call.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `new_admin`: Address being nominated as successor.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    ///
+    /// # Events
+    /// Emits topic `("proposed", admin)` with data `new_admin`.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         Self::require_admin(&env, &admin);
         env.storage()
@@ -664,9 +993,21 @@ impl ComplianceContract {
             .publish((symbol_short!("proposed"), admin), new_admin);
     }
 
-    /// Cancel a pending admin proposal. Requires authorization from the
-    /// current admin. Panics with `NoPendingAdmin` if there is nothing to
-    /// cancel.
+    /// Cancel a pending admin proposal.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
+    ///
+    /// # Events
+    /// Emits topic `("cancelled", admin)` with data `()`.
     pub fn cancel_admin_proposal(env: Env, admin: Address) {
         Self::require_admin(&env, &admin);
         if !env.storage().instance().has(&DataKey::PendingAdmin) {
@@ -678,11 +1019,29 @@ impl ComplianceContract {
             .publish((symbol_short!("cancelled"), admin), ());
     }
 
-    /// Accept a pending admin proposal, completing the handover. Must be
-    /// called by the proposed successor (issue #4); the role only ever moves
-    /// here, never in `propose_admin`. Emits `set_admin` carrying both the
-    /// previous and new admin so off-chain indexers can observe this
-    /// security-critical transition (issue #2).
+    /// Accept a pending admin proposal and complete the handover.
+    ///
+    /// Must be called by the proposed successor (`new_admin`); the role only
+    /// ever moves here, never in [`Self::propose_admin`] (issue #4).
+    /// Emits `set_admin` carrying both the previous and new admin so
+    /// off-chain indexers can observe this security-critical transition
+    /// (issue #2).
+    ///
+    /// # Parameters
+    /// - `new_admin`: The address accepting the admin role.  Must match the
+    ///   pending proposal and must sign the transaction.
+    ///
+    /// # Authority
+    /// `new_admin` must sign the transaction (`new_admin.require_auth()`).
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
+    /// - [`Error::Unauthorized`] — `new_admin` does not match the pending
+    ///   proposal.
+    ///
+    /// # Events
+    /// Emits topic `("set_admin", old_admin)` with data `new_admin`.
     pub fn accept_admin(env: Env, new_admin: Address) {
         new_admin.require_auth();
         let pending: Address = env
@@ -705,7 +1064,21 @@ impl ComplianceContract {
             .publish((symbol_short!("set_admin"), old_admin), new_admin);
     }
 
-    /// The address currently proposed as the next admin, if any.
+    /// Returns the address currently proposed as the next admin, if any.
+    ///
+    /// Returns `None` when no proposal is in flight.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::PendingAdmin)
     }
