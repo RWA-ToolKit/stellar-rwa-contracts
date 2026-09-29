@@ -43,6 +43,7 @@ required role.
 |---|---|---|
 | `initialize` | None (bootstrap) — but only succeeds once | Second call panics `Error::AlreadyInitialized` (#1) |
 | `transfer` | Self (the `from` address) | `require_auth` failure (host-level auth error) if `from` did not authorize; separately reverts with `Error::SenderNotCompliant` (#7) / `Error::RecipientNotCompliant` (#8) / `Error::Paused` (#6) / `Error::InsufficientBalance` (#4) on business-rule failure |
+| `transfer_batch` | Self (the `from` address) | `require_auth` failure if `from` did not authorize; separately reverts with `Error::SenderNotCompliant` (#7) / `Error::RecipientNotCompliant` (#8) / `Error::Paused` (#6) / `Error::InvalidAmount` / `Error::InsufficientBalance` (#4) on business-rule failure |
 | `mint` | Admin | `Error::Unauthorized` (#3) |
 | `mint_batch` | Admin | `Error::Unauthorized` (#3) |
 | `burn` | Self (the `from` address) | `require_auth` failure if `from` did not authorize |

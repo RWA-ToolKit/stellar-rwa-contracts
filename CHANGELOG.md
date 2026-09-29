@@ -10,6 +10,7 @@ the full convention; CI flags contract changes that do not update this file.
 ## [Unreleased]
 
 ### Added
+- **asset-token**: `transfer_batch` transfers to many compliance-approved recipients in one call, following the `mint_batch` pattern. Atomic: one failing entry reverts the whole batch. The sender's auth, the pause check and the sender-side compliance check each run once; balances are re-read per entry so entries spending the same balance accumulate correctly.
 - `scripts/deploy.sh` now sources a local `.env` when present while preserving explicit caller-provided values and prompting before a mainnet deployment.
 
 ### Changed
