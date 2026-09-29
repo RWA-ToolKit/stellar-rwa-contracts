@@ -113,3 +113,6 @@ MIT — see [LICENSE](LICENSE).
 
 <!-- handsoff-issue-391 -->
 - #391: Test empty and oversized string inputs
+
+<!-- handsoff-issue-401 -->
+- #401: Test that a deactivated asset still permits holders to claim existing dividends
