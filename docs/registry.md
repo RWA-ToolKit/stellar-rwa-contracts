@@ -55,6 +55,19 @@ and reports total value locked (TVL).
   reactivate, never recomputed by iterating the registry.
 - `asset_count() -> u64` — total registrations, active or not.
 - `active_count() -> u64` — registrations currently active.
+- `get_total_asset_count() -> u32` — same as `asset_count` but typed as `u32`;
+  provided as a named companion for callers building paginated UIs alongside
+  `get_assets_page` (issue #455).
+- `get_assets_page(start_index: u32, page_size: u32) -> Vec<AssetEntry>` —
+  zero-based index pagination over all registered assets ordered by id.
+  `page_size` is capped at `MAX_PAGE_SIZE` (100). Returns empty when
+  `start_index` is at or beyond the total count. See
+  [Pagination helpers](#pagination-helpers-issue-455).
+- `get_active_assets_page(start_index: u32, page_size: u32, active_only: bool) -> Vec<AssetEntry>` —
+  same as `get_assets_page` but filters by the `active` flag before
+  indexing, so `start_index` is a position within the *filtered* list.
+  Costs scale with the full registry size (linear scan). See
+  [Pagination helpers](#pagination-helpers-issue-455).
 - `get_admin() -> Address`
 - `propose_admin(admin, new_admin)` — admin auth; records a pending successor.
   The role does not move yet.
@@ -168,6 +181,46 @@ Listing of the contract `DataKey` variants and their storage behaviour.
 | `IssuerIndex` | Address | persistent | ids registered by that issuer; extended on read/write |
 | `TypeIndex` | String | persistent | ids of that exact `asset_type` string; extended on read/write |
 | `TotalValuation` | - | instance | running TVL total; O(1) read, updated on register/deactivate/reactivate |
+
+## Pagination helpers (issue #455)
+
+The registry exposes three functions for efficient paginated access by API
+consumers and the web app.
+
+### `get_total_asset_count() -> u32`
+
+Returns the total number of registered assets (active and inactive). Equivalent
+to `asset_count()` but typed as `u32` to match the `u32` index parameters of
+the pagination functions below.
+
+### `get_assets_page(start_index, page_size) -> Vec<AssetEntry>`
+
+Zero-based index pagination over all registered assets, ordered by id:
+
+| Parameter     | Semantics |
+|---------------|-----------|
+| `start_index` | First entry to return (0-based). Returns empty when ≥ total count. |
+| `page_size`   | Max entries to return. Capped at `MAX_PAGE_SIZE` (100). `0` also returns up to the cap. |
+
+Typical walk:
+```
+page 0 → get_assets_page(0, 20)   → items 0–19
+page 1 → get_assets_page(20, 20)  → items 20–39
+...
+last   → get_assets_page(N, 20)   → partial or empty
+```
+
+### `get_active_assets_page(start_index, page_size, active_only) -> Vec<AssetEntry>`
+
+Same pagination semantics as `get_assets_page`, but filtered by `active`:
+
+- `active_only = true` — returns only assets with `active == true`.
+- `active_only = false` — returns only deactivated assets.
+
+`start_index` counts positions within the **filtered** list, not within the
+full registry. This function performs a linear scan over all registered ids on
+every call; for large registries, prefer per-issuer or per-type index queries
+when the filter is not required.
 
 ## Security considerations
 

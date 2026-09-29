@@ -10,6 +10,18 @@ the full convention; CI flags contract changes that do not update this file.
 ## [Unreleased]
 
 ### Added
+- `compliance`: minimum holding period rule (#454) — `set_min_holding_period`,
+  `record_acquisition`, `get_min_holding_period`, `get_first_acquired_ledger`;
+  `is_allowed` enforces the lock-up window with fail-open semantics for
+  unrecorded acquisitions. New error `InvalidHoldingPeriod (#9)`. New events
+  `minhld`, `acquired`, `hldfail`.
+- `registry`: pagination helpers (#455) — `get_total_asset_count`,
+  `get_assets_page`, `get_active_assets_page` for index-based and
+  active-filtered paging over the asset list.
+- `fuzz`: four compliance fuzz targets (#456) — `compliance_batch_allowlist`,
+  `compliance_expiry`, `compliance_jurisdiction_race`, `compliance_is_allowed`;
+  each verifies key invariants of the compliance gate including the new
+  holding-period check.
 - `scripts/deploy.sh` now sources a local `.env` when present while preserving explicit caller-provided values and prompting before a mainnet deployment.
 
 ### Changed
