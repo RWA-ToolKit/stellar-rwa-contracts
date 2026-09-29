@@ -110,3 +110,6 @@ MIT — see [LICENSE](LICENSE).
 
 <!-- handsoff-issue-400 -->
 - #400: Add an integration test exercising all four contracts together
+
+<!-- handsoff-issue-391 -->
+- #391: Test empty and oversized string inputs
