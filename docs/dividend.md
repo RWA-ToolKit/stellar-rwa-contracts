@@ -188,3 +188,76 @@ distributions per asset token (issue #166).
   non-negative (issue #291) and no address may appear twice (issue #290) — a
   duplicate would otherwise be counted in the denominator but be unclaimable,
   permanently stranding that slice of the escrow.
+
+## Holder-snapshot scaling limits (issue #429)
+
+The holder snapshot is stored as a single persistent ledger entry
+(`DataKey::Snapshot(id)`, type `Vec<(Address, i128)>`).  Two hard limits
+follow from this layout.  Neither is currently enforced by the contract; both
+are documented here so integrators can account for them before deploying.
+
+### Limit 1 — snapshot size at creation time
+
+`create_distribution` / `create_distribution_deadline` receives the entire
+`eligible` list as a transaction argument and writes it as one ledger entry.
+Soroban caps both the total serialised size of a transaction's arguments and
+the maximum size of a single ledger entry.  As of Soroban protocol 21+:
+
+* A single persistent ledger entry may not exceed **~64 KB** serialised.
+* A create-distribution transaction argument may not exceed the host's
+  per-transaction byte limit.
+
+A `(Address, i128)` tuple encodes to roughly **60–70 bytes** on-chain.
+This means:
+
+| Approx. holders | Approx. snapshot size |
+|-----------------|-----------------------|
+| 500             | ~33 KB                |
+| 750             | ~50 KB                |
+| ~900            | ~60 KB (near limit)   |
+
+**Consequence:** If the admin supplies more than roughly 900 holders, the
+`create_distribution` call will fail with a host resource or ledger-entry size
+error before any funds move.  There is no explicit error code for this; the
+failure occurs inside the host before contract code runs.
+
+**Recommendation:** Keep each distribution under ~750 holders.  If the asset
+token has more holders, split the population into multiple distributions with
+disjoint `eligible` lists that together cover all holders.  The compliance
+contract uses pages of 200 as its analogous limit (issue #177).
+
+### Limit 2 — per-claim CPU/memory cost
+
+`claim` calls `claimable`, which calls `snapshot_balance`.
+`snapshot_balance` deserialises the *entire* `Snapshot(id)` entry and
+performs a linear scan to find the calling holder.
+
+This means:
+
+* Every claim reads and decodes the full `N`-entry snapshot, regardless of
+  where the holder appears in it.
+* CPU instructions and read-bytes ledger cost grow **O(N)** with the number of
+  eligible holders — the last claimer pays the same cost as the first.
+* At large `N` (hundreds of holders), individual claim transactions may
+  approach or exceed the Soroban per-transaction instruction limit, making
+  some or all claims unexecutable on-chain even though the distribution was
+  created successfully.
+
+**Consequence:** Distributions with very large snapshots may be impossible to
+claim from, silently stranding funds in escrow.
+
+**Recommendation:** Keep the same ~750-holder per-distribution limit to
+ensure all claims remain within the instruction budget.  A future version of
+this contract may replace the linear scan with a `Map`-keyed snapshot to
+reduce per-claim cost to O(1).
+
+### Summary
+
+| Limit              | Root cause                          | Practical cap    |
+|--------------------|-------------------------------------|------------------|
+| Creation size      | Single ledger entry / tx arg size   | ≈ 750–900 holders |
+| Per-claim CPU cost | Full snapshot deserialise + O(N) scan | ≈ 750 holders  |
+
+Both limits are **silent**: the contract emits no custom error; the failure
+comes from the Soroban host.  Admins must account for these bounds when
+constructing the `eligible` list.

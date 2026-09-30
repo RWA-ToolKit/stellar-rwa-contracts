@@ -187,6 +187,32 @@ impl DividendContract {
     /// responsibility. The contract only enforces structural sanity: entries
     /// must be non-negative (issue #291) and each address may appear at most
     /// once (issue #290).
+    ///
+    /// # Snapshot scaling limits (issue #429)
+    ///
+    /// The entire `eligible` list is written as a **single persistent ledger
+    /// entry** (`DataKey::Snapshot(id)`). Two hard limits follow from this
+    /// layout; neither is enforced by the contract (the host will error
+    /// silently before contract code runs):
+    ///
+    /// 1. **Creation-time size cap** — a `(Address, i128)` entry encodes to
+    ///    roughly 60–70 bytes. With Soroban's ~64 KB single-entry cap and
+    ///    per-transaction argument limits, this means the practical upper bound
+    ///    is approximately **750–900 holders**. Above that threshold
+    ///    `create_distribution` fails with a host resource error before any
+    ///    funds move, with no descriptive error code from this contract.
+    ///
+    /// 2. **Per-claim CPU/memory cost** — `claim` calls `snapshot_balance`,
+    ///    which deserialises the *entire* snapshot and performs a linear O(N)
+    ///    scan. Every claimer — including the last one — pays for all N entries.
+    ///    At large N this can push individual claim transactions past the
+    ///    per-transaction instruction limit, making some claims unexecutable
+    ///    even after a successful `create_distribution`.
+    ///
+    /// **Recommendation:** keep each distribution under ~750 holders. For
+    /// larger populations, split into multiple distributions with disjoint
+    /// `eligible` lists. See `docs/dividend.md` §"Holder-snapshot scaling
+    /// limits" for worked numbers.
     pub fn create_distribution(
         env: Env,
         admin: Address,
@@ -580,6 +606,17 @@ impl DividendContract {
     /// creation-time snapshot. Wallets not present in the snapshot (e.g. ones
     /// that received tokens only afterwards) have a basis of 0 and cannot claim
     /// (issue #163).
+    ///
+    /// # Scaling note (issue #429)
+    ///
+    /// This function deserialises the entire `Snapshot(id)` ledger entry and
+    /// performs a **linear O(N) scan** over all eligible holders to find the
+    /// caller. Ledger read-bytes and CPU instruction costs therefore grow with
+    /// the size of the snapshot. For large distributions (many hundreds of
+    /// holders) this can make individual `claim` transactions approach the
+    /// Soroban per-transaction instruction limit. Keep distributions under
+    /// ~750 holders to stay safely within budget; see the "Holder-snapshot
+    /// scaling limits" section in `docs/dividend.md` for details.
     fn snapshot_balance(env: &Env, distribution_id: u64, holder: &Address) -> i128 {
         let snap: Vec<(Address, i128)> = env
             .storage()
