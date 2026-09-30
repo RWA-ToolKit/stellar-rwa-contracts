@@ -16,6 +16,8 @@ Every privileged (admin- or self-authorized) function across all four
 contracts, the role it requires, and the error raised for the wrong caller
 is documented in the [Authority Matrix](docs/AUTHORITY_MATRIX.md).
 
+For responsible vulnerability disclosure, see the [Security Policy](SECURITY.md).
+
 ## How compliance gating works
 
 ```

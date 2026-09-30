@@ -58,6 +58,7 @@ required role.
 | `initialize` | None (bootstrap) — but only succeeds once | Second call panics `Error::AlreadyInitialized` (#1) |
 | `create_distribution` | Admin | `Error::Unauthorized` (#3) |
 | `claim` | Self (the `holder` address) | `require_auth` failure if `holder` did not authorize; separately reverts with `Error::AlreadyClaimed` (#7) / `Error::NothingToClaim` (#6) on business-rule failure |
+| `withdraw_unclaimed` | Admin | `Error::Unauthorized` (#3); `Error::DistributionTooYoung` (#16) before the requested minimum age; `Error::DeadlineNotReached` (#14) before a configured claim deadline; `Error::NothingToClaim` (#6) if no withdrawable balance remains |
 
 ## registry (`contracts/registry`)
 
