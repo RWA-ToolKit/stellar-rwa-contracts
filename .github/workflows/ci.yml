@@ -141,6 +141,9 @@ jobs:
       - name: Install Rust
         run: rustup show
 
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -159,6 +162,17 @@ jobs:
           name: interface-specs
           path: target/interface-specs/*.json
           if-no-files-found: error
+
+  check-quickstart:
+    # Verify QUICKSTART.md does not reference non-existent scripts, a wrong
+    # wasm target, or the deprecated soroban-cli. Runs on every PR so doc
+    # drift is caught before merge (issue #443).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check QUICKSTART.md is consistent with the repo
+        run: bash scripts/check_quickstart.sh
 
   coverage:
     runs-on: ubuntu-latest
@@ -191,3 +205,36 @@ jobs:
             cargo llvm-cov --workspace --summary-only
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  lint-scripts:
+    # Validate shell scripts and verify that script paths mentioned in docs
+    # actually exist in the repository (issue #431).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install shellcheck
+        run: sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck on all shell scripts
+        run: |
+          find scripts -name '*.sh' -print0 | xargs -0 shellcheck
+
+      - name: Run bash -n syntax check on all shell scripts
+        run: |
+          find scripts -name '*.sh' -print0 | xargs -0 -I{} bash -n {}
+
+      - name: Verify DEPLOYMENTS.md only references scripts that exist
+        run: |
+          ERRORS=0
+          while IFS= read -r script_path; do
+            if [ ! -f "$script_path" ]; then
+              echo "ERROR: DEPLOYMENTS.md references '$script_path' which does not exist."
+              ERRORS=$((ERRORS + 1))
+            fi
+          done < <(grep -oP 'scripts/[a-zA-Z0-9_\-]+\.sh' DEPLOYMENTS.md | sort -u)
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "Fix DEPLOYMENTS.md to match the actual script filenames."
+            exit 1
+          fi
+          echo "OK: all script references in DEPLOYMENTS.md exist."

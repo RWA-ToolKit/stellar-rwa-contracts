@@ -128,6 +128,37 @@ fn test_create_distribution_escrows_funds() {
 }
 
 #[test]
+fn test_asset_admin_can_create_distribution() {
+    let ctx = setup();
+    let asset_admin = AssetTokenContractClient::new(&ctx.env, &ctx.asset_id)
+        .get_metadata()
+        .admin;
+    let id = ctx.dividend.create_distribution(
+        &asset_admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &500,
+        &eligible(&ctx),
+    );
+    assert_eq!(id, 1);
+    assert_eq!(pay_balance(&ctx, &ctx.dividend.address), 500);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_unrelated_address_cannot_create_distribution() {
+    let ctx = setup();
+    let stranger = Address::generate(&ctx.env);
+    ctx.dividend.create_distribution(
+        &stranger,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &500,
+        &eligible(&ctx),
+    );
+}
+
+#[test]
 fn test_claim_is_proportional() {
     let ctx = setup();
     let id = ctx.dividend.create_distribution(

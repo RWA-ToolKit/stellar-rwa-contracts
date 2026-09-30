@@ -34,7 +34,7 @@ make build
 ```
 
 This runs `stellar contract build` and produces the wasm for each contract under
-`target/wasm32-unknown-unknown/release/`.
+`target/wasm32v1-none/release/`.
 
 ## Interface specifications
 
@@ -58,7 +58,7 @@ target/interface-specs/registry.json
 
 Each spec is generated from the contract's wasm using
 `stellar contract info interface --wasm <wasm> --output json`, so it always reflects
-the interface of the built contract.
+the interface of the built contract. This requires the Stellar CLI to be installed.
 
 ### Consuming the specs
 
@@ -72,7 +72,7 @@ consume them:
 
    ```sh
    stellar contract bindings typescript \
-     --wasm target/wasm32-unknown-unknown/release/asset_token.wasm \
+       --wasm target/wasm32v1-none/release/asset_token.wasm \
      --output-dir packages/asset-token-bindings
    ```
 

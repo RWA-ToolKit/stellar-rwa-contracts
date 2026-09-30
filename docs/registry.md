@@ -24,10 +24,12 @@ and reports total value locked (TVL).
 - `initialize(admin)` — sets admin. Once only. `AlreadyInitialized (#1)`.
 - `register_asset(issuer, token_contract, name, asset_type, valuation) -> u64` —
   issuer auth; assigns and returns the id. `InvalidValuation (#5)` if negative,
-  `InvalidInput (#7)` if `name` is empty or `asset_type` is not one of the
-  canonical [asset types](#asset-types). Rejects `token_contract` values
-  already registered under another id with `DuplicateAsset (#9)` — see
-  "Duplicate registration" below.
+  `InvalidInput (#7)` if `name` is empty, `name` exceeds 64 bytes, or
+  `asset_type` is not one of the canonical [asset types](#asset-types).
+  The 64-byte cap matches the asset-token contract's `MAX_NAME_LEN` and is
+  counted in UTF-8 bytes, so multibyte characters consume more than one byte
+  toward the limit. Rejects `token_contract` values already registered under
+  another id with `DuplicateAsset (#9)` — see "Duplicate registration" below.
 - `get_asset(asset_id) -> AssetEntry` — `AssetNotFound (#4)`.
 - `get_assets_by_issuer(issuer) -> Vec<AssetEntry>`
 - `get_assets_by_type(asset_type) -> Vec<AssetEntry>` — see

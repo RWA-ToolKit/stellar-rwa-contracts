@@ -42,15 +42,18 @@
 #[cfg(test)]
 extern crate std;
 
+use asset_token::AssetMetadata;
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, Map, Vec,
 };
 
-/// Read-only view of the asset token needed to size a holder's share.
+/// Read-only view of the asset token needed to size a holder's share and to
+/// authorize issuer-owned distributions.
 #[contractclient(name = "AssetClient")]
 pub trait AssetInterface {
     fn total_supply(env: Env) -> i128;
+    fn get_metadata(env: Env) -> AssetMetadata;
 }
 
 /// Minimal payment-token interface used to move escrowed funds.
@@ -140,7 +143,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 #[contract]
 pub struct DividendContract;
@@ -310,18 +313,18 @@ impl DividendContract {
         eligible: Vec<(Address, i128)>,
         deadline: u32,
     ) -> u64 {
-        Self::require_admin(&env, &admin);
+        Self::require_admin_or_asset_admin(&env, &admin, &asset_token);
         if total_amount <= 0 {
-            panic_err(&env, Error::InvalidAmount);
-        }
-        // Reject distributions with empty eligible set (issue #365).
-        if eligible.len() == 0 {
             panic_err(&env, Error::InvalidAmount);
         }
         // Reject distributions where no holder can ever claim (issue #49).
         let supply = AssetClient::new(&env, &asset_token).total_supply();
         if supply <= 0 {
             panic_err(&env, Error::ZeroSupply);
+        }
+        // Reject distributions with empty eligible set (issue #365).
+        if eligible.len() == 0 {
+            panic_err(&env, Error::InvalidAmount);
         }
         // Validate the eligible list and total its balances *before* pulling any
         // funds, so a rejected list never leaves escrow moved. This total is
@@ -811,26 +814,29 @@ impl DividendContract {
             .unwrap_or_else(|| panic_err(&env, Error::NotInitialized))
     }
 
-    /// Propose a new admin. The role does not transfer until `new_admin` calls
-    /// [`Self::accept_admin`] (issue #4).
-    ///
-    /// The two-step handover makes a mistyped `new_admin` harmless — re-propose
-    /// or cancel — rather than permanently bricking administration in a single
-    /// call.
-    ///
-    /// # Parameters
-    /// - `admin`: Current admin address.  Must authorize the call.
-    /// - `new_admin`: Address being nominated as successor.
-    ///
-    /// # Authority
-    /// `admin` must be the stored admin and must sign the transaction.
-    ///
-    /// # Errors
-    /// - [`Error::NotInitialized`] — contract not yet initialized.
-    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
-    ///
-    /// # Events
-    /// Emits topic `("proposed", admin)` with data `new_admin`.
+    fn require_admin_or_asset_admin(env: &Env, admin: &Address, asset_token: &Address) {
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_err(env, Error::NotInitialized));
+        admin.require_auth();
+        if *admin == stored {
+            return;
+        }
+        let asset_admin = AssetClient::new(env, asset_token).get_metadata().admin;
+        if *admin == asset_admin {
+            return;
+        }
+        panic_err(env, Error::Unauthorized);
+    }
+
+    /// Propose a new admin. Requires authorization from the current admin.
+    /// The role does not move yet — `new_admin` must call `accept_admin`
+    /// before the handover takes effect (issue #4). This makes a mistyped
+    /// `new_admin` harmless (it can simply be re-proposed or cancelled)
+    /// instead of a single-step transfer that would permanently brick
+    /// administration.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         Self::require_admin(&env, &admin);
         env.storage()

@@ -10,6 +10,7 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
+asset-token = { path = "../asset-token" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

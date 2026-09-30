@@ -98,7 +98,14 @@ pub trait TokenInterface {
 - `create_distribution_deadline(admin, asset_token, payment_token, total_amount, eligible, deadline) -> u64` —
   same as above, plus sets the claim `deadline` (see policy above).
 - `claimable(distribution_id, holder) -> i128` — the holder's remaining share
-  (0 if already claimed / holds nothing / empty supply). Never panics.
+  (0 if already claimed / holds nothing / empty supply).
+  **Panics** in two cases:
+  - `DistributionNotFound (#4)` — if `distribution_id` does not exist.
+  - `ArithmeticOverflow (#10)` — if `total_amount * snapshot_balance` does not
+    fit in an `i128` (i.e. the product overflows 128-bit signed arithmetic).
+    Integrators must ensure that `total_amount * max_holder_balance < i128::MAX`
+    before creating a distribution; see `test_claimable_overflow_guarded` in
+    `contracts/dividend/src/test.rs` for the concrete assertion.
 - `claim(distribution_id, holder)` — holder auth; pays the claimable amount from
   escrow, marks claimed, updates `distributed`/`completed`. Errors:
   `AlreadyClaimed (#7)`, `NothingToClaim (#6)`, `DeadlinePassed (#13)`.

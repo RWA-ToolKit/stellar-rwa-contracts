@@ -6,8 +6,10 @@
 //! monotonically increasing id and tracks issuer, type, valuation and active
 //! status. It also reports total value locked (TVL) across active assets.
 
+use asset_token::AssetMetadata;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
+    Env, String, Vec,
 };
 
 // NOTE: The `Ids` instance-storage key is retained in the enum only for
@@ -79,9 +81,24 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 /// compute the next `start_id`.
 pub const MAX_PAGE_SIZE: u32 = 100;
 
+/// Maximum byte length for an asset name (issue #439).
+///
+/// Matches the cap enforced by the asset-token contract's `check_str` helper
+/// so the two layers are consistent. The web wizard already limits the name
+/// field to 64 characters in Step2AssetDetails; names containing multi-byte
+/// UTF-8 characters count toward this limit by **bytes**, not code-points,
+/// so a name consisting of 32 two-byte characters (e.g. é, ñ) reaches the
+/// limit with only 32 visible glyphs.
+pub const MAX_NAME_LEN: u32 = 64;
+
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
+
+#[contractclient(name = "AssetClient")]
+pub trait AssetInterface {
+    fn get_metadata(env: Env) -> AssetMetadata;
+}
 
 #[contract]
 pub struct RegistryContract;
@@ -185,6 +202,13 @@ impl RegistryContract {
         }
         // Require non-empty name and a recognised asset type (issue #48).
         if name.len() == 0 {
+            panic_err(&env, Error::InvalidInput);
+        }
+        // Reject names longer than MAX_NAME_LEN bytes (issue #439).
+        // The asset-token contract enforces the same 64-byte cap; keeping
+        // them in sync prevents unbounded ledger entries that inflate the
+        // cost of every registry read and break UI card layout.
+        if name.len() > MAX_NAME_LEN {
             panic_err(&env, Error::InvalidInput);
         }
         validate_asset_type(&env, &asset_type);
@@ -421,12 +445,12 @@ impl RegistryContract {
     /// Emits topic `("deactvate",)` with data `asset_id` (only when the asset
     /// was previously active).
     pub fn deactivate_asset(env: Env, admin: Address, asset_id: u64) {
-        Self::require_admin(&env, &admin);
         let mut entry: AssetEntry = env
             .storage()
             .persistent()
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
+        Self::require_admin_or_asset_admin(&env, &admin, &entry.token_contract);
         let was_active = entry.active;
         if !was_active {
             return;
@@ -561,12 +585,12 @@ impl RegistryContract {
     /// Emits topic `("reactvate",)` with data `asset_id` (only when the asset
     /// was previously inactive).
     pub fn reactivate_asset(env: Env, admin: Address, asset_id: u64) {
-        Self::require_admin(&env, &admin);
         let mut entry: AssetEntry = env
             .storage()
             .persistent()
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
+        Self::require_admin_or_asset_admin(&env, &admin, &entry.token_contract);
         if entry.active {
             return;
         }
@@ -866,6 +890,23 @@ impl RegistryContract {
         if stored != *admin {
             panic_err(env, Error::Unauthorized);
         }
+    }
+
+    fn require_admin_or_asset_admin(env: &Env, admin: &Address, asset_token: &Address) {
+        let stored: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_err(env, Error::NotInitialized));
+        admin.require_auth();
+        if *admin == stored {
+            return;
+        }
+        let asset_admin = AssetClient::new(env, asset_token).get_metadata().admin;
+        if *admin == asset_admin {
+            return;
+        }
+        panic_err(env, Error::Unauthorized);
     }
 }
 

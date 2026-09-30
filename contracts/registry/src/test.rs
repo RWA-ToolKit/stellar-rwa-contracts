@@ -167,6 +167,25 @@ fn test_get_assets_by_issuer() {
 }
 
 #[test]
+fn test_issuer_can_deactivate_asset() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "real_estate", 100);
+    client.deactivate_asset(&issuer, &id);
+    assert!(!client.get_asset(&id).active);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_unrelated_address_cannot_deactivate_asset() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "real_estate", 100);
+    let stranger = Address::generate(&env);
+    client.deactivate_asset(&stranger, &id);
+}
+
+#[test]
 fn test_get_assets_by_issuer_with_no_assets_returns_empty() {
     let (env, client, _admin) = setup();
     let issuer = Address::generate(&env);
@@ -768,4 +787,98 @@ fn test_get_all_assets_final_partial_page() {
     assert_eq!(third.len(), 1);
     let fourth = client.get_all_assets(&8, &page_size);
     assert_eq!(fourth.len(), 0);
+}
+
+// ---- TVL overflow tests (issue #436) ----
+
+/// Registering an asset with valuation i128::MAX succeeds: TVL == i128::MAX is
+/// a valid, representable state.
+#[test]
+fn test_register_exact_max_valuation_accepted() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "real_estate", i128::MAX);
+    assert_eq!(id, 1);
+    assert_eq!(client.total_value_locked(), i128::MAX);
+    assert_eq!(client.asset_count(), 1);
+    assert_eq!(client.active_count(), 1);
+}
+
+/// Registering a second asset when TVL is already at i128::MAX must fail with
+/// Overflow (#6). Soroban rolls back the entire invocation, so the second
+/// asset must not appear as a registered entry, and the counts/TVL must remain
+/// unchanged from before the failed call.
+#[test]
+fn test_register_overflows_tvl_panics_and_rolls_back() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+
+    // First registration: valuation exactly i128::MAX — this must succeed.
+    let id1 = register(&env, &client, &issuer, "real_estate", i128::MAX);
+    assert_eq!(id1, 1);
+    assert_eq!(client.total_value_locked(), i128::MAX);
+    assert_eq!(client.asset_count(), 1);
+    assert_eq!(client.active_count(), 1);
+
+    // Second registration: any positive valuation would overflow i128 when
+    // added to i128::MAX, so this must panic with Error(Contract, #6).
+    let token2 = Address::generate(&env);
+    let result = client.try_register_asset(
+        &issuer,
+        &token2,
+        &String::from_str(&env, "Asset2"),
+        &String::from_str(&env, "invoice"),
+        &1i128,
+    );
+    assert_eq!(result, Err(Ok(Error::Overflow.into())));
+
+    // The failed call must have been fully rolled back:
+    // - asset_count is still 1 (no partial write of id=2)
+    // - active_count is still 1
+    // - TVL is still i128::MAX
+    // - get_asset(2) must not exist
+    assert_eq!(client.asset_count(), 1);
+    assert_eq!(client.active_count(), 1);
+    assert_eq!(client.total_value_locked(), i128::MAX);
+    assert_eq!(
+        client.try_get_asset(&2u64),
+        Err(Ok(Error::AssetNotFound.into()))
+    );
+}
+
+/// Overflow in reactivate_asset: deactivate the giant asset, register another,
+/// then reactivate the giant one — the TVL addition would overflow, so
+/// reactivate_asset must panic with Error(Contract, #6).
+#[test]
+fn test_reactivate_overflows_tvl_panics() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+
+    // Register an asset with valuation i128::MAX.
+    let id_max = register(&env, &client, &issuer, "real_estate", i128::MAX);
+    assert_eq!(client.total_value_locked(), i128::MAX);
+
+    // Deactivate it — TVL drops to 0, giving room for another registration.
+    client.deactivate_asset(&admin, &id_max);
+    assert_eq!(client.total_value_locked(), 0);
+    assert_eq!(client.active_count(), 0);
+
+    // Register a second asset with valuation 1. This succeeds because TVL is 0.
+    let id2 = register(&env, &client, &issuer, "invoice", 1);
+    assert_eq!(client.total_value_locked(), 1);
+    assert_eq!(client.active_count(), 1);
+
+    // Now try to reactivate the i128::MAX asset. TVL would become 1 + i128::MAX
+    // which overflows — must panic with Overflow (#6).
+    let result = client.try_reactivate_asset(&admin, &id_max);
+    assert_eq!(result, Err(Ok(Error::Overflow.into())));
+
+    // State must be unchanged: active_count is still 1, TVL is still 1.
+    assert_eq!(client.active_count(), 1);
+    assert_eq!(client.total_value_locked(), 1);
+
+    // The max-valuation asset must still be inactive (reactivate rolled back).
+    assert!(!client.get_asset(&id_max).active);
+    // The second asset must still be active.
+    assert!(client.get_asset(&id2).active);
 }

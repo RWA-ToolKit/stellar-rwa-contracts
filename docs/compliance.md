@@ -16,8 +16,11 @@ the recipient of every mint.
 enum ComplianceStatus { Approved, Pending, Rejected, Suspended }
 ```
 
-Only `Approved` records (that are not expired and not in a blocked jurisdiction)
-pass `is_allowed`.
+`Pending` and `Rejected` are retained only for ABI compatibility and are
+explicitly deprecated. The current contract never writes them, and no public
+method can create them; `Approved` and `Suspended` are the only reachable
+states from the supported workflows. Only `Approved` records (that are not
+expired and not in a blocked jurisdiction) pass `is_allowed`.
 
 ### `KycRecord`
 

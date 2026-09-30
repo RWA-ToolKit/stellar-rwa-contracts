@@ -138,7 +138,7 @@ if !gate.is_allowed(&to)   { /* RecipientNotCompliant */ }
 Using `#[contractclient]` on a trait means the token depends only on the
 compliance *interface*, not the compliance *crate*. The concrete address lives
 in the token's metadata and is swappable via `set_compliance`. The **dividend**
-contract uses the same pattern to read balances/supply from the asset token and
+contract uses the same pattern to read `total_supply()` from the asset token and
 to move payment tokens.
 
 ## How to add a new compliance rule

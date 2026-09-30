@@ -37,6 +37,8 @@ update-doc-addresses:
 interface-specs: build
 	mkdir -p target/interface-specs
 	for contract in asset-token compliance dividend registry; do \
-		wasm=target/wasm32-unknown-unknown/release/$${contract//-/_}.wasm; \
-		stellar contract interface-spec --wasm $$wasm --output target/interface-specs/$$contract.json; \
+		wasm_contract=$$contract; \
+		if [ "$$contract" = asset-token ]; then wasm_contract=asset_token; fi; \
+		wasm=target/wasm32v1-none/release/$$wasm_contract.wasm; \
+		stellar contract info interface --wasm "$$wasm" --output json > target/interface-specs/$$contract.json; \
 	done

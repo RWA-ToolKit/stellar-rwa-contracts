@@ -10,13 +10,15 @@ the full convention; CI flags contract changes that do not update this file.
 ## [Unreleased]
 
 ### Added
-- Nothing yet.
+- `scripts/deploy.sh` now sources a local `.env` when present while preserving explicit caller-provided values and prompting before a mainnet deployment.
 
 ### Changed
-- Nothing yet.
+- `ComplianceStatus::Pending` and `ComplianceStatus::Rejected` are explicitly documented as deprecated ABI-only values retained for compatibility.
+- Asset-scoped dividend and registry operations now allow either the contract admin or the asset's admin to act.
 
 ### Fixed
-- Nothing yet.
+- Registry asset-name validation now enforces the same 64-byte cap as the asset-token metadata checks and documents the UTF-8 byte-based rule.
+- `deploy.sh` no longer tries to friendbot on `mainnet` and avoids silently ignoring a checked-in `.env` file.
 
 ## [0.1.0] - 2026-07-08
 

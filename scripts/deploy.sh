@@ -23,16 +23,38 @@
 
 set -euo pipefail
 
-NETWORK="${NETWORK:-testnet}"
-IDENTITY="${IDENTITY:-rwa-admin}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXPLICIT_NETWORK="${NETWORK:-}"
+EXPLICIT_IDENTITY="${IDENTITY:-}"
+
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  . "$ROOT/.env"
+  set +a
+fi
+
+NETWORK="${EXPLICIT_NETWORK:-${NETWORK:-testnet}}"
+IDENTITY="${EXPLICIT_IDENTITY:-${IDENTITY:-rwa-admin}}"
 WASM_DIR="$ROOT/target/wasm32v1-none/release"
 
 echo "==> Network:  $NETWORK"
 echo "==> Identity: $IDENTITY"
 
-# 1. Ensure the deploying identity exists and is funded (Testnet friendbot).
+if [[ "$NETWORK" == "mainnet" ]]; then
+  echo "==> WARNING: This deploy targets mainnet and will spend live fees."
+  read -r -p "Type 'mainnet' to continue: " confirmation
+  if [[ "$confirmation" != "mainnet" ]]; then
+    echo "==> Aborting mainnet deployment without explicit confirmation."
+    exit 1
+  fi
+fi
+
+# 1. Ensure the deploying identity exists and is funded on non-mainnet test networks.
 if ! stellar keys address "$IDENTITY" >/dev/null 2>&1; then
+  if [[ "$NETWORK" == "mainnet" ]]; then
+    echo "==> Identity '$IDENTITY' was not found locally; use an existing funded mainnet identity."
+    exit 1
+  fi
   echo "==> Generating and funding identity '$IDENTITY'..."
   stellar keys generate --network "$NETWORK" --fund "$IDENTITY"
 fi
