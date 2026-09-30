@@ -76,6 +76,14 @@ pub struct Distribution {
     /// Ledger sequence after which claims are rejected and the admin may
     /// reclaim unclaimed funds (issue #2). `0` means no deadline.
     pub deadline: u32,
+    /// Set to `true` by `cancel_distribution` (issue #428).
+    ///
+    /// A cancelled distribution is distinguished from a fully-paid one by
+    /// this flag: both set `completed = true`, but only a cancelled
+    /// distribution also sets `cancelled = true`. This makes the two
+    /// terminal states distinguishable to any client or indexer that reads
+    /// the stored entry, not just to the cancel event.
+    pub cancelled: bool,
 }
 
 #[contracttype]
@@ -290,6 +298,7 @@ impl DividendContract {
             created_at: env.ledger().sequence(),
             completed: false,
             deadline,
+            cancelled: false,
         };
         env.storage().persistent().set(&DataKey::Dist(id), &dist);
         env.storage().persistent().extend_ttl(
@@ -510,9 +519,14 @@ impl DividendContract {
         // Return escrowed funds to the issuer.
         let this = env.current_contract_address();
         TokenClient::new(&env, &dist.payment_token).transfer(&this, &admin, &dist.total_amount);
-        // Mark as completed so no further claims are possible.
+        // Mark as completed so no further claims are possible, and set
+        // `cancelled = true` so callers can distinguish this terminal state
+        // from a fully-paid distribution (issue #428). Both fields are set
+        // before writing the entry back so the stored record is always
+        // internally consistent.
         let mut cancelled_dist = dist;
         cancelled_dist.completed = true;
+        cancelled_dist.cancelled = true;
         env.storage()
             .persistent()
             .set(&DataKey::Dist(distribution_id), &cancelled_dist);
