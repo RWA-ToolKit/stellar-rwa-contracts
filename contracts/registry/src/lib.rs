@@ -266,9 +266,43 @@ impl RegistryContract {
     /// so cost scales with that issuer's asset count, not the whole registry.
     /// Note: This includes both active and deactivated assets. Deactivated assets
     /// are never removed from the index; use the `active` field to filter if needed.
+    ///
+    /// # Pagination (issue #430)
+    ///
+    /// This function returns at most [`MAX_PAGE_SIZE`] entries per call,
+    /// starting from index `0`. For issuers with more than `MAX_PAGE_SIZE`
+    /// assets, use [`get_assets_by_issuer_page`] to page through the full
+    /// list. The cap prevents unbounded ledger read cost regardless of how
+    /// many assets the issuer has registered.
     pub fn get_assets_by_issuer(env: Env, issuer: Address) -> Vec<AssetEntry> {
         let ids = Self::index_ids(&env, &DataKey::IssuerIndex(issuer));
-        Self::fetch_assets(&env, &ids)
+        Self::fetch_assets_page(&env, &ids, 0, MAX_PAGE_SIZE)
+    }
+
+    /// A page of assets registered by a given issuer (issue #430).
+    ///
+    /// Returns up to `page_size` entries starting at offset `page * page_size`
+    /// within the issuer's id index. `page_size` is silently clamped to
+    /// [`MAX_PAGE_SIZE`] so no single call can exceed the per-call bound. Page
+    /// through the full list by incrementing `page` until the returned
+    /// `Vec` is shorter than `page_size` (or empty).
+    ///
+    /// Example — iterate all assets for an issuer in blocks of 50:
+    /// ```text
+    /// page=0, page_size=50  → first  50 assets (ids[  0.. 49])
+    /// page=1, page_size=50  → next   50 assets (ids[ 50.. 99])
+    /// page=2, page_size=50  → last   N  assets (ids[100..100+N-1], N < 50)
+    /// ```
+    pub fn get_assets_by_issuer_page(
+        env: Env,
+        issuer: Address,
+        page: u32,
+        page_size: u32,
+    ) -> Vec<AssetEntry> {
+        let ids = Self::index_ids(&env, &DataKey::IssuerIndex(issuer));
+        let capped = page_size.min(MAX_PAGE_SIZE);
+        let offset = page.saturating_mul(capped);
+        Self::fetch_assets_page(&env, &ids, offset, capped)
     }
 
     /// All assets of a given asset type (e.g. "real_estate"). Backed by a
@@ -284,9 +318,34 @@ impl RegistryContract {
     /// in `VALID_ASSET_TYPES` can ever be registered (see
     /// `validate_asset_type`), a query must match one of those canonical
     /// strings exactly to return any results.
+    ///
+    /// # Pagination (issue #430)
+    ///
+    /// This function returns at most [`MAX_PAGE_SIZE`] entries per call,
+    /// starting from index `0`. For types with more than `MAX_PAGE_SIZE`
+    /// assets, use [`get_assets_by_type_page`] to page through the full list.
     pub fn get_assets_by_type(env: Env, asset_type: String) -> Vec<AssetEntry> {
         let ids = Self::index_ids(&env, &DataKey::TypeIndex(asset_type));
-        Self::fetch_assets(&env, &ids)
+        Self::fetch_assets_page(&env, &ids, 0, MAX_PAGE_SIZE)
+    }
+
+    /// A page of assets of a given type (issue #430).
+    ///
+    /// Returns up to `page_size` entries starting at offset `page * page_size`
+    /// within the type's id index. `page_size` is silently clamped to
+    /// [`MAX_PAGE_SIZE`]. Page through by incrementing `page` until the
+    /// result is shorter than `page_size` (or empty). See
+    /// [`get_assets_by_issuer_page`] for a pagination example.
+    pub fn get_assets_by_type_page(
+        env: Env,
+        asset_type: String,
+        page: u32,
+        page_size: u32,
+    ) -> Vec<AssetEntry> {
+        let ids = Self::index_ids(&env, &DataKey::TypeIndex(asset_type));
+        let capped = page_size.min(MAX_PAGE_SIZE);
+        let offset = page.saturating_mul(capped);
+        Self::fetch_assets_page(&env, &ids, offset, capped)
     }
 
     /// A page of registered assets: ids `[start_id, start_id + limit)`,
@@ -597,6 +656,35 @@ impl RegistryContract {
                 );
                 out.push_back(entry);
             }
+        }
+        out
+    }
+
+    /// Resolve a paginated slice of an id list to asset entries, extending TTLs.
+    /// `offset` is the 0-based start index into `ids`; `limit` is the maximum
+    /// number of entries to return (caller is responsible for clamping to
+    /// `MAX_PAGE_SIZE` before calling). This is the shared implementation
+    /// backing `get_assets_by_issuer_page` and `get_assets_by_type_page`
+    /// (issue #430).
+    fn fetch_assets_page(env: &Env, ids: &Vec<u64>, offset: u32, limit: u32) -> Vec<AssetEntry> {
+        let mut out = Vec::new(env);
+        let total = ids.len();
+        if offset >= total || limit == 0 {
+            return out;
+        }
+        let end = total.min(offset.saturating_add(limit));
+        let mut idx = offset;
+        while idx < end {
+            let id = ids.get(idx).unwrap();
+            if let Some(entry) = env.storage().persistent().get(&DataKey::Asset(id)) {
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Asset(id),
+                    INSTANCE_LIFETIME_THRESHOLD,
+                    INSTANCE_BUMP_AMOUNT,
+                );
+                out.push_back(entry);
+            }
+            idx += 1;
         }
         out
     }
