@@ -22,19 +22,21 @@ jobs:
           fetch-depth: 0
 
       - name: Require CHANGELOG entry for contract changes
+        env:
+          # Label names are contributor-controlled, so pass them through the
+          # environment instead of interpolating them into the script. toJSON
+          # makes the grep an exact match on a whole element, so a label like
+          # `not-skip-changelog` cannot trigger the opt-out.
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          BASE="origin/${{ github.base_ref }}"
-          git fetch --no-tags origin "${{ github.base_ref }}"
-          CHANGED=$(git diff --name-only "$BASE...HEAD")
-          echo "Changed files:"
-          echo "$CHANGED"
-          if echo "$CHANGED" | grep -qE '^contracts/'; then
-            if ! echo "$CHANGED" | grep -qE '^CHANGELOG\.md$'; then
-              echo "::error::This PR touches contracts/ but does not modify CHANGELOG.md. Add an entry under the Unreleased section (see CONTRIBUTING.md)."
-              exit 1
-            fi
+          set -euo pipefail
+          if printf '%s' "$PR_LABELS" | grep -q '"skip-changelog"'; then
+            echo "The skip-changelog label is applied; not requiring a CHANGELOG entry."
+            exit 0
           fi
-          echo "Changelog check passed."
+          git fetch --no-tags origin "$BASE_REF"
+          ./scripts/check_changelog.sh "origin/$BASE_REF"
 
   test:
     runs-on: ubuntu-latest
