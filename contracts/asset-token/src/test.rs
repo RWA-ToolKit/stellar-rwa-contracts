@@ -1471,3 +1471,177 @@ fn test_transfer_traps_when_compliance_contract_is_unreachable() {
         &1_000i128,
     );
 }
+
+// ---- issue #452: transfer_batch ----
+
+/// Happy path: every entry moves, each emitting its own `transfer` event with
+/// the same payload shape as `transfer`.
+#[test]
+fn test_transfer_batch_moves_each_entry_and_emits_one_event_each() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    let carol = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    approve(&s.env, &s.compliance, &s.admin, &carol);
+
+    let mut batch = Vec::new(&s.env);
+    batch.push_back((bob.clone(), 300i128));
+    batch.push_back((carol.clone(), 200i128));
+    s.token.transfer_batch(&s.admin, &batch);
+
+    // Read events before the assertions below: `events().all()` reflects only
+    // the most recent contract invocation, so the view calls would clear it.
+    // `transfer_batch` emits exactly one `transfer` event per entry here.
+    assert_eq!(s.env.events().all().events().len(), 2);
+
+    assert_eq!(s.token.balance(&s.admin), 500);
+    assert_eq!(s.token.balance(&bob), 300);
+    assert_eq!(s.token.balance(&carol), 200);
+    // Total supply is untouched: this is a transfer, not a mint.
+    assert_eq!(s.token.total_supply(), 1_000);
+}
+
+/// The batch is atomic: one non-compliant recipient reverts the whole call, so
+/// the earlier entries' balance writes are discarded.
+#[test]
+fn test_transfer_batch_reverts_entirely_on_noncompliant_recipient() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    let dave = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    // dave is never approved.
+
+    let mut batch = Vec::new(&s.env);
+    batch.push_back((bob.clone(), 300i128));
+    batch.push_back((dave.clone(), 100i128));
+    let res = s.token.try_transfer_batch(&s.admin, &batch);
+    assert!(res.is_err(), "transfer_batch must revert");
+
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.balance(&bob), 0);
+    assert_eq!(s.token.balance(&dave), 0);
+}
+
+/// Entries spend the same balance, so the sender's balance is re-read per entry:
+/// 600 + 600 exceeds 1,000 and must revert rather than validating each entry
+/// against the pre-batch balance.
+#[test]
+fn test_transfer_batch_accumulates_against_the_same_sender_balance() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    let carol = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    approve(&s.env, &s.compliance, &s.admin, &carol);
+
+    let mut ok = Vec::new(&s.env);
+    ok.push_back((bob.clone(), 600i128));
+    ok.push_back((carol.clone(), 400i128));
+    s.token.transfer_batch(&s.admin, &ok);
+    assert_eq!(s.token.balance(&s.admin), 0);
+
+    let mut over = Vec::new(&s.env);
+    over.push_back((bob.clone(), 600i128));
+    over.push_back((carol.clone(), 600i128));
+    let res = s.token.try_transfer_batch(&s.admin, &over);
+    assert!(res.is_err(), "transfer_batch must revert");
+    assert_eq!(s.token.balance(&s.admin), 0);
+    assert_eq!(s.token.balance(&bob), 600);
+    assert_eq!(s.token.balance(&carol), 400);
+}
+
+/// A recipient appearing twice accumulates, exactly as two `transfer` calls would.
+#[test]
+fn test_transfer_batch_accumulates_for_repeated_recipient() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    let mut batch = Vec::new(&s.env);
+    batch.push_back((bob.clone(), 100i128));
+    batch.push_back((bob.clone(), 150i128));
+    s.token.transfer_batch(&s.admin, &batch);
+
+    assert_eq!(s.token.balance(&s.admin), 750);
+    assert_eq!(s.token.balance(&bob), 250);
+}
+
+/// A self-transfer inside a batch is a no-op that must not clobber the debit a
+/// later entry makes from the same sender.
+#[test]
+fn test_transfer_batch_self_transfer_does_not_inflate_balance() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    let mut batch = Vec::new(&s.env);
+    batch.push_back((s.admin.clone(), 400i128)); // self-transfer: no-op
+    batch.push_back((bob.clone(), 100i128));
+    s.token.transfer_batch(&s.admin, &batch);
+
+    assert_eq!(s.token.balance(&s.admin), 900);
+    assert_eq!(s.token.balance(&bob), 100);
+}
+
+/// An empty batch is accepted and moves nothing.
+#[test]
+fn test_transfer_batch_empty_is_a_noop() {
+    let s = setup(1_000);
+    let empty = Vec::new(&s.env);
+    s.token.transfer_batch(&s.admin, &empty);
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+}
+
+/// Pause and sender-compliance are gated once, before any entry runs.
+#[test]
+fn test_transfer_batch_respects_pause() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    s.token.pause(&s.admin);
+
+    let mut batch = Vec::new(&s.env);
+    batch.push_back((bob.clone(), 100i128));
+    let res = s.token.try_transfer_batch(&s.admin, &batch);
+    assert!(res.is_err(), "transfer_batch must revert");
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+}
+
+#[test]
+fn test_transfer_batch_rejects_noncompliant_sender() {
+    let s = setup(1_000);
+    let mallory = Address::generate(&s.env);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    approve(&s.env, &s.compliance, &s.admin, &mallory);
+    s.token.mint(&s.admin, &mallory, &500);
+    // Now take mallory off the allowlist so the sender gate is what rejects them.
+    s.compliance.remove(&s.admin, &mallory);
+
+    let mut batch = Vec::new(&s.env);
+    batch.push_back((bob.clone(), 100i128));
+    let res = s.token.try_transfer_batch(&mallory, &batch);
+    assert!(res.is_err(), "transfer_batch must revert");
+    assert_eq!(s.token.balance(&mallory), 500);
+    assert_eq!(s.token.balance(&bob), 0);
+}
+
+/// A zero or negative entry reverts the whole batch, matching `transfer`.
+#[test]
+fn test_transfer_batch_rejects_non_positive_amount() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    let mut zero = Vec::new(&s.env);
+    zero.push_back((bob.clone(), 0i128));
+    let res = s.token.try_transfer_batch(&s.admin, &zero);
+    assert!(res.is_err(), "transfer_batch must revert");
+
+    let mut negative = Vec::new(&s.env);
+    negative.push_back((bob.clone(), -50i128));
+    let res = s.token.try_transfer_batch(&s.admin, &negative);
+    assert!(res.is_err(), "transfer_batch must revert");
+
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.balance(&bob), 0);
+}

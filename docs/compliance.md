@@ -137,6 +137,76 @@ role moves only when that successor calls `accept_admin` (proving it controls
 the address). The current admin can cancel a pending proposal. See
 [issue #4](fixes/issue-4.md).
 
+### `set_min_holding_period(admin, holder, min_ledgers: u64)`
+Set or clear a per-address minimum holding period (issue #454). Admin only.
+`min_ledgers = 0` removes the requirement. Emits `minhld` with
+`(holder, min_ledgers)`. Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
+
+### `record_acquisition(admin, holder)`
+Record the current ledger sequence as `holder`'s first-acquisition time
+(issue #454). Idempotent — a second call is a no-op; the stored ledger is
+never overwritten so the clock always starts at the earliest acquisition.
+Emits `acquired` with `(holder, ledger)` on the first call only. Admin only.
+Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
+
+### `get_min_holding_period(holder) -> Option<u64>`
+Return the minimum holding period (ledgers) for `holder`, or `None`.
+
+### `get_first_acquired_ledger(holder) -> Option<u64>`
+Return the first-acquisition ledger for `holder`, or `None`.
+
+## Minimum holding period (issue #454)
+
+A **minimum holding period** enforces a per-address lock-up: a holder cannot
+transfer tokens until at least `min_ledgers` ledger sequences have elapsed
+since their first token acquisition. This supports IPO lock-ups, vesting
+schedules, and anti-flip mechanisms for regulated distributions.
+
+### How it works
+
+1. **Admin sets a holding period** for a holder via
+   `set_min_holding_period(admin, holder, min_ledgers)`.  
+   `min_ledgers = 0` removes the requirement entirely.
+
+2. **Asset-token (or another admin-authorised caller) records the acquisition**
+   via `record_acquisition(admin, holder)` when the holder first receives
+   tokens. Subsequent calls are **idempotent** — the stored ledger is never
+   updated once set, so a later top-up does not restart the lock-up clock.
+
+3. **`is_allowed(holder)` enforces the period.** If both a minimum period and a
+   `FirstAcquiredLedger` entry exist for the holder, the check asserts:
+   ```
+   env.ledger().sequence() >= first_acquired_ledger + min_ledgers
+   ```
+   If the condition is not met, `is_allowed` returns `false` and emits an
+   `hldfail` event. If no `FirstAcquiredLedger` entry exists for the holder,
+   the check is **skipped (fail-open)** so existing holders whose acquisition
+   was never recorded are not inadvertently locked out.
+
+> **Burning tokens** is not affected by compliance checks: the asset-token
+> contract's `burn` function does not call `is_allowed`, so a locked-up holder
+> can still burn their own tokens even inside the holding period.
+
+### New functions
+
+#### `set_min_holding_period(admin, holder, min_ledgers: u64)`
+Set or clear a holding period for `holder`. Admin only.  
+`min_ledgers = 0` removes the entry.  
+Emits `minhld` with `(holder, min_ledgers)`.  
+Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
+
+#### `record_acquisition(admin, holder)`
+Record the current ledger sequence as `holder`'s first-acquisition time.
+Idempotent — repeated calls are no-ops.  
+Emits `acquired` with `(holder, ledger)` on the first call only.  
+Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
+
+#### `get_min_holding_period(holder) -> Option<u64>`
+Return the minimum holding period in ledgers, or `None` if none is set.
+
+#### `get_first_acquired_ledger(holder) -> Option<u64>`
+Return the recorded first-acquisition ledger, or `None` if not yet recorded.
+
 ## Errors
 
 | Code | Name                | Cause                                   |
@@ -149,6 +219,7 @@ the address). The current admin can cancel a pending proposal. See
 | 6    | InvalidJurisdiction | Jurisdiction is not 2 ASCII letters after normalization |
 | 7    | NoPendingAdmin      | `accept_admin`/`cancel_admin_proposal` with no pending proposal |
 | 8    | NotSuspended        | `reinstate` called on a non-`Suspended` record |
+| 9    | InvalidHoldingPeriod | `set_min_holding_period` called with an overflowing value |
 
 ## Events
 
@@ -163,6 +234,52 @@ the address). The current admin can cancel a pending proposal. See
 | `unblkjur`   | jurisdiction                  | jurisdiction unblocked     |
 | `set_admin`  | (old_admin) → new_admin       | admin handed over          |
 
+## Minimum holding period (issue #454)
+
+A **minimum holding period** enforces a per-address lock-up window: a holder
+may not transfer tokens until at least `min_ledgers` ledger sequences have
+elapsed since their *first* recorded token acquisition.
+
+### Use cases
+- IPO lock-up periods (e.g. 90–180 days ≈ 1,555,200–3,110,400 ledgers at 5 s/ledger)
+- Vesting schedules for employee token grants
+- Anti-flip rules for initial distributions
+- Regulatory restricted-securities holding requirements
+
+### How it composes with other rules
+
+The holding-period check runs last inside `is_allowed`, after the status,
+expiry, and jurisdiction checks. All four conditions must pass for
+`is_allowed` to return `true`:
+
+```
+is_allowed(address)
+  1. record exists and status == Approved
+  2. not expired (expires_at == 0 or now < expires_at)
+  3. jurisdiction not blocked
+  4. now >= first_acquired_ledger + min_holding_period   ← new (issue #454)
+```
+
+### Fail-open for unrecorded acquisitions
+
+If a `MinHoldingPeriod` is set for an address but no `FirstAcquiredLedger`
+entry has been written via `record_acquisition`, condition 4 is treated as
+satisfied (fail-open). This preserves backwards compatibility for holders
+whose token acquisition pre-dates the holding-period feature.
+
+### Burning is unaffected
+
+The asset-token `burn` function does not call `is_allowed`, so a holder
+can always burn their own tokens even inside the lock-up window.
+
+### Events added
+
+| Topic     | Data                                          | When                              |
+|-----------|-----------------------------------------------|-----------------------------------|
+| `minhld`  | (holder) → min_ledgers                        | holding period set or cleared     |
+| `acquired`| (holder) → first_acquired_ledger              | first acquisition recorded        |
+| `hldfail` | (holder) → (first_acquired, min_ledgers, now) | `is_allowed` denied by hold rule  |
+
 ## Storage / TTL
 
 Listing of the contract `DataKey` variants and their storage behaviour.
@@ -174,6 +291,8 @@ Listing of the contract `DataKey` variants and their storage behaviour.
 | `Record` | Address | persistent | per-key TTL |
 | `Blocked` | String | persistent | existence flag per jurisdiction |
 | `BlockedList` | - | instance | ordered `Vec<String>` backing `get_blocked_jurisdictions` |
+| `MinHoldingPeriod` | Address | persistent | per-key TTL; absent when no holding period set |
+| `FirstAcquiredLedger` | Address | persistent | per-key TTL; written once by `record_acquisition` |
 
 ## Admin independence from the asset-token admin (issue #3)
 

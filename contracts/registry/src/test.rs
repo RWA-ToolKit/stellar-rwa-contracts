@@ -882,3 +882,154 @@ fn test_reactivate_overflows_tvl_panics() {
     // The second asset must still be active.
     assert!(client.get_asset(&id2).active);
 }
+
+// ---- pagination helpers (issue #455) ----
+
+/// `get_total_asset_count` returns 0 on an empty registry and increments on
+/// every registration regardless of active/inactive status.
+#[test]
+fn test_get_total_asset_count_empty_and_grows() {
+    let (env, client, _admin) = setup();
+    assert_eq!(client.get_total_asset_count(), 0);
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "real_estate", 1000);
+    assert_eq!(client.get_total_asset_count(), 1);
+    register(&env, &client, &issuer, "invoice", 500);
+    assert_eq!(client.get_total_asset_count(), 2);
+}
+
+/// `get_assets_page` with a zero start_index and a large page_size returns
+/// all registered assets (up to MAX_PAGE_SIZE).
+#[test]
+fn test_get_assets_page_all_in_one_shot() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    for _ in 0..5 {
+        register(&env, &client, &issuer, "real_estate", 100);
+    }
+    let page = client.get_assets_page(&0u32, &10u32);
+    assert_eq!(page.len(), 5);
+    // ids must be 1-based and ordered
+    for (i, entry) in page.iter().enumerate() {
+        assert_eq!(entry.id, (i as u64) + 1);
+    }
+}
+
+/// `get_assets_page` on an empty registry returns an empty vec.
+#[test]
+fn test_get_assets_page_empty_registry() {
+    let (_env, client, _admin) = setup();
+    let page = client.get_assets_page(&0u32, &10u32);
+    assert_eq!(page.len(), 0);
+}
+
+/// `get_assets_page` with start_index past the end returns an empty vec.
+#[test]
+fn test_get_assets_page_out_of_bounds_returns_empty() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "bond", 100);
+    // start_index = 1 is beyond the single registered asset.
+    let page = client.get_assets_page(&1u32, &10u32);
+    assert_eq!(page.len(), 0);
+}
+
+/// `get_assets_page` returns the correct final partial page.
+#[test]
+fn test_get_assets_page_final_partial_page() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    for _ in 0..5 {
+        register(&env, &client, &issuer, "equity", 50);
+    }
+    // Page 0: items 0-1
+    let p0 = client.get_assets_page(&0u32, &2u32);
+    assert_eq!(p0.len(), 2);
+    // Page 1: items 2-3
+    let p1 = client.get_assets_page(&2u32, &2u32);
+    assert_eq!(p1.len(), 2);
+    // Page 2: item 4 (partial)
+    let p2 = client.get_assets_page(&4u32, &2u32);
+    assert_eq!(p2.len(), 1);
+    assert_eq!(p2.get(0).unwrap().id, 5);
+    // Page 3: past the end
+    let p3 = client.get_assets_page(&5u32, &2u32);
+    assert_eq!(p3.len(), 0);
+}
+
+/// page_size = 0 is clamped to MAX_PAGE_SIZE.
+#[test]
+fn test_get_assets_page_zero_size_clamped_to_max() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "fund", 10);
+    let page = client.get_assets_page(&0u32, &0u32);
+    // clamped to MAX_PAGE_SIZE; only 1 asset exists so we get 1 back
+    assert_eq!(page.len(), 1);
+}
+
+/// `get_active_assets_page` with active_only=true returns only active assets.
+#[test]
+fn test_get_active_assets_page_active_only() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let id1 = register(&env, &client, &issuer, "real_estate", 200);
+    let _id2 = register(&env, &client, &issuer, "invoice", 100);
+    let id3 = register(&env, &client, &issuer, "bond", 50);
+    // Deactivate the second asset.
+    client.deactivate_asset(&admin, &2u64);
+
+    let page = client.get_active_assets_page(&0u32, &10u32, &true);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().id, id1);
+    assert_eq!(page.get(1).unwrap().id, id3);
+}
+
+/// `get_active_assets_page` with active_only=false returns only inactive assets.
+#[test]
+fn test_get_active_assets_page_inactive_only() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let _id1 = register(&env, &client, &issuer, "real_estate", 200);
+    let id2 = register(&env, &client, &issuer, "invoice", 100);
+    let _id3 = register(&env, &client, &issuer, "bond", 50);
+    client.deactivate_asset(&admin, &id2);
+
+    let page = client.get_active_assets_page(&0u32, &10u32, &false);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap().id, id2);
+    assert!(!page.get(0).unwrap().active);
+}
+
+/// `get_active_assets_page` returns empty when nothing matches the filter.
+#[test]
+fn test_get_active_assets_page_no_match_returns_empty() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "commodity", 10);
+
+    // No inactive assets → active_only=false returns empty.
+    let page = client.get_active_assets_page(&0u32, &10u32, &false);
+    assert_eq!(page.len(), 0);
+}
+
+/// `get_active_assets_page` pagination: start_index skips correctly within the
+/// filtered list (not the full registry).
+#[test]
+fn test_get_active_assets_page_pagination_within_filtered_list() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    for _ in 0..5 {
+        register(&env, &client, &issuer, "equity", 100);
+    }
+    // All 5 are active.
+    let p0 = client.get_active_assets_page(&0u32, &2u32, &true);
+    assert_eq!(p0.len(), 2);
+    let p1 = client.get_active_assets_page(&2u32, &2u32, &true);
+    assert_eq!(p1.len(), 2);
+    let p2 = client.get_active_assets_page(&4u32, &2u32, &true);
+    assert_eq!(p2.len(), 1);
+    // Past the end.
+    let p3 = client.get_active_assets_page(&5u32, &2u32, &true);
+    assert_eq!(p3.len(), 0);
+}

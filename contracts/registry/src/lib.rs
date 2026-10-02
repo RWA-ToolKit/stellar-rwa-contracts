@@ -93,7 +93,7 @@ pub const MAX_NAME_LEN: u32 = 64;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 #[contractclient(name = "AssetClient")]
 pub trait AssetInterface {
@@ -702,19 +702,127 @@ impl RegistryContract {
             .unwrap_or(0)
     }
 
-    /// Returns the configured admin address.
+    // ---- pagination helpers (issue #455) ----
+
+    /// Total number of registered assets (active and inactive).
     ///
-    /// # Parameters
-    /// None.
+    /// Equivalent to `asset_count`; provided under this name so callers that
+    /// are building paginated UIs can use a uniform naming convention:
+    /// `get_total_asset_count` / `get_assets_page` pair naturally together.
+    pub fn get_total_asset_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::Counter)
+            .unwrap_or(0) as u32
+    }
+
+    /// Return a page of assets by zero-based index offset.
     ///
-    /// # Authority
-    /// None — anyone may call.
+    /// `start_index` is a zero-based position in the logical list of all
+    /// registered assets ordered by id. `page_size` is capped at
+    /// [`MAX_PAGE_SIZE`] (100); passing `0` or a value above the cap returns
+    /// up to the cap. An `start_index` at or beyond the total count returns
+    /// an empty `Vec`, which signals the end of the list.
     ///
-    /// # Errors
-    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// This is a convenient index-based companion to `get_all_assets`, which
+    /// uses an id-based range. Both ultimately iterate over the same ordered
+    /// sequence of registered ids.
+    pub fn get_assets_page(env: Env, start_index: u32, page_size: u32) -> Vec<AssetEntry> {
+        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        if counter == 0 {
+            return Vec::new(&env);
+        }
+        let capped = if page_size == 0 || page_size > MAX_PAGE_SIZE {
+            MAX_PAGE_SIZE
+        } else {
+            page_size
+        };
+        // Registry ids are 1-based and contiguous (no gaps after deactivation).
+        // Convert zero-based start_index to a 1-based id.
+        let start_id: u64 = (start_index as u64).saturating_add(1);
+        if start_id > counter {
+            return Vec::new(&env);
+        }
+        let mut out = Vec::new(&env);
+        let end_id = start_id
+            .saturating_add(capped as u64)
+            .min(counter.saturating_add(1));
+        let mut id = start_id;
+        while id < end_id {
+            if let Some(entry) = env.storage().persistent().get(&DataKey::Asset(id)) {
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Asset(id),
+                    INSTANCE_LIFETIME_THRESHOLD,
+                    INSTANCE_BUMP_AMOUNT,
+                );
+                out.push_back(entry);
+            }
+            id += 1;
+        }
+        out
+    }
+
+    /// Return a page of assets filtered by their `active` flag.
     ///
-    /// # Events
-    /// None.
+    /// When `active_only` is `true`, only assets whose `active` field is
+    /// `true` are included; when `false`, only inactive (deactivated) assets
+    /// are returned. This is useful for building paginated "active assets"
+    /// or "deactivated assets" views without pulling the whole registry to
+    /// the client.
+    ///
+    /// `start_index` and `page_size` have the same semantics as
+    /// `get_assets_page`, but they count positions in the **filtered** list
+    /// rather than across all assets. The scan walks the full id range from
+    /// 1 up to the current counter, skipping assets that do not match the
+    /// filter, and returns at most `page_size` (capped at [`MAX_PAGE_SIZE`])
+    /// matching entries starting from `start_index` in the filtered order.
+    ///
+    /// Because this is a linear scan over all registered ids the cost scales
+    /// with the total registry size, not just the matching subset. For large
+    /// registries, prefer per-issuer or per-type index queries when possible.
+    pub fn get_active_assets_page(
+        env: Env,
+        start_index: u32,
+        page_size: u32,
+        active_only: bool,
+    ) -> Vec<AssetEntry> {
+        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        if counter == 0 {
+            return Vec::new(&env);
+        }
+        let capped = if page_size == 0 || page_size > MAX_PAGE_SIZE {
+            MAX_PAGE_SIZE
+        } else {
+            page_size
+        };
+        let mut skipped: u32 = 0;
+        let mut out = Vec::new(&env);
+        let mut id: u64 = 1;
+        while id <= counter && (out.len() as u32) < capped {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AssetEntry>(&DataKey::Asset(id))
+            {
+                if entry.active == active_only {
+                    if skipped < start_index {
+                        skipped += 1;
+                    } else {
+                        env.storage().persistent().extend_ttl(
+                            &DataKey::Asset(id),
+                            INSTANCE_LIFETIME_THRESHOLD,
+                            INSTANCE_BUMP_AMOUNT,
+                        );
+                        out.push_back(entry);
+                    }
+                }
+            }
+            id += 1;
+        }
+        out
+    }
+
+    /// Configured admin.
     pub fn get_admin(env: Env) -> Address {
         env.storage()
             .instance()
