@@ -45,7 +45,8 @@ mechanisms that can recover stranded funds, and
 | `distributed`    | `i128`    | Amount paid out, including claims and admin recovery |
 | `snapshot_ledger`| `u32`     | Ledger at creation (reference)       |
 | `created_at`     | `u32`     | Ledger at creation                   |
-| `completed`      | `bool`    | True once `distributed >= total`     |
+| `completed`      | `bool`    | True once `distributed >= total` **or** the distribution was cancelled |
+| `cancelled`      | `bool`    | True if `cancel_distribution` was called (issue #428). Distinguishes a cancelled distribution from a fully-paid one: both set `completed = true`, but only a cancelled distribution also sets this flag. Always `false` for distributions that reach completion through normal claims or `reclaim_unclaimed`. |
 | `deadline`       | `u32`     | Ledger after which claims stop and admin may reclaim; `0` = no deadline |
 
 ## Claim deadline & reclaim policy (issue #2)
