@@ -4,10 +4,23 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+# NOTE (issue #433): The previous Cargo.toml pinned soroban-sdk 21 while the
+# workspace uses soroban-sdk 26 — two incompatible major versions that cannot
+# be linked together.  It also declared a path dependency on
+# ../contracts/dividend which imports soroban-sdk 26 from the workspace, so
+# any fuzz code that imported both would link two incompatible Env types.
+#
+# Fix: pin soroban-sdk to the same version as the workspace (26), drop the
+# path dependency on the dividend contract, and self-contain the arithmetic
+# under test so no cross-crate Env handoff is required.  The fuzz target
+# (`fuzz_targets/dividend_arithmetic.rs`) reproduces the on-chain formulas
+# directly so the invariants are exercised without needing the Soroban host.
+
 [dependencies]
 compliance = { path = "../contracts/compliance", features = ["testutils"] }
 soroban-sdk = { version = "26", features = ["testutils"] }
 arbitrary = { version = "1.3", features = ["derive"] }
+libfuzzer-sys = "0.4"
 
 [[bin]]
 name = "compliance_batch_allowlist"

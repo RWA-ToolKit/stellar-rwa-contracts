@@ -61,6 +61,13 @@ Minimum recommended CI runtime: **10 minutes per target** (`-max_total_time=600`
 ### Dividend arithmetic target (issue #378)
 
 ```bash
+# From the repo root — verify the fuzz crate compiles:
+cargo build -p dividend-fuzz
+
+# Run the dividend arithmetic fuzzer (from repo root):
+cargo fuzz run --manifest-path fuzz/Cargo.toml fuzz_dividend_arithmetic
+
+# Or equivalently from the fuzz/ subdirectory:
 cd fuzz
 cargo run --bin fuzz_dividend_arithmetic
 ```
