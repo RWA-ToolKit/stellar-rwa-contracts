@@ -31,9 +31,22 @@ and reports total value locked (TVL).
   toward the limit. Rejects `token_contract` values already registered under
   another id with `DuplicateAsset (#9)` — see "Duplicate registration" below.
 - `get_asset(asset_id) -> AssetEntry` — `AssetNotFound (#4)`.
-- `get_assets_by_issuer(issuer) -> Vec<AssetEntry>`
-- `get_assets_by_type(asset_type) -> Vec<AssetEntry>` — see
-  [matching rules](#asset-types) below; the match is byte-exact.
+- `get_assets_by_issuer(issuer) -> Vec<AssetEntry>` — returns the first
+  page (up to `MAX_PAGE_SIZE` = 100 entries) of assets registered by this
+  issuer. Use `get_assets_by_issuer_page` to page through larger result sets
+  (issue #430).
+- `get_assets_by_issuer_page(issuer, page, page_size) -> Vec<AssetEntry>` —
+  paginated variant (issue #430). Returns up to `page_size` entries starting
+  at offset `page × page_size` within the issuer's id list. `page_size` is
+  clamped to `MAX_PAGE_SIZE` (100). Page through by incrementing `page` until
+  the result is shorter than `page_size` (or empty).
+- `get_assets_by_type(asset_type) -> Vec<AssetEntry>` — returns the first
+  page (up to `MAX_PAGE_SIZE` = 100 entries) of assets with this type. See
+  [matching rules](#asset-types). Use `get_assets_by_type_page` for larger
+  result sets (issue #430).
+- `get_assets_by_type_page(asset_type, page, page_size) -> Vec<AssetEntry>` —
+  paginated variant (issue #430). Same paging semantics as
+  `get_assets_by_issuer_page`. `page_size` clamped to `MAX_PAGE_SIZE`.
 - `get_all_assets(start_id, limit) -> Vec<AssetEntry>` — returns ids
   `[start_id, start_id + limit)`, capped at the current counter and at
   `MAX_PAGE_SIZE` (100) regardless of the requested `limit`. Page through the
@@ -117,7 +130,7 @@ landing page and producing duplicate entries on the explore page. Covered by
 `test_duplicate_token_contract_registration_rejected` in
 `contracts/registry/src/test.rs`.
 
-### Pagination and max page size (issue #310)
+### Pagination and max page size (issue #310, issue #430)
 
 `get_all_assets` always enforces `MAX_PAGE_SIZE = 100` as an upper bound on
 the number of entries returned in one call, independent of the `limit`
@@ -128,6 +141,14 @@ The final page of a paginated walk is partial once fewer than `limit` assets
 remain; see `test_get_all_assets_final_partial_page` and
 `test_get_all_assets_enforces_max_page_size` in
 `contracts/registry/src/test.rs`.
+
+`get_assets_by_issuer` and `get_assets_by_type` previously returned the full
+index vector for an issuer or type (issue #430), which was unbounded as the
+registry grew. Both functions are now capped at `MAX_PAGE_SIZE` per call, and
+the new `get_assets_by_issuer_page` / `get_assets_by_type_page` variants
+expose explicit `(page, page_size)` paging. Every registration still rewrites
+the full index vector; that write cost is O(N) in the number of assets for
+that issuer/type and is noted in the storage section below.
 
 ### Deactivation and TVL (issue #306)
 
