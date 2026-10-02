@@ -9,9 +9,9 @@ own copies.
 
 | Contract    | Id | Deploying commit | WASM sha256 |
 | ----------- | -- | ---------------- | ----------- |
-| compliance  | _TBD_ | _TBD_ | _TBD_ |
-| registry    | _TBD_ | _TBD_ | _TBD_ |
-| dividend    | _TBD_ | _TBD_ | _TBD_ |
+| compliance  | `CBUERYDM7DXTZLLKDBRJKUBPFJ7M4OSUN4T7XKUARU345RLXNAIQD2IU` | _TBD_ | _TBD_ |
+| registry    | `CBX5SMLTXX6JP4HA5GQIO2V6QM7WCUGL2GZ6D4U773HMRI6RXISKPUR3` | _TBD_ | _TBD_ |
+| dividend    | `CAR4XY3CEBQWFOL27JEWFW34KXSIZA7RFKDQMEIV7ZU723RWY37I2SYX` | _TBD_ | _TBD_ |
 | asset-token | _TBD_ | _TBD_ | _TBD_ |
 
 > **Note for maintainers:** run `NETWORK=testnet IDENTITY=rwa-admin ./scripts/deploy.sh`
@@ -21,6 +21,10 @@ own copies.
 
 Deployments are produced by `scripts/deploy.sh`; copy the printed ids into the
 table above.
+
+## Mainnet
+
+No mainnet contract ids have been published in this repository.
 
 ## Verifying a deployment
 

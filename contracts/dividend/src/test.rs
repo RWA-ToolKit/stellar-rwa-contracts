@@ -4,7 +4,7 @@ use asset_token::{AssetTokenContract, AssetTokenContractClient};
 use compliance::{ComplianceContract, ComplianceContractClient};
 use proptest::prelude::*;
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, Ledger},
+    testutils::{Address as _, AuthorizedFunction, Events, Ledger},
     token, Address, Env, String, Symbol, Vec,
 };
 
@@ -193,14 +193,11 @@ fn test_zero_decimal_asset_small_claim_rounds_to_zero() {
 
     let snapshot = Vec::from_array(
         &ctx.env,
-        [
-            (ctx.h1.clone(), 1i128),
-            (ctx.h2.clone(), 999i128),
-        ],
+        [(ctx.h1.clone(), 1i128), (ctx.h2.clone(), 999i128)],
     );
-    let id = ctx
-        .dividend
-        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1, &snapshot);
+    let id =
+        ctx.dividend
+            .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1, &snapshot);
 
     // 1 payment unit * 1 asset unit / 1000 snapshot units floors to zero.
     assert_eq!(ctx.dividend.claimable(&id, &ctx.h1), 0);
@@ -850,9 +847,9 @@ fn test_propose_accept_admin_moves_role_only_on_acceptance() {
     // The old admin has lost its privileges.
     let mut v = Vec::new(&ctx.env);
     v.push_back((ctx.h1.clone(), 300i128));
-    let res = ctx
-        .dividend
-        .try_create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &300, &v);
+    let res =
+        ctx.dividend
+            .try_create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &300, &v);
     assert_eq!(res, Err(Ok(Error::Unauthorized.into())));
 }
 
@@ -984,13 +981,8 @@ proptest! {
 fn test_create_distribution_rejects_empty_eligible_list() {
     let ctx = setup();
     let empty = Vec::new(&ctx.env);
-    ctx.dividend.create_distribution(
-        &ctx.admin,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &1000,
-        &empty,
-    );
+    ctx.dividend
+        .create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &1000, &empty);
 }
 
 // Issue #366: Allow cancelling a distribution before any claim is made.
@@ -1077,21 +1069,12 @@ fn test_claim_with_unusual_payment_token_decimals() {
     let mut eligible = Vec::new(&env);
     eligible.push_back((admin.clone(), 400i128));
     eligible.push_back((h1.clone(), 600i128));
-    let dist_id = dividend.create_distribution(
-        &admin,
-        &asset_id,
-        &pay_id,
-        &10_000,
-        &eligible,
-    );
+    let dist_id = dividend.create_distribution(&admin, &asset_id, &pay_id, &10_000, &eligible);
 
     // h1 should get 600/1000 * 10_000 = 6_000 (even with decimal differences).
     assert_eq!(dividend.claimable(&dist_id, &h1), 6_000);
     dividend.claim(&dist_id, &h1);
-    assert_eq!(
-        token::TokenClient::new(&env, &pay_id).balance(&h1),
-        6_000
-    );
+    assert_eq!(token::TokenClient::new(&env, &pay_id).balance(&h1), 6_000);
 }
 
 fn set_ledger_sequence(env: &Env, seq: u32) {
@@ -1240,7 +1223,96 @@ fn test_reclaim_unclaimed_after_deadline() {
     assert_eq!(d.distributed, d.total_amount);
 }
 
-// A distribution with no deadline (the default) can never be reclaimed.
+#[test]
+fn test_withdraw_unclaimed_after_minimum_age_preserves_claims() {
+    let ctx = setup();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    ctx.dividend.claim(&id, &ctx.h1);
+    let created_at = ctx.dividend.get_distribution(&id).created_at;
+    let recipient = Address::generate(&ctx.env);
+
+    set_ledger_sequence(&ctx.env, created_at + 9);
+    assert_eq!(
+        ctx.dividend
+            .try_withdraw_unclaimed(&ctx.admin, &id, &recipient, &10),
+        Err(Ok(Error::DistributionTooYoung.into()))
+    );
+
+    set_ledger_sequence(&ctx.env, created_at + 10);
+    let withdrawn = ctx
+        .dividend
+        .withdraw_unclaimed(&ctx.admin, &id, &recipient, &10);
+    // One SAC transfer event and the dividend withdrawal event are emitted.
+    assert_eq!(ctx.env.events().all().events().len(), 2);
+    assert_eq!(withdrawn, 700);
+    assert_eq!(pay_balance(&ctx, &recipient), 700);
+    assert_eq!(pay_balance(&ctx, &ctx.h1), 300);
+    assert_eq!(pay_balance(&ctx, &ctx.dividend.address), 0);
+
+    let distribution = ctx.dividend.get_distribution(&id);
+    assert!(distribution.completed);
+    assert_eq!(distribution.distributed, distribution.total_amount);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 0);
+}
+
+#[test]
+fn test_withdraw_unclaimed_requires_admin() {
+    let ctx = setup();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    let stranger = Address::generate(&ctx.env);
+    let recipient = Address::generate(&ctx.env);
+
+    assert_eq!(
+        ctx.dividend
+            .try_withdraw_unclaimed(&stranger, &id, &recipient, &0),
+        Err(Ok(Error::Unauthorized.into()))
+    );
+    assert_eq!(pay_balance(&ctx, &ctx.dividend.address), 1000);
+}
+
+#[test]
+fn test_withdraw_unclaimed_respects_claim_deadline() {
+    let ctx = setup();
+    let deadline = ctx.env.ledger().sequence() + 100;
+    let id = ctx.dividend.create_distribution_deadline(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+        &deadline,
+    );
+    let created_at = ctx.dividend.get_distribution(&id).created_at;
+    let recipient = Address::generate(&ctx.env);
+
+    set_ledger_sequence(&ctx.env, created_at + 50);
+    assert_eq!(
+        ctx.dividend
+            .try_withdraw_unclaimed(&ctx.admin, &id, &recipient, &10),
+        Err(Ok(Error::DeadlineNotReached.into()))
+    );
+
+    set_ledger_sequence(&ctx.env, deadline + 1);
+    assert_eq!(
+        ctx.dividend
+            .withdraw_unclaimed(&ctx.admin, &id, &recipient, &10),
+        1000
+    );
+}
+
+// A distribution with no deadline cannot use the deadline-based reclaim path.
 #[test]
 #[should_panic(expected = "Error(Contract, #15)")]
 fn test_reclaim_without_deadline_fails() {

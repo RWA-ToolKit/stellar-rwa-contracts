@@ -93,7 +93,7 @@ pub const MAX_NAME_LEN: u32 = 64;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 #[contractclient(name = "AssetClient")]
 pub trait AssetInterface {
@@ -105,12 +105,37 @@ pub struct RegistryContract;
 
 #[contractimpl]
 impl RegistryContract {
-    /// Current contract version.
+    /// Returns the contract's ABI/behavior version number.
+    ///
+    /// # Parameters
+    /// - `_env`: Soroban environment (unused).
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn version(_env: Env) -> u32 {
         VERSION
     }
 
-    /// Initialize with an admin. Callable once.
+    /// Initialize the registry and set the first admin. Callable exactly once.
+    ///
+    /// # Parameters
+    /// - `admin`: Address that will administer the registry.  Must authorize
+    ///   the call.
+    ///
+    /// # Authority
+    /// `admin` must sign the transaction (`admin.require_auth()`).
+    ///
+    /// # Errors
+    /// - [`Error::AlreadyInitialized`] — contract was already initialized.
+    ///
+    /// # Events
+    /// Emits topic `("init",)` with data `admin`.
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_err(&env, Error::AlreadyInitialized);
@@ -126,15 +151,42 @@ impl RegistryContract {
         env.events().publish((symbol_short!("init"),), admin);
     }
 
-    /// Register a new tokenized asset. The issuer must authorize the call.
+    /// Register a new tokenized asset and return its assigned id.
     ///
     /// `valuation` is copied into the registry entry and TVL at registration
-    /// time. It is independent from any valuation stored by the token
+    /// time.  It is independent from any valuation stored by the token
     /// contract: the registry has no callback or synchronization hook when a
-    /// token updates its metadata valuation. Divergence is therefore possible
+    /// token updates its metadata valuation.  Divergence is therefore possible
     /// and callers must verify both records; the current registry API has no
     /// valuation-update entrypoint.
-    /// Returns the assigned asset id.
+    ///
+    /// Duplicate registration of the same `token_contract` address is
+    /// rejected (issue #308): re-registering an existing token would
+    /// double-count its valuation in TVL.
+    ///
+    /// # Parameters
+    /// - `issuer`: Address of the asset issuer.  Must authorize the call.
+    /// - `token_contract`: On-chain address of the asset-token contract.  Must
+    ///   not already be registered.
+    /// - `name`: Human-readable name of the asset.  Must be non-empty.
+    /// - `asset_type`: Category from the allowed list (`"real_estate"`,
+    ///   `"invoice"`, `"commodity"`, `"bond"`, `"equity"`, `"fund"`).
+    ///   Case-sensitive, no leading/trailing whitespace.
+    /// - `valuation`: Initial USD-cent valuation.  Must be ≥ 0.
+    ///
+    /// # Authority
+    /// `issuer` must sign the transaction (`issuer.require_auth()`).
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::InvalidValuation`] — `valuation` < 0.
+    /// - [`Error::InvalidInput`] — `name` is empty or `asset_type` is not in
+    ///   the allowed list.
+    /// - [`Error::DuplicateAsset`] — `token_contract` is already registered.
+    /// - [`Error::Overflow`] — TVL would overflow `i128`.
+    ///
+    /// # Events
+    /// Emits topic `("register", issuer)` with data `id`.
     pub fn register_asset(
         env: Env,
         issuer: Address,
@@ -247,7 +299,19 @@ impl RegistryContract {
         id
     }
 
-    /// Fetch a single asset by id.
+    /// Fetch a single asset entry by its registry id.
+    ///
+    /// # Parameters
+    /// - `asset_id`: Registry-assigned numeric id of the asset.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// - [`Error::AssetNotFound`] — no asset with `asset_id` exists.
+    ///
+    /// # Events
+    /// None.
     pub fn get_asset(env: Env, asset_id: u64) -> AssetEntry {
         let entry = env
             .storage()
@@ -262,18 +326,24 @@ impl RegistryContract {
         entry
     }
 
-    /// All assets registered by a given issuer. Backed by a per-issuer index,
-    /// so cost scales with that issuer's asset count, not the whole registry.
-    /// Note: This includes both active and deactivated assets. Deactivated assets
-    /// are never removed from the index; use the `active` field to filter if needed.
+    /// Returns all assets registered by a given issuer.
     ///
-    /// # Pagination (issue #430)
+    /// Backed by a per-issuer index, so cost scales with that issuer's asset
+    /// count, not the whole registry.  Includes both active and deactivated
+    /// assets; use the `active` field on each [`AssetEntry`] to filter if
+    /// needed.
     ///
-    /// This function returns at most [`MAX_PAGE_SIZE`] entries per call,
-    /// starting from index `0`. For issuers with more than `MAX_PAGE_SIZE`
-    /// assets, use [`get_assets_by_issuer_page`] to page through the full
-    /// list. The cap prevents unbounded ledger read cost regardless of how
-    /// many assets the issuer has registered.
+    /// # Parameters
+    /// - `issuer`: Issuer address to query.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_assets_by_issuer(env: Env, issuer: Address) -> Vec<AssetEntry> {
         let ids = Self::index_ids(&env, &DataKey::IssuerIndex(issuer));
         Self::fetch_assets_page(&env, &ids, 0, MAX_PAGE_SIZE)
@@ -305,25 +375,30 @@ impl RegistryContract {
         Self::fetch_assets_page(&env, &ids, offset, capped)
     }
 
-    /// All assets of a given asset type (e.g. "real_estate"). Backed by a
-    /// per-type index, so cost scales with that type's asset count, not the
-    /// whole registry.
-    /// Note: This includes both active and deactivated assets. Deactivated assets
-    /// are never removed from the index; use the `active` field to filter if needed.
+    /// Returns all assets of a given asset type.
+    ///
+    /// Backed by a per-type index, so cost scales with that type's asset count,
+    /// not the whole registry.  Includes both active and deactivated assets;
+    /// use the `active` field on each [`AssetEntry`] to filter if needed.
     ///
     /// Matching is **byte-exact**: the index key is the `asset_type` string as
-    /// stored on the entry at registration time, so lookups are case-sensitive
-    /// and whitespace-sensitive. `"real_estate"`, `"Real_Estate"` and
-    /// `"real_estate "` are three distinct index keys; since only the values
-    /// in `VALID_ASSET_TYPES` can ever be registered (see
-    /// `validate_asset_type`), a query must match one of those canonical
-    /// strings exactly to return any results.
+    /// stored at registration time — case-sensitive, whitespace-sensitive.
+    /// `"real_estate"`, `"Real_Estate"`, and `"real_estate "` are three
+    /// distinct index keys; since only the values in `VALID_ASSET_TYPES` can
+    /// ever be registered (see `validate_asset_type`), a query must match one
+    /// of those canonical strings exactly to return any results.
     ///
-    /// # Pagination (issue #430)
+    /// # Parameters
+    /// - `asset_type`: Exact canonical asset-type string to query.
     ///
-    /// This function returns at most [`MAX_PAGE_SIZE`] entries per call,
-    /// starting from index `0`. For types with more than `MAX_PAGE_SIZE`
-    /// assets, use [`get_assets_by_type_page`] to page through the full list.
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_assets_by_type(env: Env, asset_type: String) -> Vec<AssetEntry> {
         let ids = Self::index_ids(&env, &DataKey::TypeIndex(asset_type));
         Self::fetch_assets_page(&env, &ids, 0, MAX_PAGE_SIZE)
@@ -348,16 +423,29 @@ impl RegistryContract {
         Self::fetch_assets_page(&env, &ids, offset, capped)
     }
 
-    /// A page of registered assets: ids `[start_id, start_id + limit)`,
-    /// capped at the current counter. Page through the full set by calling
-    /// again with `start_id + limit`. Bounds per-call cost regardless of how
-    /// many assets have been registered.
+    /// Returns a page of registered assets: ids `[start_id, start_id + limit)`,
+    /// capped at the current counter.
     ///
-    /// `limit` is silently clamped to [`MAX_PAGE_SIZE`] (issue #310) so a
-    /// misbehaving or malicious caller cannot force an unbounded response;
-    /// small registries that request the whole set in one call (e.g.
-    /// `start_id = 1, limit = u32::MAX`) keep working exactly as before as
-    /// long as they fit under the cap.
+    /// Page through the full registry by calling again with
+    /// `start_id + limit`.  `limit` is silently clamped to [`MAX_PAGE_SIZE`]
+    /// (issue #310) so a misbehaving caller cannot force an unbounded
+    /// response; small registries that request the whole set in one call
+    /// (e.g. `start_id = 1, limit = u32::MAX`) keep working exactly as before
+    /// as long as they fit under the cap.
+    ///
+    /// # Parameters
+    /// - `start_id`: First asset id to include (minimum 1).
+    /// - `limit`: Maximum number of assets to return; clamped to
+    ///   [`MAX_PAGE_SIZE`].
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_all_assets(env: Env, start_id: u64, limit: u32) -> Vec<AssetEntry> {
         let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
         let mut out = Vec::new(&env);
@@ -379,8 +467,28 @@ impl RegistryContract {
         out
     }
 
-    /// Deactivate an asset. Admin only. Excluded from TVL afterwards.
-    /// Does nothing if the asset is already inactive (no event emitted).
+    /// Deactivate an asset. Admin only.
+    ///
+    /// Deactivated assets are excluded from TVL and the active count.
+    /// Idempotent: does nothing and emits no event if the asset is already
+    /// inactive.  Use [`Self::reactivate_asset`] to reverse.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `asset_id`: Registry id of the asset to deactivate.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::AssetNotFound`] — no asset with `asset_id` exists.
+    /// - [`Error::Overflow`] — TVL underflows (should not occur in practice).
+    ///
+    /// # Events
+    /// Emits topic `("deactvate",)` with data `asset_id` (only when the asset
+    /// was previously active).
     pub fn deactivate_asset(env: Env, admin: Address, asset_id: u64) {
         let mut entry: AssetEntry = env
             .storage()
@@ -426,11 +534,31 @@ impl RegistryContract {
             .publish((symbol_short!("deactvate"),), asset_id);
     }
 
-    /// Update an asset's valuation. Admin only. Adjusts total value locked
-    /// accordingly (only while the asset is `active`) and emits a
-    /// `valuation` event carrying the asset id and both the old and new
-    /// valuations, so indexers can observe the change without polling
-    /// (issue #3).
+    /// Update an asset's valuation. Admin only.
+    ///
+    /// Adjusts total value locked accordingly (only while the asset is
+    /// `active`) and emits a `valuation` event carrying the asset id and both
+    /// the old and new valuations, so indexers can observe the change without
+    /// polling (issue #3).
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `asset_id`: Registry id of the asset to update.
+    /// - `new_valuation`: New USD-cent valuation.  Must be ≥ 0.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::AssetNotFound`] — no asset with `asset_id` exists.
+    /// - [`Error::InvalidValuation`] — `new_valuation` < 0.
+    /// - [`Error::Overflow`] — TVL would overflow or underflow `i128`.
+    ///
+    /// # Events
+    /// Emits topic `("valuation", asset_id)` with data
+    /// `(old_valuation, new_valuation)`.
     pub fn update_valuation(env: Env, admin: Address, asset_id: u64, new_valuation: i128) {
         Self::require_admin(&env, &admin);
         if new_valuation < 0 {
@@ -474,15 +602,33 @@ impl RegistryContract {
         );
     }
 
-    /// Reactivate a previously deactivated asset. Admin only. Included in TVL
-    /// and `active_count` again afterwards. Does nothing if the asset is
-    /// already active (no event emitted).
+    /// Reactivate a previously deactivated asset. Admin only.
+    ///
+    /// Adds the asset's valuation back into TVL and increments the active
+    /// count.  Idempotent: does nothing and emits no event if the asset is
+    /// already active.
     ///
     /// Deactivation is not treated as final: assets are sometimes deactivated
     /// by mistake (wrong id, premature admin action), and re-registering under
-    /// a new id would break existing references to the original one (issuer
-    /// index, type index, external links). Reactivation restores the same
-    /// entry in place instead.
+    /// a new id would break existing references.  Reactivation restores the
+    /// same entry in place instead.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `asset_id`: Registry id of the asset to reactivate.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::AssetNotFound`] — no asset with `asset_id` exists.
+    /// - [`Error::Overflow`] — TVL would overflow `i128`.
+    ///
+    /// # Events
+    /// Emits topic `("reactvate",)` with data `asset_id` (only when the asset
+    /// was previously inactive).
     pub fn reactivate_asset(env: Env, admin: Address, asset_id: u64) {
         let mut entry: AssetEntry = env
             .storage()
@@ -527,17 +673,29 @@ impl RegistryContract {
             .publish((symbol_short!("reactvate"),), asset_id);
     }
 
-    /// Sum of valuations across all active assets, in USD cents. Maintained
-    /// incrementally on register/deactivate, so this is a single read
-    /// regardless of registry size.
+    /// Returns the sum of valuations across all currently active assets, in
+    /// USD cents.
     ///
-    /// This registry entry's `valuation` is a point-in-time snapshot taken at
-    /// `register_asset` and is not synced with the corresponding
-    /// asset-token contract's live valuation. The asset-token contract's
-    /// `update_valuation` bounds any single change to
-    /// `MAX_VALUATION_CHANGE_BPS` (50%) of the previous value precisely
-    /// because a runaway or mistyped valuation there would otherwise be able
-    /// to skew this TVL figure for every downstream client that reads it.
+    /// Maintained incrementally on register/deactivate/reactivate/update, so
+    /// this is a single storage read regardless of registry size.
+    ///
+    /// Each asset entry's valuation is a point-in-time snapshot taken at
+    /// registration.  The asset-token contract's `update_valuation` bounds
+    /// any single change to `MAX_VALUATION_CHANGE_BPS` (50%) of the previous
+    /// value precisely because a runaway or mistyped valuation there would
+    /// otherwise skew this TVL figure.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn total_value_locked(env: Env) -> i128 {
         env.storage()
             .instance()
@@ -545,17 +703,168 @@ impl RegistryContract {
             .unwrap_or(0)
     }
 
-    /// Number of registered assets (active or not).
+    /// Total number of registered assets, including deactivated ones.
+    ///
+    /// Backed by a monotonically-increasing counter — this is a single
+    /// instance-storage read regardless of registry size.  The value equals
+    /// the highest asset id ever assigned; ids are never recycled.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn asset_count(env: Env) -> u64 {
         env.storage().instance().get(&DataKey::Counter).unwrap_or(0)
     }
 
     /// Number of assets that are currently active (excludes deactivated ones).
+    ///
+    /// Maintained incrementally on register/deactivate/reactivate, so this
+    /// is a single instance-storage read regardless of registry size.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn active_count(env: Env) -> u64 {
         env.storage()
             .instance()
             .get(&DataKey::ActiveCount)
             .unwrap_or(0)
+    }
+
+    // ---- pagination helpers (issue #455) ----
+
+    /// Total number of registered assets (active and inactive).
+    ///
+    /// Equivalent to `asset_count`; provided under this name so callers that
+    /// are building paginated UIs can use a uniform naming convention:
+    /// `get_total_asset_count` / `get_assets_page` pair naturally together.
+    pub fn get_total_asset_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get::<DataKey, u64>(&DataKey::Counter)
+            .unwrap_or(0) as u32
+    }
+
+    /// Return a page of assets by zero-based index offset.
+    ///
+    /// `start_index` is a zero-based position in the logical list of all
+    /// registered assets ordered by id. `page_size` is capped at
+    /// [`MAX_PAGE_SIZE`] (100); passing `0` or a value above the cap returns
+    /// up to the cap. An `start_index` at or beyond the total count returns
+    /// an empty `Vec`, which signals the end of the list.
+    ///
+    /// This is a convenient index-based companion to `get_all_assets`, which
+    /// uses an id-based range. Both ultimately iterate over the same ordered
+    /// sequence of registered ids.
+    pub fn get_assets_page(env: Env, start_index: u32, page_size: u32) -> Vec<AssetEntry> {
+        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        if counter == 0 {
+            return Vec::new(&env);
+        }
+        let capped = if page_size == 0 || page_size > MAX_PAGE_SIZE {
+            MAX_PAGE_SIZE
+        } else {
+            page_size
+        };
+        // Registry ids are 1-based and contiguous (no gaps after deactivation).
+        // Convert zero-based start_index to a 1-based id.
+        let start_id: u64 = (start_index as u64).saturating_add(1);
+        if start_id > counter {
+            return Vec::new(&env);
+        }
+        let mut out = Vec::new(&env);
+        let end_id = start_id
+            .saturating_add(capped as u64)
+            .min(counter.saturating_add(1));
+        let mut id = start_id;
+        while id < end_id {
+            if let Some(entry) = env.storage().persistent().get(&DataKey::Asset(id)) {
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Asset(id),
+                    INSTANCE_LIFETIME_THRESHOLD,
+                    INSTANCE_BUMP_AMOUNT,
+                );
+                out.push_back(entry);
+            }
+            id += 1;
+        }
+        out
+    }
+
+    /// Return a page of assets filtered by their `active` flag.
+    ///
+    /// When `active_only` is `true`, only assets whose `active` field is
+    /// `true` are included; when `false`, only inactive (deactivated) assets
+    /// are returned. This is useful for building paginated "active assets"
+    /// or "deactivated assets" views without pulling the whole registry to
+    /// the client.
+    ///
+    /// `start_index` and `page_size` have the same semantics as
+    /// `get_assets_page`, but they count positions in the **filtered** list
+    /// rather than across all assets. The scan walks the full id range from
+    /// 1 up to the current counter, skipping assets that do not match the
+    /// filter, and returns at most `page_size` (capped at [`MAX_PAGE_SIZE`])
+    /// matching entries starting from `start_index` in the filtered order.
+    ///
+    /// Because this is a linear scan over all registered ids the cost scales
+    /// with the total registry size, not just the matching subset. For large
+    /// registries, prefer per-issuer or per-type index queries when possible.
+    pub fn get_active_assets_page(
+        env: Env,
+        start_index: u32,
+        page_size: u32,
+        active_only: bool,
+    ) -> Vec<AssetEntry> {
+        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        if counter == 0 {
+            return Vec::new(&env);
+        }
+        let capped = if page_size == 0 || page_size > MAX_PAGE_SIZE {
+            MAX_PAGE_SIZE
+        } else {
+            page_size
+        };
+        let mut skipped: u32 = 0;
+        let mut out = Vec::new(&env);
+        let mut id: u64 = 1;
+        while id <= counter && (out.len() as u32) < capped {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AssetEntry>(&DataKey::Asset(id))
+            {
+                if entry.active == active_only {
+                    if skipped < start_index {
+                        skipped += 1;
+                    } else {
+                        env.storage().persistent().extend_ttl(
+                            &DataKey::Asset(id),
+                            INSTANCE_LIFETIME_THRESHOLD,
+                            INSTANCE_BUMP_AMOUNT,
+                        );
+                        out.push_back(entry);
+                    }
+                }
+            }
+            id += 1;
+        }
+        out
     }
 
     /// Configured admin.
@@ -566,12 +875,26 @@ impl RegistryContract {
             .unwrap_or_else(|| panic_err(&env, Error::NotInitialized))
     }
 
-    /// Propose a new admin. Requires authorization from the current admin.
-    /// The role does not move yet — `new_admin` must call `accept_admin`
-    /// before the handover takes effect (issue #4). This makes a mistyped
-    /// `new_admin` harmless (it can simply be re-proposed or cancelled)
-    /// instead of a single-step transfer that would permanently brick
-    /// administration.
+    /// Propose a new admin. The role does not transfer until `new_admin` calls
+    /// [`Self::accept_admin`] (issue #4).
+    ///
+    /// The two-step handover makes a mistyped `new_admin` harmless — re-propose
+    /// or cancel — rather than permanently bricking administration in a single
+    /// call.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `new_admin`: Address being nominated as successor.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    ///
+    /// # Events
+    /// Emits topic `("proposed", admin)` with data `new_admin`.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         Self::require_admin(&env, &admin);
         env.storage()
@@ -582,9 +905,21 @@ impl RegistryContract {
             .publish((symbol_short!("proposed"), admin), new_admin);
     }
 
-    /// Cancel a pending admin proposal. Requires authorization from the
-    /// current admin. Panics with `NoPendingAdmin` if there is nothing to
-    /// cancel.
+    /// Cancel a pending admin proposal.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
+    ///
+    /// # Events
+    /// Emits topic `("cancelled", admin)` with data `()`.
     pub fn cancel_admin_proposal(env: Env, admin: Address) {
         Self::require_admin(&env, &admin);
         if !env.storage().instance().has(&DataKey::PendingAdmin) {
@@ -596,11 +931,29 @@ impl RegistryContract {
             .publish((symbol_short!("cancelled"), admin), ());
     }
 
-    /// Accept a pending admin proposal, completing the handover. Must be
-    /// called by the proposed successor (issue #4); the role only ever moves
-    /// here, never in `propose_admin`. Emits `set_admin` carrying both the
-    /// previous and new admin so off-chain indexers can observe this
-    /// security-critical transition (issue #2).
+    /// Accept a pending admin proposal and complete the handover.
+    ///
+    /// Must be called by the proposed successor (`new_admin`); the role only
+    /// ever moves here, never in [`Self::propose_admin`] (issue #4).
+    /// Emits `set_admin` carrying both the previous and new admin so
+    /// off-chain indexers can observe this security-critical transition
+    /// (issue #2).
+    ///
+    /// # Parameters
+    /// - `new_admin`: The address accepting the admin role.  Must match the
+    ///   pending proposal and must sign the transaction.
+    ///
+    /// # Authority
+    /// `new_admin` must sign the transaction (`new_admin.require_auth()`).
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
+    /// - [`Error::Unauthorized`] — `new_admin` does not match the pending
+    ///   proposal.
+    ///
+    /// # Events
+    /// Emits topic `("set_admin", old_admin)` with data `new_admin`.
     pub fn accept_admin(env: Env, new_admin: Address) {
         new_admin.require_auth();
         let pending: Address = env
@@ -623,7 +976,21 @@ impl RegistryContract {
             .publish((symbol_short!("set_admin"), old_admin), new_admin);
     }
 
-    /// The address currently proposed as the next admin, if any.
+    /// Returns the address currently proposed as the next admin, if any.
+    ///
+    /// Returns `None` when no proposal is in flight.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::PendingAdmin)
     }
