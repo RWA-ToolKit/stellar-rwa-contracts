@@ -16,6 +16,8 @@ Every privileged (admin- or self-authorized) function across all four
 contracts, the role it requires, and the error raised for the wrong caller
 is documented in the [Authority Matrix](docs/AUTHORITY_MATRIX.md).
 
+For responsible vulnerability disclosure, see the [Security Policy](SECURITY.md).
+
 ## How compliance gating works
 
 ```
@@ -110,3 +112,9 @@ MIT — see [LICENSE](LICENSE).
 
 <!-- handsoff-issue-400 -->
 - #400: Add an integration test exercising all four contracts together
+
+<!-- handsoff-issue-426 -->
+- #426: dividend: `cancel_distribution` can be called repeatedly and refunds the full amount each time, draining other distributions' escrow
+
+<!-- handsoff-issue-427 -->
+- #427: dividend: `claim` still pays out on a cancelled distribution because cancel leaves the snapshot in place and `claim` never checks `completed`

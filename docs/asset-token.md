@@ -67,6 +67,21 @@ distribution flow.
   compliance-approved. Admin auth. Once only.
 - `transfer(from, to, amount)` — `from` auth; not paused; both parties compliant;
   `from` has balance; moves tokens.
+- `transfer_batch(from, transfers: Vec<(Address, i128)>)` — the batch
+  counterpart to `transfer`, following the same pattern as `mint_batch`.
+  `from` auth; not paused; `from` compliant; then each `(recipient, amount)`
+  pair is validated in turn. **Atomic (all-or-nothing):** if any entry fails
+  compliance, has a non-positive amount, or exceeds the sender's remaining
+  balance, the entire call reverts and no balance moves — there is no
+  partial-transfer outcome, so callers wanting best-effort behaviour must
+  filter the list themselves. The sender's auth, the pause check and the
+  sender-side compliance check each run once, before the loop, since none
+  depends on the batch contents. Balances are re-read per entry, so entries
+  spending the same balance accumulate correctly, a repeated recipient
+  accumulates, and a self-transfer (`from == to`) is a no-op that emits its
+  event without moving balances. One `transfer` event per entry. Like
+  `mint_batch` there is no cap on the number of entries, and each entry
+  costs one cross-contract compliance call.
 - `mint(admin, to, amount)` — admin auth; not paused; `to` compliant; increases
   supply.
 - `mint_batch(admin, recipients: Vec<(Address, i128)>)` — admin auth; not
