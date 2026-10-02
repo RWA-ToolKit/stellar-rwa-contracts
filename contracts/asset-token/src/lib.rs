@@ -266,6 +266,92 @@ impl AssetTokenContract {
         );
     }
 
+    /// Batch transfer to multiple compliance-approved recipients in a single
+    /// call. Each `(recipient, amount)` pair is checked individually; if any
+    /// entry fails, the entire call reverts and no balances move.
+    ///
+    /// This is the batch counterpart to [`Self::transfer`] and follows the same
+    /// established pattern as `mint_batch`. Semantics are identical to calling
+    /// `transfer` once per entry, with three deliberate differences:
+    ///
+    /// ## Deliberate policy: the sender is gated once, not per entry
+    /// The sender is the same `from` for every entry, so `require_auth`,
+    /// the pause check and the sender-side compliance check
+    /// ([`Error::SenderNotCompliant`]) each run exactly once, before the loop.
+    /// Repeating them per entry would cost a cross-contract call each time and
+    /// cannot change the outcome, since none of the three depends on the
+    /// batch's contents.
+    ///
+    /// ## Deliberate policy: atomicity comes from revert, not rollback logic
+    /// There is no compensation or undo path. Any failing entry calls
+    /// `panic_err`, which aborts the invocation and discards every balance
+    /// write made by earlier entries. This is the same guarantee
+    /// `mint_batch` relies on, and it is why a partial batch can never be
+    /// observed by an observer.
+    ///
+    /// ## Deliberate policy: balances are re-read per entry
+    /// The sender's balance is read fresh at the start of each iteration, so
+    /// entries that spend the same balance accumulate correctly rather than
+    /// each being validated against the pre-batch balance. This also makes
+    /// repeated recipients, and a recipient that is also the sender, behave
+    /// exactly as a sequence of `transfer` calls would. As in `transfer`, a
+    /// self-transfer (`from == to`) is short-circuited into a no-op that emits
+    /// the event but does not move balances, so a later entry debiting `from`
+    /// is not clobbered.
+    ///
+    /// ## Cost model
+    /// `Self::compliant` is a cross-contract call into `compliance_contract`
+    /// and runs once per entry, so both resource cost and the number of
+    /// cross-contract calls scale linearly with `transfers.len()`. Callers
+    /// submitting large recipient lists should budget resource limits
+    /// accordingly and split very large batches across multiple calls.
+    ///
+    /// Like `mint_batch`, there is no cap on the number of entries; the caller
+    /// pays for the resources it consumes.
+    pub fn transfer_batch(env: Env, from: Address, transfers: Vec<(Address, i128)>) {
+        from.require_auth();
+        let meta = Self::metadata(&env);
+        if meta.paused {
+            panic_err(&env, Error::Paused);
+        }
+        if !Self::compliant(&env, &meta.compliance_contract, &from) {
+            panic_err(&env, Error::SenderNotCompliant);
+        }
+        for (to, amount) in transfers.iter() {
+            Self::check_amount(&env, amount);
+            if !Self::compliant(&env, &meta.compliance_contract, &to) {
+                panic_err(&env, Error::RecipientNotCompliant);
+            }
+            let from_bal = Self::balance(env.clone(), from.clone());
+            if from_bal < amount {
+                panic_err(&env, Error::InsufficientBalance);
+            }
+            // A self-transfer is a no-op for the same reason as in `transfer`:
+            // debiting and then crediting the same key would otherwise overwrite
+            // the debit and inflate the balance. Emit the same event shape so
+            // indexers decode both paths uniformly.
+            if from == to {
+                env.events().publish(
+                    (symbol_short!("transfer"), from.clone(), to),
+                    (amount, from_bal, from_bal),
+                );
+                continue;
+            }
+            let to_bal = Self::balance(env.clone(), to.clone());
+            let new_from_bal = from_bal - amount;
+            Self::set_balance(&env, &from, new_from_bal);
+            let new_to_bal = to_bal
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+            Self::set_balance(&env, &to, new_to_bal);
+            env.events().publish(
+                (symbol_short!("transfer"), from.clone(), to),
+                (amount, new_from_bal, new_to_bal),
+            );
+        }
+        Self::bump(&env);
+    }
+
     /// Mint new tokens to a compliance-approved recipient. Admin only.
     ///
     /// ## Deliberate policy: mint gates the recipient
@@ -386,7 +472,13 @@ impl AssetTokenContract {
     /// spec: paused tokens reject `approve` the same as `transfer`, since an
     /// approval is only meaningful if a matching `transfer_from` could later
     /// succeed (documented in docs/asset-token.md).
-    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32) {
+    pub fn approve(
+        env: Env,
+        from: Address,
+        spender: Address,
+        amount: i128,
+        expiration_ledger: u32,
+    ) {
         from.require_auth();
         if amount < 0 {
             panic_err(&env, Error::InvalidAmount);
@@ -408,7 +500,9 @@ impl AssetTokenContract {
         );
         if amount > 0 {
             let live_for = expiration_ledger.saturating_sub(env.ledger().sequence());
-            env.storage().temporary().extend_ttl(&key, live_for, live_for);
+            env.storage()
+                .temporary()
+                .extend_ttl(&key, live_for, live_for);
         }
         env.events().publish(
             (symbol_short!("approve"), from, spender),
@@ -601,10 +695,8 @@ impl AssetTokenContract {
         meta.compliance_contract = compliance.clone();
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);
-        env.events().publish(
-            (symbol_short!("setcomp"),),
-            (old_compliance, compliance),
-        );
+        env.events()
+            .publish((symbol_short!("setcomp"),), (old_compliance, compliance));
     }
 
     /// Propose a new admin. Requires authorization from the current admin.

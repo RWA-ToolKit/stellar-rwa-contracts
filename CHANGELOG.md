@@ -10,21 +10,16 @@ the full convention; CI flags contract changes that do not update this file.
 ## [Unreleased]
 
 ### Added
-- `compliance`: minimum holding period rule (#454) — `set_min_holding_period`,
-  `record_acquisition`, `get_min_holding_period`, `get_first_acquired_ledger`;
-  `is_allowed` enforces the lock-up window with fail-open semantics for
-  unrecorded acquisitions. New error `InvalidHoldingPeriod (#9)`. New events
-  `minhld`, `acquired`, `hldfail`.
-- `registry`: pagination helpers (#455) — `get_total_asset_count`,
-  `get_assets_page`, `get_active_assets_page` for index-based and
-  active-filtered paging over the asset list.
-- `fuzz`: four compliance fuzz targets (#456) — `compliance_batch_allowlist`,
-  `compliance_expiry`, `compliance_jurisdiction_race`, `compliance_is_allowed`;
-  each verifies key invariants of the compliance gate including the new
-  holding-period check.
+- **asset-token**: `mint_batch` mints to multiple compliance-approved recipients in one call. Admin only; each `(recipient, amount)` pair is checked individually and the whole call reverts if any recipient fails compliance.
+- **compliance**: `add_to_allowlist_batch` adds many addresses at once, with the same expiry check, jurisdiction normalisation, audit-trail capture and per-address `approved` event as `add_to_allowlist`. A failing entry reverts the call.
+- **compliance**: `status_of` returns an address's stored KYC status, distinguishing "never seen" (`None`) from an approved record. Deprecated `Pending`/`Rejected` variants are never written and remain only for ABI stability.
+- **registry**: `reactivate_asset` returns a deactivated asset to the active set in place, restoring it to TVL and `active_count` without re-registering it under a new id. A no-op if the asset is already active.
+- **dividend**: `cancel_distribution` cancels a distribution and returns the escrowed funds to the issuer. Only possible while nothing has been claimed; admin only.
+- All four contracts expose a `VERSION` constant.
 - `scripts/deploy.sh` now sources a local `.env` when present while preserving explicit caller-provided values and prompting before a mainnet deployment.
 
 ### Changed
+- **registry**: `get_all_assets` is now paginated via `start_id` and `limit`, returning ids `[start_id, start_id + limit)` and bounding per-call cost. `limit` is clamped to `MAX_PAGE_SIZE`; registries small enough to request the whole set in one call keep working.
 - `ComplianceStatus::Pending` and `ComplianceStatus::Rejected` are explicitly documented as deprecated ABI-only values retained for compatibility.
 - Asset-scoped dividend and registry operations now allow either the contract admin or the asset's admin to act.
 
