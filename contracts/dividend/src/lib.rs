@@ -21,8 +21,10 @@
 //! This is a **policy decision**, documented here before the implementation
 //! below:
 //!
-//! 1. `deadline == 0` means "no deadline" — the distribution behaves exactly
-//!    as before and can be claimed at any time; funds are never reclaimable.
+//! 1. `deadline == 0` means "no claim deadline" — the distribution can be
+//!    claimed at any time and cannot be reclaimed through
+//!    `reclaim_unclaimed`. The admin may still use `withdraw_unclaimed` after
+//!    a chosen minimum age.
 //! 2. When `deadline != 0`, holders may claim normally up to and including
 //!    ledger `deadline`. Once `env.ledger().sequence() > deadline`, `claim`
 //!    is rejected with `DeadlinePassed` — holders permanently lose the
@@ -30,14 +32,13 @@
 //! 3. Once the deadline has passed, the contract **admin** — and only the
 //!    admin, not the original issuer or any other role — may call
 //!    `reclaim_unclaimed` to sweep whatever remains unclaimed
-//!    (`total_amount - distributed`) out of escrow to themselves. This
-//!    exists so an issuer-controlled admin can recover dust/unclaimed funds
-//!    rather than have them locked in the contract forever; it is
-//!    intentionally restricted to admin because the admin is the only party
-//!    that funded the escrow in the first place.
-//! 4. Reclaiming marks the distribution `completed` and clears its snapshot,
-//!    exactly like a distribution that was fully claimed. Reclaim before the
-//!    deadline, or by a non-admin, is rejected.
+//!    (`total_amount - distributed`) out of escrow to themselves.
+//! 4. Independently of the deadline policy, the admin may call
+//!    `withdraw_unclaimed` once a chosen minimum age in ledgers has elapsed,
+//!    sending any remaining escrow to a specified recipient.
+//! 5. Either operation marks the distribution `completed` and clears its
+//!    snapshot, exactly like a distribution that was fully claimed. Neither
+//!    operation changes funds already paid to holders.
 
 #[cfg(test)]
 extern crate std;
@@ -130,11 +131,14 @@ pub enum Error {
     NoPendingAdmin = 12,
     /// A claim was attempted after the distribution's `deadline` (issue #2).
     DeadlinePassed = 13,
-    /// `reclaim_unclaimed` was called before the deadline (issue #2).
+    /// A recovery operation was called before the deadline (issue #2).
     DeadlineNotReached = 14,
     /// `reclaim_unclaimed` was called on a distribution with no deadline set
-    /// (`deadline == 0`), i.e. one whose policy never permits reclaiming.
+    /// (`deadline == 0`), so deadline-based reclaim is not permitted.
     NoDeadline = 15,
+    /// An admin withdrawal was attempted before the distribution reached its
+    /// required minimum age.
+    DistributionTooYoung = 16,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -143,7 +147,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 #[contract]
 pub struct DividendContract;
@@ -512,9 +516,8 @@ impl DividendContract {
     pub fn claim(env: Env, distribution_id: u64, holder: Address) {
         holder.require_auth();
         let mut dist = Self::load(&env, distribution_id);
-        // Policy (issue #2): once past the deadline, claims are rejected —
-        // only `reclaim_unclaimed` (admin-only) may move funds after this
-        // point.
+        // Policy (issue #2): once past the deadline, claims are rejected;
+        // admin recovery operations have their own separate guards.
         if dist.deadline != 0 && env.ledger().sequence() > dist.deadline {
             panic_err(&env, Error::DeadlinePassed);
         }
