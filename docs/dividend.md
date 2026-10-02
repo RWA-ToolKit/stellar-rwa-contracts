@@ -30,8 +30,8 @@ escrow after everyone claims is bounded by `0 <= dust <= N - 1` units of
 total_amount` exactly, so the sum of the `N` per-holder fractional losses is
 < `N`, and — being an integer — is at most `N - 1`). This is expected,
 documented behaviour: rounding some holder up instead would let total claims
-exceed `total_amount`. See `reclaim_unclaimed` for the only mechanism that
-can recover stranded funds (requires a `deadline`), and
+exceed `total_amount`. See `reclaim_unclaimed` and `withdraw_unclaimed` for
+mechanisms that can recover stranded funds, and
 `test_uneven_distribution_leaves_dust` in `test.rs` for a worked example.
 
 ## `Distribution`
@@ -42,10 +42,11 @@ can recover stranded funds (requires a `deadline`), and
 | `asset_token`    | `Address` | Token whose holders are paid         |
 | `payment_token`  | `Address` | Token used to pay (e.g. a SAC)       |
 | `total_amount`   | `i128`    | Total escrowed for the distribution  |
-| `distributed`    | `i128`    | Amount claimed so far                |
+| `distributed`    | `i128`    | Amount paid out, including claims and admin recovery |
 | `snapshot_ledger`| `u32`     | Ledger at creation (reference)       |
 | `created_at`     | `u32`     | Ledger at creation                   |
-| `completed`      | `bool`    | True once `distributed >= total`     |
+| `completed`      | `bool`    | True once `distributed >= total` **or** the distribution was cancelled |
+| `cancelled`      | `bool`    | True if `cancel_distribution` was called (issue #428). Distinguishes a cancelled distribution from a fully-paid one: both set `completed = true`, but only a cancelled distribution also sets this flag. Always `false` for distributions that reach completion through normal claims or `reclaim_unclaimed`. |
 | `deadline`       | `u32`     | Ledger after which claims stop and admin may reclaim; `0` = no deadline |
 
 ## Claim deadline & reclaim policy (issue #2)
@@ -68,6 +69,20 @@ can recover stranded funds (requires a `deadline`), and
    clears its snapshot/supply storage. Reclaiming twice, reclaiming before
    the deadline (`DeadlineNotReached (#14)`), or reclaiming a distribution
    with no deadline set (`NoDeadline (#15)`) are all rejected.
+
+## Minimum-age withdrawal (issue #453)
+
+The contract admin may call
+`withdraw_unclaimed(admin, distribution_id, recipient, min_age_ledgers)` on a
+distribution once `current_ledger - created_at >= min_age_ledgers`. This path
+does not require a claim deadline; the caller supplies the minimum age for
+each withdrawal. It transfers only `total_amount - distributed`, so prior
+holder payouts are untouched. The distribution is marked completed and its
+claim snapshot is removed to prevent further claims. Calls before the minimum
+age fail with `DistributionTooYoung (#16)`; calls with no remaining balance
+fail with `NothingToClaim (#6)`. A `withdraw` event records the admin, recipient,
+distribution id, and amount. If a claim deadline was configured, withdrawal
+also waits until that deadline passes (`DeadlineNotReached (#14)` otherwise).
 
 ## Cross-contract interfaces
 
@@ -112,6 +127,10 @@ pub trait TokenInterface {
 - `reclaim_unclaimed(admin, distribution_id) -> i128` — admin auth; after the
   deadline, sweeps `total_amount - distributed` to the admin. Errors:
   `NoDeadline (#15)`, `DeadlineNotReached (#14)`, `NothingToClaim (#6)`.
+- `withdraw_unclaimed(admin, distribution_id, recipient, min_age_ledgers) -> i128` —
+  admin auth; after the requested number of ledgers since creation, transfers
+  the remaining amount to `recipient`. Errors: `DistributionTooYoung (#16)` or
+  `NothingToClaim (#6)`.
 - `cancel_distribution(admin, distribution_id)` — admin auth; returns escrowed
   funds to the issuer. Only works while nothing has been claimed (`distributed == 0`).
   Errors: `InvalidAmount (#5)` if any claim has been made.
@@ -140,6 +159,11 @@ pub trait TokenInterface {
 | 9    | OverDistributed      | a claim would push `distributed` past `total_amount` |
 | 10   | ArithmeticOverflow   | `total_amount * balance`, the snapshot total, or the running `distributed` total would overflow `i128` |
 | 11   | DuplicateHolder      | the same address appears more than once in `eligible` |
+| 12   | NoPendingAdmin       | admin handover operation has no pending proposal |
+| 13   | DeadlinePassed       | claim attempted after the distribution deadline |
+| 14   | DeadlineNotReached   | recovery attempted before the distribution deadline |
+| 15   | NoDeadline           | reclaim attempted when the distribution has no deadline |
+| 16   | DistributionTooYoung | withdrawal attempted before the minimum age |
 
 ## Events
 
@@ -148,6 +172,7 @@ pub trait TokenInterface {
 | `init`    | admin                      | initialize          |
 | `created` | (admin) → (id, total)      | distribution funded |
 | `claim`   | (holder) → (id, amount)    | holder claims       |
+| `withdraw` | (admin) → (id, recipient, amount) | remaining escrow withdrawn |
 | `cancel`  | (admin) → distribution_id  | distribution cancelled |
 | `set_admin` | (old_admin) → new_admin | admin handed over    |
 
@@ -188,3 +213,76 @@ distributions per asset token (issue #166).
   non-negative (issue #291) and no address may appear twice (issue #290) — a
   duplicate would otherwise be counted in the denominator but be unclaimable,
   permanently stranding that slice of the escrow.
+
+## Holder-snapshot scaling limits (issue #429)
+
+The holder snapshot is stored as a single persistent ledger entry
+(`DataKey::Snapshot(id)`, type `Vec<(Address, i128)>`).  Two hard limits
+follow from this layout.  Neither is currently enforced by the contract; both
+are documented here so integrators can account for them before deploying.
+
+### Limit 1 — snapshot size at creation time
+
+`create_distribution` / `create_distribution_deadline` receives the entire
+`eligible` list as a transaction argument and writes it as one ledger entry.
+Soroban caps both the total serialised size of a transaction's arguments and
+the maximum size of a single ledger entry.  As of Soroban protocol 21+:
+
+* A single persistent ledger entry may not exceed **~64 KB** serialised.
+* A create-distribution transaction argument may not exceed the host's
+  per-transaction byte limit.
+
+A `(Address, i128)` tuple encodes to roughly **60–70 bytes** on-chain.
+This means:
+
+| Approx. holders | Approx. snapshot size |
+|-----------------|-----------------------|
+| 500             | ~33 KB                |
+| 750             | ~50 KB                |
+| ~900            | ~60 KB (near limit)   |
+
+**Consequence:** If the admin supplies more than roughly 900 holders, the
+`create_distribution` call will fail with a host resource or ledger-entry size
+error before any funds move.  There is no explicit error code for this; the
+failure occurs inside the host before contract code runs.
+
+**Recommendation:** Keep each distribution under ~750 holders.  If the asset
+token has more holders, split the population into multiple distributions with
+disjoint `eligible` lists that together cover all holders.  The compliance
+contract uses pages of 200 as its analogous limit (issue #177).
+
+### Limit 2 — per-claim CPU/memory cost
+
+`claim` calls `claimable`, which calls `snapshot_balance`.
+`snapshot_balance` deserialises the *entire* `Snapshot(id)` entry and
+performs a linear scan to find the calling holder.
+
+This means:
+
+* Every claim reads and decodes the full `N`-entry snapshot, regardless of
+  where the holder appears in it.
+* CPU instructions and read-bytes ledger cost grow **O(N)** with the number of
+  eligible holders — the last claimer pays the same cost as the first.
+* At large `N` (hundreds of holders), individual claim transactions may
+  approach or exceed the Soroban per-transaction instruction limit, making
+  some or all claims unexecutable on-chain even though the distribution was
+  created successfully.
+
+**Consequence:** Distributions with very large snapshots may be impossible to
+claim from, silently stranding funds in escrow.
+
+**Recommendation:** Keep the same ~750-holder per-distribution limit to
+ensure all claims remain within the instruction budget.  A future version of
+this contract may replace the linear scan with a `Map`-keyed snapshot to
+reduce per-claim cost to O(1).
+
+### Summary
+
+| Limit              | Root cause                          | Practical cap    |
+|--------------------|-------------------------------------|------------------|
+| Creation size      | Single ledger entry / tx arg size   | ≈ 750–900 holders |
+| Per-claim CPU cost | Full snapshot deserialise + O(N) scan | ≈ 750 holders  |
+
+Both limits are **silent**: the contract emits no custom error; the failure
+comes from the Soroban host.  Admins must account for these bounds when
+constructing the `eligible` list.

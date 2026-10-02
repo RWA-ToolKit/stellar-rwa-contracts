@@ -31,9 +31,22 @@ and reports total value locked (TVL).
   toward the limit. Rejects `token_contract` values already registered under
   another id with `DuplicateAsset (#9)` — see "Duplicate registration" below.
 - `get_asset(asset_id) -> AssetEntry` — `AssetNotFound (#4)`.
-- `get_assets_by_issuer(issuer) -> Vec<AssetEntry>`
-- `get_assets_by_type(asset_type) -> Vec<AssetEntry>` — see
-  [matching rules](#asset-types) below; the match is byte-exact.
+- `get_assets_by_issuer(issuer) -> Vec<AssetEntry>` — returns the first
+  page (up to `MAX_PAGE_SIZE` = 100 entries) of assets registered by this
+  issuer. Use `get_assets_by_issuer_page` to page through larger result sets
+  (issue #430).
+- `get_assets_by_issuer_page(issuer, page, page_size) -> Vec<AssetEntry>` —
+  paginated variant (issue #430). Returns up to `page_size` entries starting
+  at offset `page × page_size` within the issuer's id list. `page_size` is
+  clamped to `MAX_PAGE_SIZE` (100). Page through by incrementing `page` until
+  the result is shorter than `page_size` (or empty).
+- `get_assets_by_type(asset_type) -> Vec<AssetEntry>` — returns the first
+  page (up to `MAX_PAGE_SIZE` = 100 entries) of assets with this type. See
+  [matching rules](#asset-types). Use `get_assets_by_type_page` for larger
+  result sets (issue #430).
+- `get_assets_by_type_page(asset_type, page, page_size) -> Vec<AssetEntry>` —
+  paginated variant (issue #430). Same paging semantics as
+  `get_assets_by_issuer_page`. `page_size` clamped to `MAX_PAGE_SIZE`.
 - `get_all_assets(start_id, limit) -> Vec<AssetEntry>` — returns ids
   `[start_id, start_id + limit)`, capped at the current counter and at
   `MAX_PAGE_SIZE` (100) regardless of the requested `limit`. Page through the
@@ -55,6 +68,19 @@ and reports total value locked (TVL).
   reactivate, never recomputed by iterating the registry.
 - `asset_count() -> u64` — total registrations, active or not.
 - `active_count() -> u64` — registrations currently active.
+- `get_total_asset_count() -> u32` — same as `asset_count` but typed as `u32`;
+  provided as a named companion for callers building paginated UIs alongside
+  `get_assets_page` (issue #455).
+- `get_assets_page(start_index: u32, page_size: u32) -> Vec<AssetEntry>` —
+  zero-based index pagination over all registered assets ordered by id.
+  `page_size` is capped at `MAX_PAGE_SIZE` (100). Returns empty when
+  `start_index` is at or beyond the total count. See
+  [Pagination helpers](#pagination-helpers-issue-455).
+- `get_active_assets_page(start_index: u32, page_size: u32, active_only: bool) -> Vec<AssetEntry>` —
+  same as `get_assets_page` but filters by the `active` flag before
+  indexing, so `start_index` is a position within the *filtered* list.
+  Costs scale with the full registry size (linear scan). See
+  [Pagination helpers](#pagination-helpers-issue-455).
 - `get_admin() -> Address`
 - `propose_admin(admin, new_admin)` — admin auth; records a pending successor.
   The role does not move yet.
@@ -104,7 +130,7 @@ landing page and producing duplicate entries on the explore page. Covered by
 `test_duplicate_token_contract_registration_rejected` in
 `contracts/registry/src/test.rs`.
 
-### Pagination and max page size (issue #310)
+### Pagination and max page size (issue #310, issue #430)
 
 `get_all_assets` always enforces `MAX_PAGE_SIZE = 100` as an upper bound on
 the number of entries returned in one call, independent of the `limit`
@@ -115,6 +141,14 @@ The final page of a paginated walk is partial once fewer than `limit` assets
 remain; see `test_get_all_assets_final_partial_page` and
 `test_get_all_assets_enforces_max_page_size` in
 `contracts/registry/src/test.rs`.
+
+`get_assets_by_issuer` and `get_assets_by_type` previously returned the full
+index vector for an issuer or type (issue #430), which was unbounded as the
+registry grew. Both functions are now capped at `MAX_PAGE_SIZE` per call, and
+the new `get_assets_by_issuer_page` / `get_assets_by_type_page` variants
+expose explicit `(page, page_size)` paging. Every registration still rewrites
+the full index vector; that write cost is O(N) in the number of assets for
+that issuer/type and is noted in the storage section below.
 
 ### Deactivation and TVL (issue #306)
 
@@ -168,6 +202,46 @@ Listing of the contract `DataKey` variants and their storage behaviour.
 | `IssuerIndex` | Address | persistent | ids registered by that issuer; extended on read/write |
 | `TypeIndex` | String | persistent | ids of that exact `asset_type` string; extended on read/write |
 | `TotalValuation` | - | instance | running TVL total; O(1) read, updated on register/deactivate/reactivate |
+
+## Pagination helpers (issue #455)
+
+The registry exposes three functions for efficient paginated access by API
+consumers and the web app.
+
+### `get_total_asset_count() -> u32`
+
+Returns the total number of registered assets (active and inactive). Equivalent
+to `asset_count()` but typed as `u32` to match the `u32` index parameters of
+the pagination functions below.
+
+### `get_assets_page(start_index, page_size) -> Vec<AssetEntry>`
+
+Zero-based index pagination over all registered assets, ordered by id:
+
+| Parameter     | Semantics |
+|---------------|-----------|
+| `start_index` | First entry to return (0-based). Returns empty when ≥ total count. |
+| `page_size`   | Max entries to return. Capped at `MAX_PAGE_SIZE` (100). `0` also returns up to the cap. |
+
+Typical walk:
+```
+page 0 → get_assets_page(0, 20)   → items 0–19
+page 1 → get_assets_page(20, 20)  → items 20–39
+...
+last   → get_assets_page(N, 20)   → partial or empty
+```
+
+### `get_active_assets_page(start_index, page_size, active_only) -> Vec<AssetEntry>`
+
+Same pagination semantics as `get_assets_page`, but filtered by `active`:
+
+- `active_only = true` — returns only assets with `active == true`.
+- `active_only = false` — returns only deactivated assets.
+
+`start_index` counts positions within the **filtered** list, not within the
+full registry. This function performs a linear scan over all registered ids on
+every call; for large registries, prefer per-issuer or per-type index queries
+when the filter is not required.
 
 ## Security considerations
 
