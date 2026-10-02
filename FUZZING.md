@@ -1,49 +1,105 @@
 # Fuzzing Guide
 
-Issue #378: Fuzzing for arithmetic-heavy paths
+This directory contains fuzz targets for the RWA contracts. The targets focus on:
 
-This directory contains fuzz targets for the RWA contracts, focusing on arithmetic operations that handle i128 overflow/underflow and boundary conditions.
+- Arithmetic paths that handle `i128` overflow/underflow and boundary conditions
+  (issue #378: `fuzz_dividend_arithmetic`)
+- Compliance contract edge cases across jurisdiction blocking, expiry handling,
+  batch operations, and the minimum-holding-period rule (issue #456)
 
-## Building and Running Fuzz Tests
+## Fuzz crate layout
+
+```
+fuzz/
+  Cargo.toml
+  fuzz_targets/
+    compliance_batch_allowlist.rs     # batch operations with valid/invalid inputs
+    compliance_expiry.rs              # expiry edge cases across ledger sequences
+    compliance_jurisdiction_race.rs   # jurisdiction block + KYC approval interactions
+    compliance_is_allowed.rs          # is_allowed with all reachable state combinations
+```
+
+The targets run as ordinary Rust binaries (`fn main`) using the `arbitrary`
+crate for structured input generation. They are designed to be driven by a
+fuzzing engine (AFL++, libFuzzer via `cargo-fuzz`) but can also be run as
+deterministic smoke tests.
+
+## Building and Running
 
 ### Prerequisites
 
-Install `cargo-fuzz`:
 ```bash
 cargo install cargo-fuzz
 ```
 
-### Running Fuzz Tests
+### Compliance fuzz targets (issue #456)
 
-Run the dividend arithmetic fuzzer:
+Build and run any compliance target:
+
 ```bash
 cd fuzz
-cargo fuzz run fuzz_dividend_arithmetic
+# replace <target> with one of the names below
+cargo run --bin <target>
 ```
 
-By default, this will run indefinitely. To limit execution time:
+To run with libFuzzer (nightly only):
 ```bash
-cargo fuzz run fuzz_dividend_arithmetic -- -max_len=1000 -max_total_time=300
+cargo +nightly fuzz run <target> -- -max_total_time=600
 ```
 
-### Interpreting Results
+Available `<target>` names:
 
-The fuzzer will:
-1. Generate random distributions with varying holder balances
-2. Execute claim operations
-3. Assert that total claims never exceed the pool
-4. Report any crashes or assertion failures with minimal reproducer
+| Binary                          | What it covers                                        |
+|---------------------------------|-------------------------------------------------------|
+| `compliance_batch_allowlist`    | Batch add with random valid/invalid entries; counter invariants |
+| `compliance_expiry`             | Off-by-one in expiry, sentinel `0`, integer overflow  |
+| `compliance_jurisdiction_race`  | Block/unblock vs approve/suspend interaction; list invariants |
+| `compliance_is_allowed`         | All branches of `is_allowed` including holding period |
 
-### Filing Findings
+Minimum recommended CI runtime: **10 minutes per target** (`-max_total_time=600`).
 
-If the fuzzer discovers a crash or violation:
-1. A crash file will be saved (e.g., `artifacts/fuzz_dividend_arithmetic/crash-*`)
-2. Create a new issue with:
-   - The crash/violation description
-   - The minimal reproducer (the crash file)
-   - Steps to reproduce
-   - Expected vs. actual behavior
+### Dividend arithmetic target (issue #378)
 
-### Current Coverage
+```bash
+cd fuzz
+cargo run --bin fuzz_dividend_arithmetic
+```
 
-- **dividend arithmetic**: claim total bounds, overflow detection, dust behavior
+Or with libFuzzer:
+```bash
+cargo +nightly fuzz run fuzz_dividend_arithmetic -- -max_len=1000 -max_total_time=300
+```
+
+## Interpreting Results
+
+Each target asserts one or more invariants (documented in the source file's
+top-level doc comment). A violated invariant produces an `assert!` panic with
+a descriptive message. A crash file is saved to
+`artifacts/<target-name>/crash-*` when using `cargo fuzz`.
+
+To replay a crash:
+```bash
+cargo +nightly fuzz run <target> artifacts/<target-name>/crash-<hash>
+```
+
+## Filing Findings
+
+If the fuzzer discovers a crash or invariant violation:
+1. Minimise the reproducer: `cargo fuzz tmin <target> artifacts/<target-name>/crash-<hash>`
+2. Open a new issue with:
+   - Target name and a description of the violated invariant
+   - The minimised reproducer (attach the crash file)
+   - Steps to reproduce (`cargo fuzz run ...`)
+   - Expected vs actual behaviour
+3. Fix the underlying bug before merging the PR that adds the reproducer to
+   `fuzz/corpus/<target>/`.
+
+## Current Coverage
+
+| Target                         | Contract   | Invariants verified |
+|--------------------------------|------------|---------------------|
+| `fuzz_dividend_arithmetic`     | dividend   | claim total <= pool; overflow/underflow detection; dust |
+| `compliance_batch_allowlist`   | compliance | counter == list len; atomic batch commit/revert |
+| `compliance_expiry`            | compliance | expiry boundary semantics; sentinel `0` never lapses |
+| `compliance_jurisdiction_race` | compliance | blocked jur always denies; blocked list <-> flag consistency |
+| `compliance_is_allowed`        | compliance | correct boolean for all status x expiry x block x hold-period combinations |

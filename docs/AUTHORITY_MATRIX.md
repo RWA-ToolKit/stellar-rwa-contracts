@@ -32,10 +32,16 @@ required role.
 | `add_to_allowlist` | Admin | `Error::Unauthorized` (#5); `Error::NotInitialized` (#2) if uninitialized |
 | `add_to_allowlist_batch` | Admin | `Error::Unauthorized` (#5); a single invalid entry aborts the whole batch with `Error::InvalidExpiry` (#4) or `Error::InvalidJurisdiction` (#6) |
 | `suspend` | Admin | `Error::Unauthorized` (#5) |
+| `reinstate` | Admin | `Error::Unauthorized` (#5) |
 | `remove` | Admin | `Error::Unauthorized` (#5) |
 | `block_jurisdiction` | Admin | `Error::Unauthorized` (#5) |
 | `unblock_jurisdiction` | Admin | `Error::Unauthorized` (#5) |
 | `prune_expired` | Admin | `Error::Unauthorized` (#5) |
+| `set_min_holding_period` | Admin | `Error::Unauthorized` (#5) |
+| `record_acquisition` | Admin | `Error::Unauthorized` (#5) |
+| `propose_admin` | Admin | `Error::Unauthorized` (#5) |
+| `cancel_admin_proposal` | Admin | `Error::Unauthorized` (#5); `Error::NoPendingAdmin` (#7) if no proposal |
+| `accept_admin` | Pending admin (self) | `Error::Unauthorized` (#5) if not the proposed successor; `Error::NoPendingAdmin` (#7) if no proposal |
 
 ## asset-token (`contracts/asset-token`)
 
@@ -43,6 +49,7 @@ required role.
 |---|---|---|
 | `initialize` | None (bootstrap) — but only succeeds once | Second call panics `Error::AlreadyInitialized` (#1) |
 | `transfer` | Self (the `from` address) | `require_auth` failure (host-level auth error) if `from` did not authorize; separately reverts with `Error::SenderNotCompliant` (#7) / `Error::RecipientNotCompliant` (#8) / `Error::Paused` (#6) / `Error::InsufficientBalance` (#4) on business-rule failure |
+| `transfer_batch` | Self (the `from` address) | `require_auth` failure if `from` did not authorize; separately reverts with `Error::SenderNotCompliant` (#7) / `Error::RecipientNotCompliant` (#8) / `Error::Paused` (#6) / `Error::InvalidAmount` / `Error::InsufficientBalance` (#4) on business-rule failure |
 | `mint` | Admin | `Error::Unauthorized` (#3) |
 | `mint_batch` | Admin | `Error::Unauthorized` (#3) |
 | `burn` | Self (the `from` address) | `require_auth` failure if `from` did not authorize |

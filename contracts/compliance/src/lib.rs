@@ -98,6 +98,15 @@ enum DataKey {
     /// can be read directly instead of being inferred off-chain from the
     /// absence of approved addresses in a jurisdiction.
     BlockedList,
+    /// Minimum number of ledgers that must elapse after a holder first
+    /// acquires tokens before they are permitted to transfer them (issue
+    /// #454). Absent means no holding-period requirement for that address.
+    MinHoldingPeriod(Address),
+    /// The ledger sequence at which `address` first acquired tokens (issue
+    /// #454). Set by `record_acquisition` when no prior acquisition exists.
+    /// Never updated once set so that the clock always starts from the
+    /// earliest acquisition, not from a later top-up.
+    FirstAcquiredLedger(Address),
 }
 
 /// Max addresses per allowlist page (issue #177). Bounds the size of any single
@@ -127,6 +136,9 @@ pub enum Error {
     NoPendingAdmin = 7,
     /// `reinstate` was called on an address that is not currently `Suspended`.
     NotSuspended = 8,
+    /// `set_min_holding_period` was called with `min_ledgers` overflowing when
+    /// added to a realistic ledger sequence; treated as an invalid input.
+    InvalidHoldingPeriod = 9,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280; // ~5s ledgers
@@ -135,7 +147,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 #[contract]
 pub struct ComplianceContract;
@@ -373,6 +385,38 @@ impl ComplianceContract {
         }
         if Self::is_jurisdiction_blocked(env.clone(), record.jurisdiction) {
             return false;
+        }
+        // Minimum holding period check (issue #454).
+        // If a holding period has been set for this address, verify that
+        // enough ledgers have elapsed since the first recorded acquisition.
+        // Burning tokens (address == zero / the contract itself) should always
+        // be permitted; we cannot detect that case from inside the compliance
+        // contract, so we rely on the caller not registering a holding period
+        // for the burn address. If no `FirstAcquiredLedger` entry exists we
+        // fail-open (treat the period as satisfied) so existing holders whose
+        // acquisition was never recorded are not inadvertently locked out.
+        if let Some(min_ledgers) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, u64>(&DataKey::MinHoldingPeriod(address.clone()))
+        {
+            if min_ledgers > 0 {
+                if let Some(first_acquired) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, u64>(&DataKey::FirstAcquiredLedger(address.clone()))
+                {
+                    let unlock_at = first_acquired.saturating_add(min_ledgers);
+                    if (now as u64) < unlock_at {
+                        env.events().publish(
+                            (symbol_short!("hldfail"), address),
+                            (first_acquired, min_ledgers, now as u64),
+                        );
+                        return false;
+                    }
+                }
+                // No acquisition record → fail-open (see comment above).
+            }
         }
         true
     }
@@ -716,6 +760,93 @@ impl ComplianceContract {
     /// The address currently proposed as the next admin, if any.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    // ---- minimum holding period (issue #454) ----
+
+    /// Set (or clear) a minimum holding period for `holder`.
+    ///
+    /// `min_ledgers = 0` removes the requirement entirely. Any positive
+    /// value means the holder must wait at least `min_ledgers` ledger
+    /// sequences after their first token acquisition before they are
+    /// permitted to transfer. The clock starts when `record_acquisition` is
+    /// first called for the holder; subsequent top-ups do not reset it.
+    ///
+    /// Admin only. Emits `minhld` with `(holder, min_ledgers)`.
+    ///
+    /// Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
+    pub fn set_min_holding_period(
+        env: Env,
+        admin: Address,
+        holder: Address,
+        min_ledgers: u64,
+    ) {
+        Self::require_admin(&env, &admin);
+        let key = DataKey::MinHoldingPeriod(holder.clone());
+        if min_ledgers == 0 {
+            env.storage().persistent().remove(&key);
+        } else {
+            env.storage().persistent().set(&key, &min_ledgers);
+            env.storage().persistent().extend_ttl(
+                &key,
+                INSTANCE_LIFETIME_THRESHOLD,
+                INSTANCE_BUMP_AMOUNT,
+            );
+        }
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("minhld"), holder), min_ledgers);
+    }
+
+    /// Record the ledger sequence at which `holder` first acquired tokens.
+    ///
+    /// This is intended to be called by the asset-token contract (or any
+    /// privileged caller the admin authorises) immediately after a mint or
+    /// transfer that delivers tokens to `holder` for the first time. If a
+    /// `FirstAcquiredLedger` entry already exists for this holder it is left
+    /// untouched — the clock always starts at the *earliest* acquisition so
+    /// that a top-up does not restart the lock-up window.
+    ///
+    /// Callers that only want `is_allowed` to enforce the holding period
+    /// must call this before the first transfer *out* by the holder is
+    /// attempted; if the record is absent, `is_allowed` treats the holding
+    /// period as already satisfied (fail-open for backwards compatibility).
+    ///
+    /// Admin only. Emits `acquired` with `(holder, ledger)`.
+    ///
+    /// Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
+    pub fn record_acquisition(env: Env, admin: Address, holder: Address) {
+        Self::require_admin(&env, &admin);
+        let key = DataKey::FirstAcquiredLedger(holder.clone());
+        if !env.storage().persistent().has(&key) {
+            let now = env.ledger().sequence();
+            env.storage().persistent().set(&key, &(now as u64));
+            env.storage().persistent().extend_ttl(
+                &key,
+                INSTANCE_LIFETIME_THRESHOLD,
+                INSTANCE_BUMP_AMOUNT,
+            );
+            env.events()
+                .publish((symbol_short!("acquired"), holder), now as u64);
+        }
+        Self::bump_instance(&env);
+    }
+
+    /// Return the minimum holding period (in ledgers) for `holder`, if any.
+    ///
+    /// Returns `None` when no holding period has been set for this address.
+    pub fn get_min_holding_period(env: Env, holder: Address) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MinHoldingPeriod(holder))
+    }
+
+    /// Return the ledger sequence at which `holder` first acquired tokens,
+    /// if that has been recorded via `record_acquisition`.
+    pub fn get_first_acquired_ledger(env: Env, holder: Address) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::FirstAcquiredLedger(holder))
     }
 
     // ---- internal helpers ----

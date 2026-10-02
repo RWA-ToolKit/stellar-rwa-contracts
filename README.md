@@ -111,8 +111,8 @@ MIT — see [LICENSE](LICENSE).
 <!-- handsoff-issue-400 -->
 - #400: Add an integration test exercising all four contracts together
 
-<!-- handsoff-issue-391 -->
-- #391: Test empty and oversized string inputs
+<!-- handsoff-issue-426 -->
+- #426: dividend: `cancel_distribution` can be called repeatedly and refunds the full amount each time, draining other distributions' escrow
 
-<!-- handsoff-issue-401 -->
-- #401: Test that a deactivated asset still permits holders to claim existing dividends
+<!-- handsoff-issue-427 -->
+- #427: dividend: `claim` still pays out on a cancelled distribution because cancel leaves the snapshot in place and `claim` never checks `completed`
