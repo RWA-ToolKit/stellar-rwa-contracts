@@ -79,7 +79,6 @@ fn test_register_before_init_panics_not_initialized() {
     );
 }
 
-
 #[test]
 fn test_register_and_get_asset() {
     let (env, client, _admin) = setup();

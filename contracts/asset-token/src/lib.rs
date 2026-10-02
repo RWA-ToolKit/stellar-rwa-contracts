@@ -132,13 +132,62 @@ pub struct AssetTokenContract;
 
 #[contractimpl]
 impl AssetTokenContract {
-    /// Current contract version.
+    /// Returns the contract's ABI/behavior version number.
+    ///
+    /// Callers and indexers can use this to detect schema or behavior changes
+    /// without probing individual storage entries.
+    ///
+    /// # Parameters
+    /// - `_env`: Soroban environment (unused).
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn version(_env: Env) -> u32 {
         VERSION
     }
 
-    /// Initialize the token and mint the full `total_supply` to the admin.
-    /// The admin must already be compliance-approved to hold the asset.
+    /// Initialize the token, store metadata, and mint the full `total_supply`
+    /// to the admin. Callable exactly once.
+    ///
+    /// The admin must already be compliance-approved on `compliance_contract`
+    /// to hold the initial supply; [`Error::RecipientNotCompliant`] is raised
+    /// otherwise.
+    ///
+    /// # Parameters
+    /// - `admin`: Initial admin address (mint / pause / valuation / etc.).
+    ///   Must authorize the call and be compliance-approved.
+    /// - `name`: Human-readable token name (1–64 bytes).
+    /// - `symbol`: Ticker symbol (1–16 bytes).
+    /// - `asset_type`: Asset class, e.g. `"real_estate"` (1–32 bytes).
+    /// - `total_supply`: Total tokens to mint.  Must be ≥ 0.
+    /// - `decimals`: Decimal precision of token amounts.
+    /// - `compliance_contract`: Address of the compliance contract that gates
+    ///   transfers and mints.
+    /// - `asset_description`: Free-text description of the asset (1–256 bytes).
+    /// - `valuation`: Initial USD-cent valuation of the asset.  Must be ≥ 0.
+    ///
+    /// # Authority
+    /// `admin` must sign the transaction (`admin.require_auth()`).
+    ///
+    /// # Errors
+    /// - [`Error::AlreadyInitialized`] — contract was already initialized.
+    /// - [`Error::InvalidAmount`] — `total_supply` or `valuation` is negative.
+    /// - [`Error::InvalidInput`] — any string field is empty or exceeds its
+    ///   maximum length.
+    /// - [`Error::RecipientNotCompliant`] — `admin` is not approved on the
+    ///   compliance contract.
+    ///
+    /// # Events
+    /// Emits topic `("genesis", admin)` with data `total_supply` (one-time
+    /// initialization marker).  Also emits topic `("mint", admin)` with data
+    /// `total_supply` so indexers that sum `mint` events see the initial
+    /// allocation (issue #176).
     #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
@@ -196,8 +245,10 @@ impl AssetTokenContract {
             .publish((symbol_short!("mint"), admin.clone()), total_supply);
     }
 
-    /// Transfer `amount` from `from` to `to`. Both parties must be
-    /// compliance-approved and the token must not be paused.
+    /// Transfer `amount` tokens from `from` to `to`.
+    ///
+    /// Both parties must be compliance-approved and the token must not be
+    /// paused.  `amount` must be strictly positive.
     ///
     /// ## Deliberate policy: zero-amount transfers
     /// A `transfer` of `0` is rejected with [`Error::InvalidAmount`] via
@@ -211,14 +262,33 @@ impl AssetTokenContract {
     /// ## Deliberate policy: self-transfers (`from == to`)
     /// A transfer where `from == to` is **allowed** (it is not rejected)
     /// but is short-circuited into a pure no-op: balances are not touched,
-    /// but a `transfer` event is still emitted with `new_from_bal ==
-    /// new_to_bal == from_bal` so downstream indexers see a consistent
-    /// event shape. Rejecting self-transfers outright would be an
-    /// additional special case for callers (e.g. a UI that lets a user
-    /// pick any two addresses) to defend against; treating it as an
-    /// explicit no-op is simpler and cannot corrupt balances, since the
-    /// naive "debit then credit" sequence for `from == to` would otherwise
-    /// double-apply the write and inflate the balance.
+    /// but a `transfer` event is still emitted with
+    /// `new_from_bal == new_to_bal == from_bal` so downstream indexers see a
+    /// consistent event shape.  Rejecting self-transfers outright would be an
+    /// additional special case for callers to defend against; treating it as
+    /// an explicit no-op is simpler and cannot corrupt balances.
+    ///
+    /// # Parameters
+    /// - `from`: Sender address.  Must authorize the call, be
+    ///   compliance-approved, and have a sufficient balance.
+    /// - `to`: Recipient address.  Must be compliance-approved.
+    /// - `amount`: Number of tokens to transfer.  Must be > 0.
+    ///
+    /// # Authority
+    /// `from` must sign the transaction (`from.require_auth()`).
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::InvalidAmount`] — `amount` ≤ 0.
+    /// - [`Error::Paused`] — token is paused.
+    /// - [`Error::SenderNotCompliant`] — `from` is not compliance-approved.
+    /// - [`Error::RecipientNotCompliant`] — `to` is not compliance-approved.
+    /// - [`Error::InsufficientBalance`] — `from` balance < `amount`.
+    /// - [`Error::Overflow`] — recipient balance would overflow `i128`.
+    ///
+    /// # Events
+    /// Emits topic `("transfer", from, to)` with data
+    /// `(amount, new_from_bal, new_to_bal)`.
     pub fn transfer(env: Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
         Self::check_amount(&env, amount);
@@ -355,17 +425,35 @@ impl AssetTokenContract {
     /// Mint new tokens to a compliance-approved recipient. Admin only.
     ///
     /// ## Deliberate policy: mint gates the recipient
-    /// Unlike `transfer`, `mint` has no "sender" to gate — but the
-    /// recipient (`to`) is checked against the compliance contract exactly
-    /// like the `to` side of a `transfer`, via
-    /// `Self::compliant(&env, &meta.compliance_contract, &to)`, and reverts
-    /// with [`Error::RecipientNotCompliant`] if it fails. This is
-    /// deliberate: minting is the only way new supply enters circulation,
-    /// so if it were not gated an admin (or automation acting on the
-    /// admin's behalf) could hand tokens to an unverified address that no
-    /// `transfer` could ever have reached. `mint_batch` applies the same
-    /// per-recipient check to every entry in the batch. See
+    /// Unlike `transfer`, `mint` has no "sender" to gate — but the recipient
+    /// (`to`) is checked against the compliance contract exactly like the
+    /// `to` side of a `transfer`, and reverts with
+    /// [`Error::RecipientNotCompliant`] if it fails.  This is deliberate:
+    /// minting is the only way new supply enters circulation, so if it were
+    /// not gated an admin could hand tokens to an unverified address that no
+    /// `transfer` could ever reach.  [`Self::mint_batch`] applies the same
+    /// per-recipient check to every entry in the batch.  See
     /// `docs/asset-token.md` for the documented decision.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `to`: Recipient address.  Must be compliance-approved.
+    /// - `amount`: Number of tokens to mint.  Must be > 0.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::InvalidAmount`] — `amount` ≤ 0.
+    /// - [`Error::Paused`] — token is paused.
+    /// - [`Error::RecipientNotCompliant`] — `to` is not compliance-approved.
+    /// - [`Error::Overflow`] — total supply or recipient balance would overflow
+    ///   `i128`.
+    ///
+    /// # Events
+    /// Emits topic `("mint", to)` with data `amount`.
     pub fn mint(env: Env, admin: Address, to: Address, amount: i128) {
         let mut meta = Self::require_admin(&env, &admin);
         Self::check_amount(&env, amount);
@@ -391,16 +479,39 @@ impl AssetTokenContract {
     }
 
     /// Batch-mint to multiple compliance-approved recipients in a single call.
-    /// Admin only. Each `(recipient, amount)` pair is checked individually;
-    /// if any recipient fails compliance the entire call reverts.
+    /// Admin only.
     ///
-    /// Cost model: this function calls `Self::compliant` (a cross-contract call
-    /// into `compliance_contract`) once per entry in `recipients`, so both the
-    /// resource cost (CPU/memory instructions) and the number of cross-contract
-    /// calls scale linearly with `recipients.len()`. There is no batched or
-    /// single-call compliance check. Callers submitting large recipient lists
-    /// should budget the transaction's resource limits accordingly, and split
-    /// very large batches across multiple `mint_batch` calls if needed.
+    /// Each `(recipient, amount)` pair is checked individually against the
+    /// compliance contract; if any recipient fails compliance the entire call
+    /// reverts.
+    ///
+    /// Cost model: [`Self::compliant`] (a cross-contract call into
+    /// `compliance_contract`) is invoked once per entry in `recipients`, so
+    /// both resource cost and cross-contract call count scale linearly with
+    /// `recipients.len()`.  Split very large batches across multiple
+    /// `mint_batch` calls if needed.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `recipients`: Vec of `(to, amount)` pairs.  Each amount must be > 0
+    ///   and each recipient must be compliance-approved.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::InvalidAmount`] — any amount in the batch is ≤ 0.
+    /// - [`Error::Paused`] — token is paused.
+    /// - [`Error::RecipientNotCompliant`] — any recipient is not
+    ///   compliance-approved.
+    /// - [`Error::Overflow`] — total supply or any recipient balance would
+    ///   overflow `i128`.
+    ///
+    /// # Events
+    /// Emits one topic `("mint", to)` with data `amount` per entry in the
+    /// batch.
     pub fn mint_batch(env: Env, admin: Address, recipients: Vec<(Address, i128)>) {
         let mut meta = Self::require_admin(&env, &admin);
         if meta.paused {
@@ -427,21 +538,37 @@ impl AssetTokenContract {
         Self::bump(&env);
     }
 
-    /// Burn `amount` of the caller's own tokens.
+    /// Burn `amount` of the caller's own tokens, reducing total supply.
     ///
     /// ## Deliberate policy: a suspended holder may not burn
-    /// `burn` checks the caller against the compliance contract
-    /// (`Self::compliant(&env, &meta.compliance_contract, &from)`) exactly
-    /// like the `from` side of a `transfer`, and reverts with
-    /// [`Error::SenderNotCompliant`] if the caller is not currently
-    /// approved (whether suspended or removed outright). Burning still
-    /// moves balance and total-supply state, so it is treated as a
-    /// balance-changing operation subject to the same compliance gate as
-    /// every other one, rather than as an exception a suspended holder
-    /// could use to self-service an exit. A holder who needs to redeem or
-    /// exit while suspended must first be reinstated (or have the admin
-    /// act on their behalf via a separate, explicit path) — burn itself
-    /// does not special-case suspension.
+    /// `burn` checks the caller against the compliance contract exactly like
+    /// the `from` side of a `transfer`, and reverts with
+    /// [`Error::SenderNotCompliant`] if the caller is not currently approved
+    /// (whether suspended or removed outright).  Burning still moves balance
+    /// and total-supply state, so it is treated as a balance-changing
+    /// operation subject to the same compliance gate.  A holder who needs to
+    /// exit while suspended must first be reinstated.  See
+    /// `docs/asset-token.md` for the documented decision.
+    ///
+    /// # Parameters
+    /// - `from`: Address burning tokens.  Must authorize the call,
+    ///   be compliance-approved, and have a sufficient balance.
+    /// - `amount`: Number of tokens to burn.  Must be > 0.
+    ///
+    /// # Authority
+    /// `from` must sign the transaction (`from.require_auth()`).
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::InvalidAmount`] — `amount` ≤ 0.
+    /// - [`Error::Paused`] — token is paused.
+    /// - [`Error::SenderNotCompliant`] — `from` is not compliance-approved.
+    /// - [`Error::InsufficientBalance`] — `from` balance < `amount`.
+    /// - [`Error::Overflow`] — total supply underflows (should not occur in
+    ///   practice).
+    ///
+    /// # Events
+    /// Emits topic `("burn", from)` with data `amount`.
     pub fn burn(env: Env, from: Address, amount: i128) {
         from.require_auth();
         Self::check_amount(&env, amount);
@@ -466,10 +593,11 @@ impl AssetTokenContract {
         env.events().publish((symbol_short!("burn"), from), amount);
     }
 
-    /// SEP-41: authorize `spender` to move up to `amount` of `from`'s tokens
-    /// until `expiration_ledger` (inclusive). Passing `amount == 0` clears the
-    /// allowance regardless of `expiration_ledger`. Divergence from the raw
-    /// spec: paused tokens reject `approve` the same as `transfer`, since an
+    /// Authorize `spender` to move up to `amount` of `from`'s tokens until
+    /// `expiration_ledger` (inclusive). Passing `amount == 0` clears the
+    /// allowance regardless of `expiration_ledger`. (SEP-41)
+    ///
+    /// Paused tokens reject `approve` the same as `transfer`, since an
     /// approval is only meaningful if a matching `transfer_from` could later
     /// succeed (documented in docs/asset-token.md).
     pub fn approve(
@@ -510,9 +638,24 @@ impl AssetTokenContract {
         );
     }
 
-    /// SEP-41: remaining amount `spender` may transfer from `from`. Returns 0
-    /// once `expiration_ledger` has passed, matching the spec's "expired
-    /// allowances read as zero" semantics rather than returning a stale value.
+    /// Returns the remaining amount `spender` may transfer from `from`. (SEP-41)
+    ///
+    /// Returns `0` once `expiration_ledger` has passed, matching the spec's
+    /// "expired allowances read as zero" semantics rather than returning a
+    /// stale value.
+    ///
+    /// # Parameters
+    /// - `from`: Token owner.
+    /// - `spender`: Authorized spender.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn allowance(env: Env, from: Address, spender: Address) -> i128 {
         let key = DataKey::Allowance(from, spender);
         match env.storage().temporary().get::<_, AllowanceValue>(&key) {
@@ -521,8 +664,32 @@ impl AssetTokenContract {
         }
     }
 
-    /// SEP-41: move `amount` from `from` to `to` using a prior `approve`.
-    /// Subject to the same pause/compliance gates as `transfer`.
+    /// Move `amount` from `from` to `to` using a prior [`Self::approve`].
+    /// Subject to the same pause and compliance gates as [`Self::transfer`].
+    /// (SEP-41)
+    ///
+    /// # Parameters
+    /// - `spender`: Address exercising the allowance.  Must authorize the call.
+    /// - `from`: Token owner.  Must be compliance-approved.
+    /// - `to`: Recipient.  Must be compliance-approved.
+    /// - `amount`: Number of tokens to move.  Must be > 0.
+    ///
+    /// # Authority
+    /// `spender` must sign the transaction (`spender.require_auth()`).
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::InvalidAmount`] — `amount` ≤ 0.
+    /// - [`Error::Paused`] — token is paused.
+    /// - [`Error::SenderNotCompliant`] — `from` is not compliance-approved.
+    /// - [`Error::RecipientNotCompliant`] — `to` is not compliance-approved.
+    /// - [`Error::InsufficientAllowance`] — allowance expired or insufficient.
+    /// - [`Error::InsufficientBalance`] — `from` balance < `amount`.
+    /// - [`Error::Overflow`] — recipient balance would overflow `i128`.
+    ///
+    /// # Events
+    /// Emits topic `("transfer", from, to)` with data
+    /// `(amount, new_from_bal, new_to_bal)`.
     pub fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128) {
         spender.require_auth();
         Self::check_amount(&env, amount);
@@ -573,7 +740,21 @@ impl AssetTokenContract {
         );
     }
 
-    /// Current balance of `id`.
+    /// Returns the current token balance of `id`.
+    ///
+    /// Returns `0` for addresses that have never held tokens.
+    ///
+    /// # Parameters
+    /// - `id`: Address to query.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn balance(env: Env, id: Address) -> i128 {
         env.storage()
             .persistent()
@@ -581,24 +762,50 @@ impl AssetTokenContract {
             .unwrap_or(0)
     }
 
-    /// Current total supply.
+    /// Returns the current total token supply.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    ///
+    /// # Events
+    /// None.
     pub fn total_supply(env: Env) -> i128 {
         Self::metadata(&env).total_supply
     }
 
-    /// Pause every balance-changing operation. Callable by the admin, or by
-    /// the optional guardian (issue #1) if one has been set via
-    /// `set_guardian`. The guardian cannot unpause, mint, or perform any
-    /// other admin action.
+    /// Pause every balance-changing operation.
     ///
-    /// Policy: while paused, `transfer`, `transfer_from`, `mint`,
-    /// `mint_batch` and `burn` all revert with `Error::Paused`. `approve` is
-    /// also rejected (see docs/asset-token.md) so no allowance can be queued
-    /// up to fire the instant the token is unpaused. Read-only calls
-    /// (`balance`, `allowance`, `get_metadata`, `total_supply`) keep working.
-    /// This is intentionally total: a pause is meant to freeze token state
-    /// during an incident, not just block trading while admin actions
-    /// continue.
+    /// Callable by the admin or by the optional guardian (issue #1) if one
+    /// has been set via [`Self::set_guardian`].  The guardian cannot unpause,
+    /// mint, or perform any other admin action.
+    ///
+    /// While paused, `transfer`, `transfer_from`, `mint`, `mint_batch`,
+    /// `burn`, and `approve` all revert with [`Error::Paused`].  Read-only
+    /// calls (`balance`, `allowance`, `get_metadata`, `total_supply`) keep
+    /// working.  This is intentionally total: a pause is meant to freeze
+    /// token state during an incident, not just block trading while admin
+    /// actions continue.
+    ///
+    /// # Parameters
+    /// - `caller`: Admin or guardian address.  Must authorize the call.
+    ///
+    /// # Authority
+    /// `caller` must be the stored admin or the configured guardian, and must
+    /// sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `caller` is neither the admin nor the
+    ///   guardian.
+    ///
+    /// # Events
+    /// Emits topic `("pause",)` with data `caller`.
     pub fn pause(env: Env, caller: Address) {
         caller.require_auth();
         let mut meta = Self::metadata(&env);
@@ -613,6 +820,19 @@ impl AssetTokenContract {
     }
 
     /// Resume transfers and mints. Admin only; the guardian cannot unpause.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    ///
+    /// # Events
+    /// Emits topic `("unpause",)` with data `admin`.
     pub fn unpause(env: Env, admin: Address) {
         let mut meta = Self::require_admin(&env, &admin);
         meta.paused = false;
@@ -621,8 +841,26 @@ impl AssetTokenContract {
         env.events().publish((symbol_short!("unpause"),), admin);
     }
 
-    /// Set or clear the optional guardian address. Admin only. Pass `None`
-    /// to remove the guardian and restrict `pause` back to the admin alone.
+    /// Set or clear the optional guardian address. Admin only.
+    ///
+    /// Pass `None` to remove the guardian and restrict [`Self::pause`] back
+    /// to the admin alone.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `guardian`: `Some(address)` to set the guardian, or `None` to clear
+    ///   it.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    ///
+    /// # Events
+    /// Emits topic `("guardian",)` with data `guardian` (the new guardian
+    /// value, which may be `None`).
     pub fn set_guardian(env: Env, admin: Address, guardian: Option<Address>) {
         let mut meta = Self::require_admin(&env, &admin);
         meta.guardian = guardian;
@@ -632,23 +870,55 @@ impl AssetTokenContract {
             .publish((symbol_short!("guardian"),), meta.guardian);
     }
 
-    /// Full asset metadata.
+    /// Returns the full [`AssetMetadata`] struct.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    ///
+    /// # Events
+    /// None.
     pub fn get_metadata(env: Env) -> AssetMetadata {
         Self::metadata(&env)
     }
 
-    /// Update the recorded USD-cents valuation. Admin only.
+    /// Update the recorded USD-cent valuation of the asset. Admin only.
     ///
     /// A single update may not move the valuation by more than
-    /// `MAX_VALUATION_CHANGE_BPS` of its previous value (see the constant's
-    /// doc comment for the reasoning). Larger re-appraisals must be phased
-    /// in across multiple `update_valuation` calls.
+    /// `MAX_VALUATION_CHANGE_BPS` (50%) of its previous value, to guard
+    /// against a mistyped USD-cent value propagating to the registry's TVL.
+    /// A valuation of `0` is exempt since there is no prior magnitude to
+    /// compare against.  Larger re-appraisals must be phased across multiple
+    /// calls.
     ///
-    /// This updates only the token metadata. If this token is also registered
+    /// This updates only the token metadata.  If this token is also registered
     /// in the registry, the registry's valuation is an independent snapshot
-    /// from registration and is not updated by this call. Clients and
-    /// operators must use a separate registry update workflow when they need
-    /// the records to agree; the current registry API has no update hook.
+    /// from registration and is **not** updated by this call.  Use a separate
+    /// registry update workflow when the records need to agree.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `new_valuation`: New USD-cent valuation.  Must be ≥ 0.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::InvalidAmount`] — `new_valuation` < 0.
+    /// - [`Error::ValuationChangeTooLarge`] — change exceeds 50% of the
+    ///   previous valuation.
+    /// - [`Error::Overflow`] — overflow while computing the allowed change
+    ///   threshold.
+    ///
+    /// # Events
+    /// Emits topic `("valuation",)` with data `(old_valuation, new_valuation)`.
     pub fn update_valuation(env: Env, admin: Address, new_valuation: i128) {
         let mut meta = Self::require_admin(&env, &admin);
         if new_valuation < 0 {
@@ -676,11 +946,28 @@ impl AssetTokenContract {
 
     /// Point the token at a different compliance contract. Admin only.
     ///
-    /// This does not re-validate existing holders against the new gate: a
-    /// holder approved under the old contract keeps their balance even if
-    /// the new contract would reject them. It only checks that `compliance`
-    /// implements `is_allowed` and approves the admin, to catch a
-    /// misconfigured address before it bricks every transfer.
+    /// Does not re-validate existing holders against the new gate: a holder
+    /// approved under the old contract keeps their balance even if the new
+    /// contract would reject them.  It only checks that `compliance` implements
+    /// `is_allowed` and approves the admin, to catch a misconfigured address
+    /// before it bricks every transfer.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `compliance`: Address of the new compliance contract.  Must implement
+    ///   [`ComplianceInterface`] and return `true` for `admin`.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::InvalidCompliance`] — `compliance` does not implement
+    ///   `is_allowed`, or does not approve the admin.
+    ///
+    /// # Events
+    /// Emits topic `("setcomp",)` with data `(old_compliance, new_compliance)`.
     pub fn set_compliance(env: Env, admin: Address, compliance: Address) {
         let mut meta = Self::require_admin(&env, &admin);
         // Probe the target for the expected interface (`is_allowed`) before
@@ -699,13 +986,27 @@ impl AssetTokenContract {
             .publish((symbol_short!("setcomp"),), (old_compliance, compliance));
     }
 
-    /// Propose a new admin. Requires authorization from the current admin.
-    /// The role does not move yet — `new_admin` must call `accept_admin`
-    /// before the handover takes effect (issue #4). This makes a mistyped
-    /// `new_admin` harmless (it can simply be re-proposed or cancelled)
-    /// instead of a single-step transfer that would permanently brick
-    /// administration. Note this does not affect the optional guardian
-    /// (issue #1), which is set independently via `set_guardian`.
+    /// Propose a new admin. The role does not transfer until `new_admin` calls
+    /// [`Self::accept_admin`] (issue #4).
+    ///
+    /// The two-step handover makes a mistyped `new_admin` harmless — re-propose
+    /// or cancel — rather than permanently bricking administration.  Note this
+    /// does not affect the optional guardian (issue #1), which is set
+    /// independently via [`Self::set_guardian`].
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `new_admin`: Address being nominated as successor.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    ///
+    /// # Events
+    /// Emits topic `("proposed", admin)` with data `new_admin`.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         let mut meta = Self::require_admin(&env, &admin);
         meta.pending_admin = Some(new_admin.clone());
@@ -715,9 +1016,21 @@ impl AssetTokenContract {
             .publish((symbol_short!("proposed"), admin), new_admin);
     }
 
-    /// Cancel a pending admin proposal. Requires authorization from the
-    /// current admin. Panics with `NoPendingAdmin` if there is nothing to
-    /// cancel.
+    /// Cancel a pending admin proposal.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
+    ///
+    /// # Events
+    /// Emits topic `("cancelled", admin)` with data `()`.
     pub fn cancel_admin_proposal(env: Env, admin: Address) {
         let mut meta = Self::require_admin(&env, &admin);
         if meta.pending_admin.is_none() {
@@ -730,11 +1043,29 @@ impl AssetTokenContract {
             .publish((symbol_short!("cancelled"), admin), ());
     }
 
-    /// Accept a pending admin proposal, completing the handover. Must be
-    /// called by the proposed successor (issue #4); the role only ever moves
-    /// here, never in `propose_admin`. Emits `set_admin` carrying both the
-    /// previous and new admin so off-chain indexers can observe this
-    /// security-critical transition (issue #2).
+    /// Accept a pending admin proposal and complete the handover.
+    ///
+    /// Must be called by the proposed successor (`new_admin`); the role only
+    /// ever moves here, never in [`Self::propose_admin`] (issue #4).
+    /// Emits `set_admin` carrying both the previous and new admin so
+    /// off-chain indexers can observe this security-critical transition
+    /// (issue #2).
+    ///
+    /// # Parameters
+    /// - `new_admin`: The address accepting the admin role.  Must match the
+    ///   pending proposal and must sign the transaction.
+    ///
+    /// # Authority
+    /// `new_admin` must sign the transaction (`new_admin.require_auth()`).
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
+    /// - [`Error::Unauthorized`] — `new_admin` does not match the pending
+    ///   proposal.
+    ///
+    /// # Events
+    /// Emits topic `("set_admin", old_admin)` with data `new_admin`.
     pub fn accept_admin(env: Env, new_admin: Address) {
         new_admin.require_auth();
         let mut meta = Self::metadata(&env);
@@ -754,7 +1085,21 @@ impl AssetTokenContract {
             .publish((symbol_short!("set_admin"), old_admin), new_admin);
     }
 
-    /// The address currently proposed as the next admin, if any.
+    /// Returns the address currently proposed as the next admin, if any.
+    ///
+    /// Returns `None` when no proposal is in flight.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    ///
+    /// # Events
+    /// None.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
         Self::metadata(&env).pending_admin
     }
