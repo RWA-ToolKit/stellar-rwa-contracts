@@ -797,6 +797,17 @@ impl DividendContract {
     /// creation-time snapshot. Wallets not present in the snapshot (e.g. ones
     /// that received tokens only afterwards) have a basis of 0 and cannot claim
     /// (issue #163).
+    ///
+    /// # Scaling note (issue #429)
+    ///
+    /// This function deserialises the entire `Snapshot(id)` ledger entry and
+    /// performs a **linear O(N) scan** over all eligible holders to find the
+    /// caller. Ledger read-bytes and CPU instruction costs therefore grow with
+    /// the size of the snapshot. For large distributions (many hundreds of
+    /// holders) this can make individual `claim` transactions approach the
+    /// Soroban per-transaction instruction limit. Keep distributions under
+    /// ~750 holders to stay safely within budget; see the "Holder-snapshot
+    /// scaling limits" section in `docs/dividend.md` for details.
     fn snapshot_balance(env: &Env, distribution_id: u64, holder: &Address) -> i128 {
         let snap: Vec<(Address, i128)> = env
             .storage()
