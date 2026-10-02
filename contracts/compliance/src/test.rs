@@ -1118,3 +1118,161 @@ fn test_get_blocked_jurisdictions_round_trip() {
     assert!(!client.is_jurisdiction_blocked(&ir));
     assert!(client.is_jurisdiction_blocked(&kp));
 }
+
+// ---- minimum holding period (issue #454) ----
+
+/// Happy path: an address whose holding period has fully elapsed passes.
+#[test]
+fn test_holding_period_satisfied_is_allowed() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    // Acquire at ledger 100, lock for 50 ledgers → unlocks at 150.
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    client.record_acquisition(&admin, &user);
+    client.set_min_holding_period(&admin, &user, &50u64);
+
+    // Still inside the lock-up window.
+    env.ledger().with_mut(|l| l.sequence_number = 149);
+    assert!(!client.is_allowed(&user));
+
+    // Exactly at the unlock ledger.
+    env.ledger().with_mut(|l| l.sequence_number = 150);
+    assert!(client.is_allowed(&user));
+
+    // Well after the unlock ledger.
+    env.ledger().with_mut(|l| l.sequence_number = 200);
+    assert!(client.is_allowed(&user));
+}
+
+/// Rejection path: transfer attempted before the holding period has elapsed.
+#[test]
+fn test_holding_period_not_yet_elapsed_is_denied() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    client.record_acquisition(&admin, &user);
+    client.set_min_holding_period(&admin, &user, &90u64);
+
+    // Transfer attempted 50 ledgers in: should be denied.
+    env.ledger().with_mut(|l| l.sequence_number = 150);
+    assert!(!client.is_allowed(&user));
+}
+
+/// Clearing a holding period (min_ledgers = 0) removes the restriction.
+#[test]
+fn test_clear_holding_period_removes_restriction() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    client.record_acquisition(&admin, &user);
+    client.set_min_holding_period(&admin, &user, &500u64);
+
+    // Inside the window.
+    env.ledger().with_mut(|l| l.sequence_number = 200);
+    assert!(!client.is_allowed(&user));
+
+    // Admin clears the period.
+    client.set_min_holding_period(&admin, &user, &0u64);
+    assert!(client.is_allowed(&user));
+    assert_eq!(client.get_min_holding_period(&user), None);
+}
+
+/// Fail-open: no `FirstAcquiredLedger` record means the holding period is
+/// treated as already satisfied, so existing holders are not locked out.
+#[test]
+fn test_holding_period_without_acquisition_record_is_allowed() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    // Deliberately skip record_acquisition.
+    client.set_min_holding_period(&admin, &user, &500u64);
+
+    // Should still be allowed because acquisition ledger is unknown.
+    assert!(client.is_allowed(&user));
+}
+
+/// A second call to `record_acquisition` must not overwrite the first one:
+/// the clock always starts at the *earliest* acquisition.
+#[test]
+fn test_record_acquisition_is_idempotent() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    client.record_acquisition(&admin, &user);
+    assert_eq!(client.get_first_acquired_ledger(&user), Some(100u64));
+
+    // Simulate a top-up at a later ledger: the stored value must stay at 100.
+    env.ledger().with_mut(|l| l.sequence_number = 200);
+    client.record_acquisition(&admin, &user);
+    assert_eq!(client.get_first_acquired_ledger(&user), Some(100u64));
+}
+
+/// An address with no holding period set is not affected by the check at all.
+#[test]
+fn test_no_holding_period_set_has_no_effect() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 1);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    // No set_min_holding_period call at all.
+    assert!(client.is_allowed(&user));
+    assert_eq!(client.get_min_holding_period(&user), None);
+}
+
+/// Non-admin cannot set or record acquisition.
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_set_min_holding_period_non_admin_rejected() {
+    let (env, client, _admin) = setup();
+    let impostor = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.set_min_holding_period(&impostor, &user, &100u64);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_record_acquisition_non_admin_rejected() {
+    let (env, client, _admin) = setup();
+    let impostor = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.record_acquisition(&impostor, &user);
+}
+
+/// Holding period is per-address: other addresses are unaffected.
+#[test]
+fn test_holding_period_does_not_affect_other_addresses() {
+    let (env, client, admin) = setup();
+    let locked = Address::generate(&env);
+    let free = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &locked, &us, &0);
+    client.add_to_allowlist(&admin, &free, &us, &0);
+
+    client.record_acquisition(&admin, &locked);
+    client.set_min_holding_period(&admin, &locked, &200u64);
+
+    env.ledger().with_mut(|l| l.sequence_number = 150);
+    // `locked` is still inside the window.
+    assert!(!client.is_allowed(&locked));
+    // `free` has no holding period — must pass.
+    assert!(client.is_allowed(&free));
+}

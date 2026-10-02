@@ -32,10 +32,16 @@ required role.
 | `add_to_allowlist` | Admin | `Error::Unauthorized` (#5); `Error::NotInitialized` (#2) if uninitialized |
 | `add_to_allowlist_batch` | Admin | `Error::Unauthorized` (#5); a single invalid entry aborts the whole batch with `Error::InvalidExpiry` (#4) or `Error::InvalidJurisdiction` (#6) |
 | `suspend` | Admin | `Error::Unauthorized` (#5) |
+| `reinstate` | Admin | `Error::Unauthorized` (#5) |
 | `remove` | Admin | `Error::Unauthorized` (#5) |
 | `block_jurisdiction` | Admin | `Error::Unauthorized` (#5) |
 | `unblock_jurisdiction` | Admin | `Error::Unauthorized` (#5) |
 | `prune_expired` | Admin | `Error::Unauthorized` (#5) |
+| `set_min_holding_period` | Admin | `Error::Unauthorized` (#5) |
+| `record_acquisition` | Admin | `Error::Unauthorized` (#5) |
+| `propose_admin` | Admin | `Error::Unauthorized` (#5) |
+| `cancel_admin_proposal` | Admin | `Error::Unauthorized` (#5); `Error::NoPendingAdmin` (#7) if no proposal |
+| `accept_admin` | Pending admin (self) | `Error::Unauthorized` (#5) if not the proposed successor; `Error::NoPendingAdmin` (#7) if no proposal |
 
 ## asset-token (`contracts/asset-token`)
 
