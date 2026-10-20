@@ -1276,3 +1276,23 @@ fn test_holding_period_does_not_affect_other_addresses() {
     // `free` has no holding period — must pass.
     assert!(client.is_allowed(&free));
 }
+
+#[test]
+fn test_reinstate_preserves_jurisdiction_and_verified_at() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    env.ledger().with_mut(|l| l.sequence_number = 10);
+    client.add_to_allowlist(&admin, &user, &String::from_str(&env, "KE"), &1000);
+    let before = client.get_record(&user).unwrap();
+
+    // Advance the ledger so a fresh record would get a different verified_at.
+    env.ledger().with_mut(|l| l.sequence_number = 50);
+    client.suspend(&admin, &user);
+    client.reinstate(&admin, &user);
+
+    let after = client.get_record(&user).unwrap();
+    assert_eq!(after.jurisdiction, before.jurisdiction);
+    assert_eq!(after.verified_at, before.verified_at);
+    assert_eq!(after.expires_at, before.expires_at);
+    assert_eq!(after, before);
+}
