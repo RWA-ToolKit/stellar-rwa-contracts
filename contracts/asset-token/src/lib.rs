@@ -597,6 +597,12 @@ impl AssetTokenContract {
     /// `expiration_ledger` (inclusive). Passing `amount == 0` clears the
     /// allowance regardless of `expiration_ledger`. (SEP-41)
     ///
+    /// Expiry boundary: with `amount > 0` the approval is live while
+    /// `current_ledger <= expiration_ledger`, so it is usable at
+    /// `expiration_ledger` itself and dead from `expiration_ledger + 1`
+    /// onward. An `expiration_ledger` already in the past is rejected with
+    /// [`Error::InvalidInput`] when `amount > 0`.
+    ///
     /// Paused tokens reject `approve` the same as `transfer`, since an
     /// approval is only meaningful if a matching `transfer_from` could later
     /// succeed (documented in docs/asset-token.md).
@@ -642,7 +648,8 @@ impl AssetTokenContract {
     ///
     /// Returns `0` once `expiration_ledger` has passed, matching the spec's
     /// "expired allowances read as zero" semantics rather than returning a
-    /// stale value.
+    /// stale value. The allowance is still reported at `expiration_ledger`
+    /// itself (inclusive) and reads as `0` from `expiration_ledger + 1`.
     ///
     /// # Parameters
     /// - `from`: Token owner.
@@ -667,6 +674,13 @@ impl AssetTokenContract {
     /// Move `amount` from `from` to `to` using a prior [`Self::approve`].
     /// Subject to the same pause and compliance gates as [`Self::transfer`].
     /// (SEP-41)
+    ///
+    /// Expiry boundary: the allowance is spendable while
+    /// `current_ledger <= expiration_ledger` (inclusive). At
+    /// `expiration_ledger + 1` and later, the call reverts with
+    /// [`Error::InsufficientAllowance`] even if the remaining amount covers
+    /// `amount`. Expiry is checked before the balance, so an expired approval
+    /// always reports `InsufficientAllowance`, not `InsufficientBalance`.
     ///
     /// # Parameters
     /// - `spender`: Address exercising the allowance.  Must authorize the call.
