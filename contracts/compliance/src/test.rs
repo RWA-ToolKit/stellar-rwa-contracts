@@ -1276,3 +1276,41 @@ fn test_holding_period_does_not_affect_other_addresses() {
     // `free` has no holding period — must pass.
     assert!(client.is_allowed(&free));
 }
+
+/// End-to-end: acquisition, then a transfer check before and after the
+/// holding period. The rejection is specific — `is_allowed` emits `hldfail`
+/// carrying `(first_acquired, min_ledgers, now)` — and no such event is
+/// emitted once the period has elapsed.
+#[test]
+fn test_holding_period_rejection_is_specific_and_lifts_after_boundary() {
+    use soroban_sdk::{symbol_short, testutils::Events as _, vec, IntoVal};
+
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    client.record_acquisition(&admin, &user);
+    client.set_min_holding_period(&admin, &user, &50u64);
+
+    // One ledger before the boundary: rejected with a holding-period event.
+    env.ledger().with_mut(|l| l.sequence_number = 149);
+    assert!(!client.is_allowed(&user));
+    assert_eq!(
+        env.events().all(),
+        vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("hldfail"), user.clone()).into_val(&env),
+                (100u64, 50u64, 149u64).into_val(&env),
+            ),
+        ]
+    );
+
+    // At the boundary: allowed, and no holding-period rejection is emitted.
+    env.ledger().with_mut(|l| l.sequence_number = 150);
+    assert!(client.is_allowed(&user));
+    assert_eq!(env.events().all().len(), 0);
+}
