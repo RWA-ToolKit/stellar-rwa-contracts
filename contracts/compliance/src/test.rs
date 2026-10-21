@@ -1891,3 +1891,212 @@ fn test_reinstate_does_not_emit_event_before_being_called() {
         "reinstate must emit exactly one event in its own invocation"
     );
 }
+
+// ---- Issue: add_to_allowlist_batch resource cost baseline ----
+
+/// Measure the CPU-instruction and memory-byte cost of `add_to_allowlist_batch`
+/// at three representative batch sizes (1, 10, and 50 entries) and record a
+/// baseline.
+///
+/// # Why this test exists
+/// `add_to_allowlist_batch` is a newer entry point than the single-address
+/// `add_to_allowlist` path and has no prior cost baseline.  Unlike
+/// `get_allowlist_count` (O(1)), batch admission is O(n) in the number of
+/// entries because it iterates the Vec and writes one persistent storage entry
+/// per address.  This test captures the cost curve so reviewers can spot
+/// surprising changes in the per-entry cost, and so CI catches regressions
+/// that turn a batch of 10 into an unexpectedly expensive call.
+///
+/// # Local-estimate caveat
+/// Numbers are produced by the Soroban test-mode host running native Rust,
+/// which underestimates real WASM costs on the network.  Use these figures
+/// only as a *relative* regression baseline, not as production fee estimates.
+///
+/// # Recorded baseline (local, SDK 26.x, native Rust)
+/// Printed to stdout with `cargo test -- --nocapture`.  The hard assertions
+/// below use generous bounds (Soroban per-transaction limits: 100 M CPU
+/// instructions, 40 MB memory) so the test does not break on minor SDK
+/// changes while still catching runaway growth.
+///
+/// # Surprising cost note
+/// If the per-entry cost appears disproportionately high (e.g. a batch of 10
+/// costs more than 10× a single `add_to_allowlist` call), the likely cause is
+/// the per-entry `AllowlistPage` read-modify-write on the page that backs the
+/// bulk append cursor.  Each page write is bounded by `ALLOWLIST_PAGE_SIZE`
+/// (200 entries), so cost is O(1) per entry in the amortised sense; however,
+/// the constant factor includes a full-page serialization on every write.
+/// Flag for optimisation if the 50-entry case nears 10 % of the CPU limit.
+#[test]
+fn test_add_to_allowlist_batch_resource_cost_baseline() {
+    /// Run a single measurement: create `count` entries, call
+    /// `add_to_allowlist_batch`, and return `(cpu_instructions, memory_bytes)`.
+    fn measure(count: u32) -> (u64, u64) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ComplianceContract, ());
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let us = soroban_sdk::String::from_str(&env, "US");
+        let mut entries: soroban_sdk::Vec<AllowlistEntry> =
+            soroban_sdk::Vec::new(&env);
+        for _ in 0..count {
+            entries.push_back(AllowlistEntry {
+                address: Address::generate(&env),
+                jurisdiction: us.clone(),
+                expires_at: 0,
+            });
+        }
+
+        // Reset budget immediately before the call so setup cost is excluded.
+        env.cost_estimate().budget().reset_unlimited();
+        client.add_to_allowlist_batch(&admin, &entries);
+
+        (
+            env.cost_estimate().budget().cpu_instruction_cost(),
+            env.cost_estimate().budget().memory_bytes_cost(),
+        )
+    }
+
+    // ---- 1-entry batch ----
+    let (cpu_1, mem_1) = measure(1);
+    println!(
+        "[baseline] add_to_allowlist_batch (1 entry):  cpu={cpu_1} instructions, mem={mem_1} bytes"
+    );
+
+    // ---- 10-entry batch ----
+    let (cpu_10, mem_10) = measure(10);
+    println!(
+        "[baseline] add_to_allowlist_batch (10 entries): cpu={cpu_10} instructions, mem={mem_10} bytes"
+    );
+
+    // ---- 50-entry batch ----
+    let (cpu_50, mem_50) = measure(50);
+    println!(
+        "[baseline] add_to_allowlist_batch (50 entries): cpu={cpu_50} instructions, mem={mem_50} bytes"
+    );
+
+    // All three must stay within Soroban per-transaction hard limits.
+    // (CPU: 100 000 000 instructions; memory: 40 960 000 bytes — SDK v22+)
+    for (label, cpu, mem) in [
+        ("1-entry", cpu_1, mem_1),
+        ("10-entry", cpu_10, mem_10),
+        ("50-entry", cpu_50, mem_50),
+    ] {
+        assert!(
+            cpu < 100_000_000,
+            "add_to_allowlist_batch ({label}) CPU cost {cpu} exceeds 100 M instruction limit"
+        );
+        assert!(
+            mem < 40_960_000,
+            "add_to_allowlist_batch ({label}) memory cost {mem} exceeds 40 MB limit"
+        );
+    }
+
+    // Sanity-check: costs must scale with batch size (larger batch ≥ smaller).
+    assert!(
+        cpu_10 >= cpu_1,
+        "10-entry batch CPU {cpu_10} must not be cheaper than 1-entry CPU {cpu_1}"
+    );
+    assert!(
+        cpu_50 >= cpu_10,
+        "50-entry batch CPU {cpu_50} must not be cheaper than 10-entry CPU {cpu_10}"
+    );
+}
+
+// ---- Issue: reinstate minimal / zero-equivalent input ----
+
+/// `reinstate` takes no numeric amount and no list — its only "input" beyond
+/// the admin key is the `address` to reinstate.  The closest analogue to
+/// "zero / empty input" for this function is calling it with the address in
+/// its most minimal valid state: `Suspended` with `expires_at = 0` (the
+/// sentinel that means "never expires").
+///
+/// This test confirms the behaviour is deliberate:
+/// 1. Reinstatement of a never-expiring suspended record succeeds.
+/// 2. The stored status flips to `Approved`.
+/// 3. `is_allowed` returns `true` immediately after reinstatement (the record
+///    is both approved *and* non-expiring, so nothing further blocks it).
+/// 4. The `expires_at = 0` sentinel is preserved unchanged — `reinstate` must
+///    not mutate `expires_at` even when it is the zero sentinel.
+///
+/// # Why document this
+/// A careless implementation might special-case `expires_at == 0` during
+/// reinstatement (e.g. treating it as "already expired" and refusing to
+/// reinstate, or inadvertently clearing it).  This test pins the correct
+/// handling so the sentinel semantics cannot regress silently.
+#[test]
+fn test_reinstate_with_zero_expiry_sentinel_is_deliberate() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let de = soroban_sdk::String::from_str(&env, "DE");
+
+    // Add with the never-expiring sentinel (expires_at = 0).
+    client.add_to_allowlist(&admin, &user, &de, &0);
+    assert_eq!(client.get_record(&user).unwrap().expires_at, 0);
+    assert!(client.is_allowed(&user));
+
+    // Suspend.
+    client.suspend(&admin, &user);
+    assert!(!client.is_allowed(&user));
+    assert_eq!(client.status_of(&user), Some(ComplianceStatus::Suspended));
+
+    // Reinstate.
+    client.reinstate(&admin, &user);
+
+    // Behaviour assertions (deliberate, not accidental):
+    let rec = client.get_record(&user).unwrap();
+    assert_eq!(
+        rec.status,
+        ComplianceStatus::Approved,
+        "reinstate must flip status to Approved"
+    );
+    assert_eq!(
+        rec.expires_at, 0,
+        "reinstate must not alter the never-expiring sentinel (expires_at = 0)"
+    );
+    assert!(
+        client.is_allowed(&user),
+        "is_allowed must return true after reinstating a never-expiring record"
+    );
+}
+
+// ---- Issue: reinstate unauthorized caller ----
+
+/// `reinstate` must be admin-only.  Calling it from an address with no
+/// special authority must be rejected with `Error::Unauthorized (#5)`.
+///
+/// This is the same authorization model as every other admin-gated entry
+/// point (`add_to_allowlist`, `suspend`, `remove`, etc.): the caller must
+/// both supply the stored admin address *and* provide a valid auth signature.
+///
+/// # Why a dedicated test
+/// The general `test_non_admin_rejected` test covers `add_to_allowlist`, but
+/// `reinstate` is a newer entry point and its authorization path had no
+/// explicit coverage.  An implementation that forgot to call `require_admin`
+/// (e.g. one that only checks status and skips the auth guard) would allow any
+/// caller to reinstate a suspended address, undermining the KYC enforcement
+/// model.  This test confirms the guard is present and fires correctly.
+///
+/// # Intentionally open?
+/// `reinstate` is NOT intentionally open to any caller.  It modifies a holder's
+/// compliance status and must always require the stored admin.  This is
+/// consistent with `suspend` (which also requires admin) and with the
+/// principle that compliance state changes must be auditable and authorized.
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_reinstate_unauthorized_caller_rejected() {
+    let (env, client, admin) = setup();
+    let impostor = Address::generate(&env);
+    let user = Address::generate(&env);
+    let us = soroban_sdk::String::from_str(&env, "US");
+
+    // Set up a suspended address so reinstate would otherwise succeed.
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    client.suspend(&admin, &user);
+    assert_eq!(client.status_of(&user), Some(ComplianceStatus::Suspended));
+
+    // Call reinstate as an unprivileged address — must panic Unauthorized (#5).
+    client.reinstate(&impostor, &user);
+}
