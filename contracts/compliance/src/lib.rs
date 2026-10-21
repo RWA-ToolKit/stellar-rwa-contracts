@@ -1184,7 +1184,15 @@ impl ComplianceContract {
     /// permitted to transfer. The clock starts when `record_acquisition` is
     /// first called for the holder; subsequent top-ups do not reset it.
     ///
-    /// Admin only. Emits `minhld` with `(holder, min_ledgers)`.
+    /// Admin only.
+    ///
+    /// # Events
+    /// Emits topic `("minhld", holder)` with data `min_ledgers` on **every**
+    /// state change: both when a positive period is set/overwritten and when
+    /// `min_ledgers == 0` clears an existing requirement. The event is
+    /// published once, after the storage write/remove, so indexers can
+    /// reconstruct the current holding-period configuration without polling
+    /// raw storage.
     ///
     /// Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
     pub fn set_min_holding_period(
@@ -1206,6 +1214,7 @@ impl ComplianceContract {
             );
         }
         Self::bump_instance(&env);
+        // Published outside the set/remove branches so both paths emit.
         env.events()
             .publish((symbol_short!("minhld"), holder), min_ledgers);
     }

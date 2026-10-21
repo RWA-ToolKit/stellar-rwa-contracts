@@ -192,8 +192,26 @@ schedules, and anti-flip mechanisms for regulated distributions.
 #### `set_min_holding_period(admin, holder, min_ledgers: u64)`
 Set or clear a holding period for `holder`. Admin only.  
 `min_ledgers = 0` removes the entry.  
-Emits `minhld` with `(holder, min_ledgers)`.  
 Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
+
+**Event emission (issue #518).** Every state change made by
+`set_min_holding_period` publishes a `minhld` event:
+
+- Topics: `(Symbol("minhld"), holder)`
+- Data: `min_ledgers` (the `u64` value just written)
+
+The event is emitted on **both** paths — setting a non-zero period and
+clearing it with `min_ledgers = 0` — and is published **after** the storage
+write completes, so an indexer that observes `minhld` can treat it as
+authoritative: the corresponding `MinHoldingPeriod` entry already reflects
+the emitted value (present for non-zero, absent for `0`). This lets the
+indexing API reconstruct holding-period activity from events alone, without
+polling raw contract storage.
+
+**Resource cost (issue #519).** A baseline test measures the CPU and memory
+cost of `set_min_holding_period`; the recorded figures live alongside that
+test in `contracts/compliance/src/lib.rs` (see the resource-cost baseline
+test for the current numbers).
 
 #### `record_acquisition(admin, holder)`
 Record the current ledger sequence as `holder`'s first-acquisition time.
@@ -294,6 +312,12 @@ can always burn their own tokens even inside the lock-up window.
 | `minhld`  | (holder) → min_ledgers                        | holding period set or cleared     |
 | `acquired`| (holder) → first_acquired_ledger              | first acquisition recorded        |
 | `hldfail` | (holder) → (first_acquired, min_ledgers, now) | `is_allowed` denied by hold rule  |
+
+`minhld` is emitted by `set_min_holding_period` with topics
+`(Symbol("minhld"), holder)` and data `min_ledgers`, on both the set and the
+clear (`min_ledgers = 0`) paths. It is published after the storage write, so
+indexers can rely on it to reconstruct holding-period activity without
+reading raw storage (issue #518).
 
 ## Storage / TTL
 
