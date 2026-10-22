@@ -873,6 +873,8 @@ impl AssetTokenContract {
     ///
     /// Pass `None` to remove the guardian and restrict [`Self::pause`] back
     /// to the admin alone.
+    /// This admin configuration remains available while the token is paused;
+    /// the pause state gates token operations, not guardian changes.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.

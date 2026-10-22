@@ -489,6 +489,22 @@ fn test_guardian_absent_by_default() {
 }
 
 #[test]
+fn test_admin_can_set_and_clear_guardian_while_paused() {
+    let s = setup(1_000);
+    let guardian = Address::generate(&s.env);
+    s.token.pause(&s.admin);
+
+    s.token.set_guardian(&s.admin, &Some(guardian.clone()));
+    assert!(s.token.get_metadata().paused);
+    assert_eq!(s.token.get_metadata().guardian, Some(guardian));
+
+    s.token.set_guardian(&s.admin, &None);
+    let metadata = s.token.get_metadata();
+    assert!(metadata.paused);
+    assert_eq!(metadata.guardian, None);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_pause_by_stranger_reverts() {
     let s = setup(1_000);
