@@ -96,6 +96,7 @@ distribution flow.
 - `balance(id) -> i128`
 - `total_supply() -> i128`
 - `pause(caller)` — admin auth, or the optional guardian's; `unpause(admin)` — admin auth only.
+- `set_guardian(admin, guardian)` — admin auth; may set or clear the guardian while paused. The contract has no separate deactivated state.
 - `get_metadata() -> AssetMetadata`
 - `update_valuation(admin, new_valuation)` — admin auth.
 - `set_compliance(admin, compliance)` — admin auth; repoints the gate.
