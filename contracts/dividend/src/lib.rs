@@ -540,6 +540,15 @@ impl DividendContract {
     pub fn claim(env: Env, distribution_id: u64, holder: Address) {
         holder.require_auth();
         let mut dist = Self::load(&env, distribution_id);
+        // Reject claims against any completed distribution — this covers both
+        // distributions that were fully paid out and those that were cancelled
+        // (issue #427). Without this guard a holder can call `claim` after
+        // `cancel_distribution` has returned the escrow to the admin, causing
+        // the payment token transfer to draw funds from other distributions'
+        // escrow rather than the cancelled one's (which is already empty).
+        if dist.completed {
+            panic_err(&env, Error::NothingToClaim);
+        }
         // Policy (issue #2): once past the deadline, claims are rejected;
         // admin recovery operations have their own separate guards.
         if dist.deadline != 0 && env.ledger().sequence() > dist.deadline {
@@ -718,6 +727,19 @@ impl DividendContract {
         let mut cancelled_dist = dist;
         cancelled_dist.completed = true;
         cancelled_dist.cancelled = true;
+        // Clear snapshot and supply data so that `claimable` can no longer
+        // compute a non-zero entitlement for this distribution (issue #426).
+        // Without this removal, the snapshot and supply entries remain in
+        // persistent storage after cancellation, allowing `claimable` to
+        // return a positive amount and enabling a holder to drain funds from
+        // other distributions' escrow via `claim`. This mirrors the cleanup
+        // already performed by `reclaim_unclaimed`.
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Snapshot(distribution_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Supply(distribution_id));
         env.storage()
             .persistent()
             .set(&DataKey::Dist(distribution_id), &cancelled_dist);

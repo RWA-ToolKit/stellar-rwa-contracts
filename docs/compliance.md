@@ -241,16 +241,20 @@ Return the recorded first-acquisition ledger, or `None` if not yet recorded.
 
 ## Events
 
-| Topic        | Data                          | When                       |
-|--------------|-------------------------------|----------------------------|
-| `init`       | admin address                 | on initialize              |
-| `approved`   | (address) → (jurisdiction, expires_at) | address approved  |
-| `suspend`    | (address)                     | address suspended          |
-| `reinstat`   | (address)                     | suspended address reinstated |
-| `removed`    | (address)                     | address removed            |
-| `blockjur`   | jurisdiction                  | jurisdiction blocked       |
-| `unblkjur`   | jurisdiction                  | jurisdiction unblocked     |
-| `set_admin`  | (old_admin) → new_admin       | admin handed over          |
+| Topic        | Data                                          | When                                        |
+|--------------|-----------------------------------------------|---------------------------------------------|
+| `init`       | admin address                                 | on initialize                               |
+| `approved`   | (address) → (jurisdiction, expires_at, ...)   | address approved or re-approved             |
+| `suspend`    | (address) → ()                                | address suspended                           |
+| `reinstat`   | (address) → ()                                | suspended address reinstated                |
+| `removed`    | (address) → ()                                | address removed                             |
+| `blockjur`   | → jurisdiction                                | jurisdiction blocked                        |
+| `unblkjur`   | → jurisdiction                                | jurisdiction unblocked                      |
+| `set_admin`  | (old_admin) → new_admin                       | admin handed over                           |
+| `expired`    | (address) → expires_at                        | expired record found by `is_allowed` or `prune_expired` |
+| `minhld`     | (holder) → min_ledgers                        | holding period set or cleared               |
+| `acquired`   | (holder) → first_acquired_ledger (`u64`)      | first acquisition recorded by `record_acquisition` |
+| `hldfail`    | (holder) → (first_acquired, min_ledgers, now) | `is_allowed` denied because hold period has not elapsed |
 
 ## Minimum holding period (issue #454)
 

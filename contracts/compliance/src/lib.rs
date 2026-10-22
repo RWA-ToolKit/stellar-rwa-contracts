@@ -144,6 +144,8 @@ pub enum Error {
 const DAY_IN_LEDGERS: u32 = 17_280; // ~5s ledgers
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
+#[cfg(test)]
+mod test_jhaydeeee_record_acquisition;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
@@ -1193,8 +1195,28 @@ impl ComplianceContract {
     /// published once, after the storage write/remove, so indexers can
     /// reconstruct the current holding-period configuration without polling
     /// raw storage.
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction
+    /// (`admin.require_auth()`). Any other caller — including one that signs
+    /// the transaction but is not the stored admin — is rejected with
+    /// [`Error::Unauthorized`]. This entry point is **not** open to arbitrary
+    /// callers (issue #516).
     ///
-    /// Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
+    /// # Zero input (issue #517)
+    /// `min_ledgers = 0` is deliberately accepted and means "no minimum
+    /// holding period": the stored requirement for `holder` is removed
+    /// entirely (rather than stored as a zero value), so
+    /// [`Self::get_min_holding_period`] returns `None` afterwards and
+    /// [`Self::is_allowed`] imposes no holding-period check. The `minhld`
+    /// event is still emitted with `min_ledgers = 0` so indexers observe the
+    /// clearing. This is intentional, not an accidental side effect.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    ///
+    /// # Events
+    /// Emits topic `("minhld", holder)` with data `min_ledgers`.
     pub fn set_min_holding_period(
         env: Env,
         admin: Address,
@@ -1233,7 +1255,26 @@ impl ComplianceContract {
     /// attempted; if the record is absent, `is_allowed` treats the holding
     /// period as already satisfied (fail-open for backwards compatibility).
     ///
-    /// Admin only. Emits `acquired` with `(holder, ledger)`.
+    /// # Events
+    ///
+    /// Emits `acquired` with `(holder, ledger)` on the **first call only**
+    /// — the call that actually writes `FirstAcquiredLedger`. A repeat
+    /// (idempotent) call makes no state change and emits no event, so
+    /// indexers are not fed duplicate acquisition records (issue #523).
+    ///
+    /// # Minimal / zero-input behaviour (issue #522)
+    ///
+    /// This function takes only `(admin, holder)` — there is no amount or
+    /// list parameter. The minimal input is a freshly generated address
+    /// with no prior state in this contract (no `FirstAcquiredLedger` entry,
+    /// no KYC record, no holding period). Calling it with such an address
+    /// succeeds unconditionally: it records the current ledger and emits
+    /// the `acquired` event. There is no minimum-balance or
+    /// pre-existing-record requirement — the function is deliberately
+    /// designed to be called for any address the admin authorises,
+    /// regardless of prior history.
+    ///
+    /// Admin only.
     ///
     /// Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
     pub fn record_acquisition(env: Env, admin: Address, holder: Address) {

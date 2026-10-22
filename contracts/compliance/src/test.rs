@@ -1600,6 +1600,50 @@ fn test_set_min_holding_period_non_admin_rejected() {
     client.set_min_holding_period(&impostor, &user, &100u64);
 }
 
+/// Issue #516: `set_min_holding_period` is admin-gated.  An address with no
+/// special authority must be rejected with `Error::Unauthorized (#5)` and must
+/// not be able to mutate the stored holding period.
+#[test]
+fn test_set_min_holding_period_unauthorized_caller_rejected() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    client.add_to_allowlist(&admin, &user, &us, &0);
+
+    // Establish a known-good value set by the real admin.
+    client.set_min_holding_period(&admin, &user, &100u64);
+    assert_eq!(client.get_min_holding_period(&user), Some(100u64));
+
+    // An unprivileged caller must be rejected, not silently accepted.
+    let impostor = Address::generate(&env);
+    assert_eq!(
+        client.try_set_min_holding_period(&impostor, &user, &999u64),
+        Err(Ok(Error::Unauthorized.into()))
+    );
+
+    // The stored value must be unchanged by the failed attempt.
+    assert_eq!(client.get_min_holding_period(&user), Some(100u64));
+}
+
+/// Issue #517: `set_min_holding_period` with a zero value is the documented
+/// way to *clear* a holding period.  It is accepted (not rejected) and the
+/// stored value reads back as `None`, meaning no restriction applies.
+#[test]
+fn test_set_min_holding_period_zero_clears_restriction() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    client.add_to_allowlist(&admin, &user, &us, &0);
+
+    // Set a non-zero period first so the clear is observable.
+    client.set_min_holding_period(&admin, &user, &100u64);
+    assert_eq!(client.get_min_holding_period(&user), Some(100u64));
+
+    // Zero is a deliberate "clear" input, not an accidental no-op or error.
+    client.set_min_holding_period(&admin, &user, &0u64);
+    assert_eq!(client.get_min_holding_period(&user), None);
+}
+
 #[test]
 #[should_panic(expected = "Error(Contract, #5)")]
 fn test_record_acquisition_non_admin_rejected() {
@@ -2028,5 +2072,319 @@ fn test_set_min_holding_period_resource_cost_baseline() {
         mem < 500_000,
         "set_min_holding_period memory cost {mem} exceeded baseline bound 500_000 — \
          it may have grown unexpectedly; review and update if intentional"
+
+// ---- issue #523: record_acquisition event emission ----
+
+/// The first call to `record_acquisition` makes a state change (writes
+/// `FirstAcquiredLedger`) and must emit exactly one `acquired` event so
+/// the indexing API can reconstruct activity without polling storage.
+#[test]
+fn test_record_acquisition_emits_event_on_first_call() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+
+    env.ledger().with_mut(|l| l.sequence_number = 42);
+    client.record_acquisition(&admin, &user);
+
+    let all_events = env.events().all();
+    let events = all_events.events();
+
+    // Exactly one event must be emitted on the first call — the state
+    // change (writing FirstAcquiredLedger) must be observable by indexers.
+    assert_eq!(
+        events.len(),
+        1,
+        "record_acquisition must emit exactly one event on first call; got {}",
+        events.len()
+    );
+
+    // The acquisition must also have been recorded.
+    assert_eq!(client.get_first_acquired_ledger(&user), Some(42u64));
+}
+
+/// A second (idempotent) call to `record_acquisition` for the same holder
+/// makes no state change and must emit no event, so indexers are not fed
+/// duplicate acquisition records (issue #523).
+#[test]
+fn test_record_acquisition_emits_no_event_on_repeat() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.record_acquisition(&admin, &user);
+
+    // Second call at a later ledger — must be a no-op with no event.
+    env.ledger().with_mut(|l| l.sequence_number = 200);
+    client.record_acquisition(&admin, &user);
+
+    let all_events = env.events().all();
+    let events = all_events.events();
+
+    // The SDK event log reflects only the most recent top-level invocation,
+    // so this should be empty — the second call made no state change.
+    assert!(
+        events.is_empty(),
+        "idempotent record_acquisition must not emit any events; got {}",
+        events.len()
+    );
+
+    // And the stored ledger must still be the original one.
+    assert_eq!(client.get_first_acquired_ledger(&user), Some(100u64));
+}
+
+// ---- issue #522: record_acquisition with zero / minimal input ----
+
+/// Calling `record_acquisition` with a freshly generated address that has
+/// no prior state (no KYC record, no holding period, no prior acquisition)
+/// succeeds and records the current ledger. This is the minimal/zero-input
+/// case: the function does not require the holder to have any prior history
+/// in the contract (issue #522).
+#[test]
+fn test_record_acquisition_with_fresh_address_succeeds() {
+    let (env, client, admin) = setup();
+    let fresh = Address::generate(&env);
+
+    // The address has no KYC record, no allowlist entry, no holding period,
+    // and no prior acquisition — the most minimal possible input.
+    assert_eq!(client.get_first_acquired_ledger(&fresh), None);
+    assert!(!client.is_allowed(&fresh));
+
+    env.ledger().with_mut(|l| l.sequence_number = 50);
+    client.record_acquisition(&admin, &fresh);
+
+    // The acquisition is recorded despite no prior history.
+    assert_eq!(client.get_first_acquired_ledger(&fresh), Some(50u64));
+}
+
+/// `record_acquisition` takes only `(admin, holder)` — there is no amount
+/// or list parameter. The "zero/empty input" scenario is therefore a
+/// holder address with no state in the contract, which the function
+/// handles deliberately by creating the record. A second call with the
+/// same (already-recorded) address is also a deliberate no-op (issue #522).
+#[test]
+fn test_record_acquisition_minimal_input_is_deliberate() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+
+    // Minimal input: address with zero contract state.
+    env.ledger().with_mut(|l| l.sequence_number = 10);
+    client.record_acquisition(&admin, &user);
+    assert_eq!(client.get_first_acquired_ledger(&user), Some(10u64));
+
+    // A second call is a deliberate no-op (idempotent), not an error.
+    env.ledger().with_mut(|l| l.sequence_number = 20);
+    client.record_acquisition(&admin, &user);
+    assert_eq!(client.get_first_acquired_ledger(&user), Some(10u64));
+
+    // The function does not require any KYC record, holding period, or
+    // allowlist membership to succeed — it operates purely on the
+    // FirstAcquiredLedger entry.
+}
+
+/// A non-admin calling `record_acquisition` must be rejected regardless of
+/// whether the holder has prior state, confirming the admin guard is
+/// enforced before any state access (issue #522).
+#[test]
+fn test_record_acquisition_non_admin_rejected() {
+    let (env, client, _admin) = setup();
+    let impostor = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    let result = client.try_record_acquisition(&impostor, &holder);
+    assert_eq!(result, Err(Ok(Error::Unauthorized.into())));
+
+    // No acquisition should have been recorded.
+    assert_eq!(client.get_first_acquired_ledger(&holder), None);
+}
+
+// ---- issue #523: record_acquisition event — topic and data assertion ----
+
+/// Strengthened event test: the `acquired` event emitted by the first
+/// `record_acquisition` call must carry the correct **topic** and **data**
+/// so the indexing API can parse it without falling back to storage polling.
+///
+/// # Event schema
+///
+/// | Field    | Value                                                     |
+/// |----------|-----------------------------------------------------------|
+/// | topics   | `(Symbol("acquired"), <holder address>)`                  |
+/// | data     | `u64` — the ledger sequence at which acquisition was recorded |
+///
+/// This test goes beyond the count-only check in
+/// `test_record_acquisition_emits_event_on_first_call` and pin-tests the
+/// exact shape that downstream indexers depend on (issue #523).
+#[test]
+fn test_record_acquisition_event_topic_and_data() {
+    use soroban_sdk::IntoVal;
+
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+
+    env.ledger().with_mut(|l| l.sequence_number = 77);
+    client.record_acquisition(&admin, &user);
+
+    let all = env.events().all();
+    let events = all.events();
+
+    assert_eq!(
+        events.len(),
+        1,
+        "expected exactly one event from record_acquisition; got {}",
+        events.len()
+    );
+
+    // Each event is (contract_address, topics_vec, data_val).
+    let (_contract, topics, data) = events.get(0).unwrap();
+
+    // Topic[0] must be the symbol "acquired".
+    let expected_symbol: soroban_sdk::Val = symbol_short!("acquired").into_val(&env);
+    assert_eq!(
+        topics.get(0).unwrap(),
+        expected_symbol,
+        "event topic[0] must be Symbol(\"acquired\")"
+    );
+
+    // Topic[1] must be the holder address.
+    let expected_addr: soroban_sdk::Val = user.clone().into_val(&env);
+    assert_eq!(
+        topics.get(1).unwrap(),
+        expected_addr,
+        "event topic[1] must be the holder address"
+    );
+
+    // Data must be the ledger sequence at acquisition time, as u64.
+    let expected_data: soroban_sdk::Val = (77u64).into_val(&env);
+    assert_eq!(
+        data,
+        expected_data,
+        "event data must be the acquisition ledger as u64 (77)"
+    );
+}
+
+// ---- issue #521: record_acquisition — unauthorised caller (try_ variant) ----
+
+/// Calling `record_acquisition` from an address that is not the stored admin
+/// must be rejected with `Error::Unauthorized (#5)`.
+///
+/// This test complements `test_record_acquisition_non_admin_rejected` (which
+/// uses `#[should_panic]`) with a `try_` call so the exact error code is
+/// pinned rather than only the panic message (issue #521).
+#[test]
+fn test_record_acquisition_non_admin_rejected_exact_error() {
+    let (env, client, _admin) = setup();
+    let impostor = Address::generate(&env);
+    let holder = Address::generate(&env);
+
+    // An address with no special authority must be rejected with Unauthorized.
+    let result = client.try_record_acquisition(&impostor, &holder);
+    assert_eq!(
+        result,
+        Err(Ok(Error::Unauthorized.into())),
+        "record_acquisition called by a non-admin must return Unauthorized (#5)"
+    );
+
+    // The holder's acquisition ledger must remain unset.
+    assert_eq!(
+        client.get_first_acquired_ledger(&holder),
+        None,
+        "no acquisition must be recorded after an unauthorised call"
+    );
+}
+
+// ---- issue #520: set_min_holding_period — no pause in compliance contract ----
+
+/// `set_min_holding_period` is an admin-only storage operation on the
+/// compliance contract. The compliance contract has **no pause or deactivate
+/// mechanism** of its own — there is no `pause()` / `unpause()` function and
+/// no `paused` flag. Consequently, `set_min_holding_period` always succeeds
+/// for an authorised admin regardless of any KYC lifecycle state (suspended
+/// holder, blocked jurisdiction, etc.).
+///
+/// This is intentional: the admin must be able to configure or clear holding
+/// periods at any time, even while a holder is suspended or while their
+/// jurisdiction is blocked, so the period is already correct before the
+/// holder is reinstated.
+///
+/// The *effect* of the holding period is enforced by `is_allowed`, which is
+/// a separate read path; `set_min_holding_period` only writes to storage.
+///
+/// Issue #520 asks for this behaviour to be established by test. The three
+/// sub-cases below cover:
+/// 1. Setting a holding period while the holder is suspended (KYC state
+///    that blocks `is_allowed` before the holding-period check).
+/// 2. Setting a holding period while the holder's jurisdiction is blocked.
+/// 3. Clearing a holding period (`min_ledgers = 0`) while the holder is
+///    suspended — confirming the storage write still succeeds.
+#[test]
+fn test_set_min_holding_period_unaffected_by_suspended_state() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    client.suspend(&admin, &user);
+
+    // `is_allowed` returns false because the holder is suspended.
+    assert!(!client.is_allowed(&user));
+
+    // `set_min_holding_period` must succeed regardless of the holder's
+    // suspended state — the compliance contract has no pause gate on it.
+    client.set_min_holding_period(&admin, &user, &200u64);
+    assert_eq!(
+        client.get_min_holding_period(&user),
+        Some(200u64),
+        "holding period must be stored even while the holder is suspended"
+    );
+}
+
+#[test]
+fn test_set_min_holding_period_unaffected_by_blocked_jurisdiction() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+
+    // Block the holder's jurisdiction — `is_allowed` now returns false.
+    client.block_jurisdiction(&admin, &us);
+    assert!(!client.is_allowed(&user));
+
+    // `set_min_holding_period` must succeed regardless of the blocked
+    // jurisdiction — the compliance contract has no pause gate on it.
+    client.set_min_holding_period(&admin, &user, &150u64);
+    assert_eq!(
+        client.get_min_holding_period(&user),
+        Some(150u64),
+        "holding period must be stored even while the holder's jurisdiction is blocked"
+    );
+
+    // Clean up jurisdiction block to avoid polluting other state.
+    client.unblock_jurisdiction(&admin, &us);
+}
+
+#[test]
+fn test_clear_holding_period_unaffected_by_suspended_state() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    client.set_min_holding_period(&admin, &user, &500u64);
+    client.suspend(&admin, &user);
+
+    // Holder is now suspended — `is_allowed` returns false.
+    assert!(!client.is_allowed(&user));
+
+    // Admin must be able to clear (min_ledgers = 0) the holding period even
+    // while the holder is suspended — the operation must not panic or be gated
+    // by any pause-like mechanism.
+    client.set_min_holding_period(&admin, &user, &0u64);
+    assert_eq!(
+        client.get_min_holding_period(&user),
+        None,
+        "holding period must be cleared even while the holder is suspended"
     );
 }

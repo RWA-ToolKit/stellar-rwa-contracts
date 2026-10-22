@@ -31,6 +31,9 @@ use soroban_sdk::{
     Env, String, Vec,
 };
 
+#[cfg(test)]
+mod test_rdj_allowance;
+
 /// Cross-contract client for the compliance contract. Only the method the asset
 /// token needs is declared here, decoupling the two contracts at build time.
 #[contractclient(name = "ComplianceClient")]
@@ -102,11 +105,17 @@ pub enum Error {
     ValuationChangeTooLarge = 14,
 }
 
+#[cfg(test)]
+mod test_freezyyy_approve_batch;
+
 /// Maximum byte lengths for string metadata fields (issue #46).
 const MAX_NAME_LEN: u32 = 64;
 const MAX_SYMBOL_LEN: u32 = 16;
 const MAX_ASSET_TYPE_LEN: u32 = 32;
 const MAX_DESC_LEN: u32 = 256;
+
+#[cfg(test)]
+mod test_valreb_transfer_from_allowance;
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
@@ -122,6 +131,8 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 /// compare against.
 const MAX_VALUATION_CHANGE_BPS: i128 = 5_000;
 const BPS_DENOMINATOR: i128 = 10_000;
+#[cfg(test)]
+mod test_jhaydeeee_transfer_batch;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
@@ -1169,6 +1180,9 @@ impl AssetTokenContract {
 fn panic_err(env: &Env, error: Error) -> ! {
     soroban_sdk::panic_with_error!(env, error)
 }
+
+#[cfg(test)]
+mod test_makeem_approve;
 
 /// Reject strings that are empty or exceed `max_len` bytes (issue #46).
 fn check_str(env: &Env, s: &String, min_len: u32, max_len: u32) {
