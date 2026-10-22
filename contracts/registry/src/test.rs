@@ -1,7 +1,7 @@
 #![cfg(test)]
 use super::*;
 use proptest::prelude::*;
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env, String};
 
 fn setup() -> (Env, RegistryContractClient<'static>, Address) {
     let env = Env::default();
@@ -1114,4 +1114,80 @@ fn test_get_active_assets_page_excludes_deactivated_at_every_page() {
     let all = client.get_active_assets_page(&0u32, &10u32, &true);
     assert_eq!(all.len(), 4);
     assert!(all.iter().all(|e| e.id != removed));
+}
+
+/// `get_active_assets_page` on an empty registry returns an empty vec.
+#[test]
+fn test_get_active_assets_page_empty_registry() {
+    let (_env, client, _admin) = setup();
+    let page = client.get_active_assets_page(&0u32, &10u32, &true);
+    assert_eq!(page.len(), 0);
+}
+
+/// `get_active_assets_page` with start_index past the filtered end returns an empty vec.
+#[test]
+fn test_get_active_assets_page_out_of_bounds_returns_empty() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "bond", 100);
+    // start_index = 1 is beyond the single active asset.
+    let page = client.get_active_assets_page(&1u32, &10u32, &true);
+    assert_eq!(page.len(), 0);
+}
+
+/// `get_active_assets_page` returns the correct final partial page.
+#[test]
+fn test_get_active_assets_page_final_partial_page() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    for _ in 0..5 {
+        register(&env, &client, &issuer, "equity", 50);
+    }
+    // Page 0: items 0-1
+    let p0 = client.get_active_assets_page(&0u32, &2u32, &true);
+    assert_eq!(p0.len(), 2);
+    // Page 1: items 2-3
+    let p1 = client.get_active_assets_page(&2u32, &2u32, &true);
+    assert_eq!(p1.len(), 2);
+    // Page 2: item 4 (partial)
+    let p2 = client.get_active_assets_page(&4u32, &2u32, &true);
+    assert_eq!(p2.len(), 1);
+    assert_eq!(p2.get(0).unwrap().id, 5);
+    // Page 3: past the end
+    let p3 = client.get_active_assets_page(&5u32, &2u32, &true);
+    assert_eq!(p3.len(), 0);
+}
+
+/// page_size = 0 is clamped to MAX_PAGE_SIZE.
+#[test]
+fn test_get_active_assets_page_zero_size_clamped_to_max() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "fund", 10);
+    let page = client.get_active_assets_page(&0u32, &0u32, &true);
+    // clamped to MAX_PAGE_SIZE; only 1 asset exists so we get 1 back
+    assert_eq!(page.len(), 1);
+}
+
+/// `get_active_assets_page` is a view function and must not emit any events.
+#[test]
+fn test_get_active_assets_page_emits_no_events() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let _id1 = register(&env, &client, &issuer, "real_estate", 200);
+    let _id2 = register(&env, &client, &issuer, "invoice", 100);
+    let _id3 = register(&env, &client, &issuer, "bond", 50);
+    client.deactivate_asset(&admin, &2u64);
+
+    // Call the view function - it should not emit any events
+    let _page = client.get_active_assets_page(&0u32, &10u32, &true);
+
+    // Check that no events were emitted during this specific call
+    // by invoking again and verifying no new events
+    let events_before = env.events().all().events().len();
+    let _page2 = client.get_active_assets_page(&0u32, &10u32, &true);
+    let events_after = env.events().all().events().len();
+
+    // No new events should have been emitted by the second call
+    assert_eq!(events_after, events_before);
 }
