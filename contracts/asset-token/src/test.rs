@@ -489,6 +489,17 @@ fn test_guardian_absent_by_default() {
 }
 
 #[test]
+fn test_set_guardian_none_clears_guardian() {
+    let s = setup(1_000);
+    let guardian = Address::generate(&s.env);
+    s.token.set_guardian(&s.admin, &Some(guardian));
+
+    s.token.set_guardian(&s.admin, &None);
+
+    assert_eq!(s.token.get_metadata().guardian, None);
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_pause_by_stranger_reverts() {
     let s = setup(1_000);

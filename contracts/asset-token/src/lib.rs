@@ -871,8 +871,9 @@ impl AssetTokenContract {
 
     /// Set or clear the optional guardian address. Admin only.
     ///
-    /// Pass `None` to remove the guardian and restrict [`Self::pause`] back
-    /// to the admin alone.
+    /// Pass `None` to deliberately clear the guardian and restrict
+    /// [`Self::pause`] back to the admin alone. This minimal input is valid;
+    /// it does not leave the current guardian unchanged.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
