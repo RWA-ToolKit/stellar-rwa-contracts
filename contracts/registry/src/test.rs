@@ -1,9 +1,9 @@
 #![cfg(test)]
 extern crate std;
-use std::println;
 use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env, String};
+use std::println;
 
 fn setup() -> (Env, RegistryContractClient<'static>, Address) {
     let env = Env::default();
@@ -616,7 +616,10 @@ fn test_reactivate_asset_resource_cost_baseline() {
 
     assert!(cpu > 0, "CPU cost must be non-zero");
     assert!(memory > 0, "memory cost must be non-zero");
-    assert!(cpu < 100_000_000, "CPU cost {cpu} exceeds 100M instructions");
+    assert!(
+        cpu < 100_000_000,
+        "CPU cost {cpu} exceeds 100M instructions"
+    );
     assert!(memory < 40_960_000, "memory cost {memory} exceeds 40MB");
     assert!(client.get_asset(&id).active);
 }
