@@ -835,6 +835,9 @@ impl RegistryContract {
     /// Because this is a linear scan over all registered ids the cost scales
     /// with the total registry size, not just the matching subset. For large
     /// registries, prefer per-issuer or per-type index queries when possible.
+    ///
+    /// # Authority
+    /// None — this read query is intentionally available to any caller.
     pub fn get_active_assets_page(
         env: Env,
         start_index: u32,

@@ -81,7 +81,8 @@ and reports total value locked (TVL).
 - `get_active_assets_page(start_index: u32, page_size: u32, active_only: bool) -> Vec<AssetEntry>` —
   same as `get_assets_page` but filters by the `active` flag before
   indexing, so `start_index` is a position within the *filtered* list.
-  Costs scale with the full registry size (linear scan). See
+  No authorization is required. Costs scale with the full registry size
+  (linear scan). See
   [Pagination helpers](#pagination-helpers-issue-455).
 - `get_admin() -> Address`
 - `propose_admin(admin, new_admin)` — admin auth; records a pending successor.
@@ -237,6 +238,9 @@ last   → get_assets_page(N, 20)   → partial or empty
 ### `get_active_assets_page(start_index, page_size, active_only) -> Vec<AssetEntry>`
 
 Same pagination semantics as `get_assets_page`, but filtered by `active`:
+
+This read query requires no authorization and is intentionally callable by any
+address. It does not expose privileged registry operations.
 
 - `active_only = true` — returns only assets with `active == true`.
 - `active_only = false` — returns only deactivated assets.

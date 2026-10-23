@@ -1035,6 +1035,21 @@ fn test_get_active_assets_page_active_only() {
     assert_eq!(page.get(1).unwrap().id, id3);
 }
 
+/// `get_active_assets_page` is intentionally public and succeeds without any
+/// mocked caller authorization.
+#[test]
+fn test_get_active_assets_page_open_to_unprivileged_caller() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "real_estate", 100);
+    env.mock_auths(&[]);
+
+    let page = client.get_active_assets_page(&0u32, &10u32, &true);
+
+    assert_eq!(page.len(), 1);
+    assert!(page.get(0).unwrap().active);
+}
+
 /// `get_active_assets_page` with active_only=false returns only inactive assets.
 #[test]
 fn test_get_active_assets_page_inactive_only() {
