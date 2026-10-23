@@ -976,6 +976,17 @@ fn test_get_assets_page_all_in_one_shot() {
     }
 }
 
+#[test]
+fn test_get_assets_page_is_open_without_authorization() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "real_estate", 100);
+
+    env.mock_auths(&[]);
+    let page = client.get_assets_page(&0u32, &10u32);
+    assert_eq!(page.len(), 1);
+}
+
 /// `get_assets_page` on an empty registry returns an empty vec.
 #[test]
 fn test_get_assets_page_empty_registry() {

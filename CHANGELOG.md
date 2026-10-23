@@ -16,6 +16,7 @@ the full convention; CI flags contract changes that do not update this file.
 - **compliance**: `add_to_allowlist_batch` adds many addresses at once, with the same expiry check, jurisdiction normalisation, audit-trail capture and per-address `approved` event as `add_to_allowlist`. A failing entry reverts the call.
 - **compliance**: `status_of` returns an address's stored KYC status, distinguishing "never seen" (`None`) from an approved record. Deprecated `Pending`/`Rejected` variants are never written and remain only for ABI stability.
 - **registry**: `reactivate_asset` returns a deactivated asset to the active set in place, restoring it to TVL and `active_count` without re-registering it under a new id. A no-op if the asset is already active.
+- **registry**: documented and tested that `get_assets_page` is open to callers without authorization (#566).
 - **dividend**: `cancel_distribution` cancels a distribution and returns the escrowed funds to the issuer. Only possible while nothing has been claimed; admin only.
 - All four contracts expose a `VERSION` constant.
 - `scripts/deploy.sh` now sources a local `.env` when present while preserving explicit caller-provided values and prompting before a mainnet deployment.
