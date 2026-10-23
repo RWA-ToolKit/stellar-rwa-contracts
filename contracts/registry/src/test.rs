@@ -598,6 +598,20 @@ fn test_reactivate_asset_restores_tvl_and_active_count() {
 }
 
 #[test]
+fn test_reactivate_deactivated_asset_returns_success_and_restores_state() {
+    // Registry deactivation is reversible; it is not a paused state.
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "bond", 100);
+    client.deactivate_asset(&admin, &id);
+
+    assert!(client.try_reactivate_asset(&admin, &id).is_ok());
+    assert!(client.get_asset(&id).active);
+    assert_eq!(client.active_count(), 1);
+    assert_eq!(client.total_value_locked(), 100);
+}
+
+#[test]
 fn test_reactivate_asset_restores_visibility_in_active_views() {
     // A deactivate/reactivate round trip must put the asset back in every
     // active view and leave its stored data untouched.
