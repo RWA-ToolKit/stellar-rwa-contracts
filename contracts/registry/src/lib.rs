@@ -1148,3 +1148,5 @@ fn validate_asset_type(env: &Env, asset_type: &String) {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_563_reactivate_asset_events;
