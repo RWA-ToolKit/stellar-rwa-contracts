@@ -74,7 +74,8 @@ and reports total value locked (TVL).
   provided as a named companion for callers building paginated UIs alongside
   `get_assets_page` (issue #455).
 - `get_assets_page(start_index: u32, page_size: u32) -> Vec<AssetEntry>` —
-  zero-based index pagination over all registered assets ordered by id.
+  zero-based index pagination over all registered assets ordered by id,
+  including deactivated assets.
   `page_size` is capped at `MAX_PAGE_SIZE` (100). Returns empty when
   `start_index` is at or beyond the total count. See
   [Pagination helpers](#pagination-helpers-issue-455).
@@ -220,6 +221,9 @@ the pagination functions below.
 ### `get_assets_page(start_index, page_size) -> Vec<AssetEntry>`
 
 Zero-based index pagination over all registered assets, ordered by id:
+Deactivated assets remain in this page with `active = false`; deactivation does
+not remove a registration or change its position. Use
+`get_active_assets_page` when the page should include only one active state.
 
 | Parameter     | Semantics |
 |---------------|-----------|
