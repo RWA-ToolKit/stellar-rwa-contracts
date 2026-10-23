@@ -782,6 +782,10 @@ impl RegistryContract {
     /// This is a convenient index-based companion to `get_all_assets`, which
     /// uses an id-based range. Both ultimately iterate over the same ordered
     /// sequence of registered ids.
+    ///
+    /// # Events
+    /// Emits no event. This query does not change registry data; it may only
+    /// extend the TTL of persistent asset entries it reads.
     pub fn get_assets_page(env: Env, start_index: u32, page_size: u32) -> Vec<AssetEntry> {
         let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
         if counter == 0 {

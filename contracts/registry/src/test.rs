@@ -965,6 +965,20 @@ fn test_get_assets_page_all_in_one_shot() {
     }
 }
 
+/// Paging is a query and emits no activity event; the only writes it may make
+/// are internal TTL extensions for the entries it reads.
+#[test]
+fn test_get_assets_page_emits_no_event() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "real_estate", 100);
+
+    let page = client.get_assets_page(&0u32, &10u32);
+
+    assert_eq!(page.len(), 1);
+    assert_eq!(env.events().all().events().len(), 0);
+}
+
 /// `get_assets_page` on an empty registry returns an empty vec.
 #[test]
 fn test_get_assets_page_empty_registry() {

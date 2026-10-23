@@ -221,6 +221,11 @@ the pagination functions below.
 
 Zero-based index pagination over all registered assets, ordered by id:
 
+This is a query and emits no activity event. It does not change registry data;
+it may extend the TTL of persistent asset entries that it reads. Indexers can
+reconstruct registry activity from the registration and lifecycle events
+without treating page reads as activity.
+
 | Parameter     | Semantics |
 |---------------|-----------|
 | `start_index` | First entry to return (0-based). Returns empty when ≥ total count. |
