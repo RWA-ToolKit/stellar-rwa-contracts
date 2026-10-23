@@ -724,6 +724,21 @@ fn test_get_assets_by_type_is_case_sensitive() {
 }
 
 #[test]
+fn test_get_assets_by_type_page_is_public() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "bond", 5);
+    let stranger = Address::generate(&env);
+    assert_ne!(stranger, admin);
+
+    env.mock_auths(&[]);
+    let assets = client.get_assets_by_type_page(&String::from_str(&env, "bond"), &0, &10);
+
+    assert_eq!(assets.len(), 1);
+    assert_eq!(assets.get(0).unwrap().issuer, issuer);
+}
+
+#[test]
 fn test_get_assets_by_type_is_whitespace_sensitive() {
     let (env, client, _admin) = setup();
     let issuer = Address::generate(&env);
