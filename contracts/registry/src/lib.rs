@@ -412,8 +412,9 @@ impl RegistryContract {
     ///
     /// Returns up to `page_size` entries starting at offset `page * page_size`
     /// within the type's id index. `page_size` is silently clamped to
-    /// [`MAX_PAGE_SIZE`]. Page through by incrementing `page` until the
-    /// result is shorter than `page_size` (or empty). See
+    /// [`MAX_PAGE_SIZE`]. A `page_size` of zero returns an empty vector.
+    /// Page through by incrementing `page` until the result is shorter than
+    /// `page_size` (or empty). See
     /// [`get_assets_by_issuer_page`] for a pagination example.
     ///
     /// Order: ascending asset id, i.e. registration order. The index is

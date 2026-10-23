@@ -724,6 +724,17 @@ fn test_get_assets_by_type_is_case_sensitive() {
 }
 
 #[test]
+fn test_get_assets_by_type_page_with_zero_page_size_is_empty() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    register(&env, &client, &issuer, "bond", 5);
+
+    let assets = client.get_assets_by_type_page(&String::from_str(&env, "bond"), &0, &0);
+
+    assert!(assets.is_empty());
+}
+
+#[test]
 fn test_get_assets_by_type_is_whitespace_sensitive() {
     let (env, client, _admin) = setup();
     let issuer = Address::generate(&env);
