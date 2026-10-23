@@ -776,12 +776,40 @@ impl RegistryContract {
     /// `start_index` is a zero-based position in the logical list of all
     /// registered assets ordered by id. `page_size` is capped at
     /// [`MAX_PAGE_SIZE`] (100); passing `0` or a value above the cap returns
-    /// up to the cap. An `start_index` at or beyond the total count returns
+    /// up to the cap. A `start_index` at or beyond the total count returns
     /// an empty `Vec`, which signals the end of the list.
     ///
     /// This is a convenient index-based companion to `get_all_assets`, which
     /// uses an id-based range. Both ultimately iterate over the same ordered
     /// sequence of registered ids.
+    ///
+    /// # Zero / empty-input behaviour (issue #567)
+    ///
+    /// * **Empty registry** — if no assets have been registered the function
+    ///   returns an empty `Vec` immediately, regardless of the supplied
+    ///   `start_index` and `page_size`.  This is deliberate: there is nothing
+    ///   to page through.
+    /// * **`page_size = 0`** — treated as "use the cap" (`MAX_PAGE_SIZE`)
+    ///   rather than "return nothing".  Zero is therefore a safe sentinel value
+    ///   for callers that have not yet chosen a page size.
+    /// * **`start_index = 0`** — addresses the first registered asset (id 1);
+    ///   this is the natural starting point for a forward scan.
+    /// * **Both zero** — equivalent to requesting the first `MAX_PAGE_SIZE`
+    ///   assets from the beginning of the registry; succeeds without error.
+    ///
+    /// # Parameters
+    /// - `start_index`: Zero-based offset of the first asset to return.
+    /// - `page_size`: Maximum number of assets to return; `0` and values above
+    ///   [`MAX_PAGE_SIZE`] are both silently clamped to [`MAX_PAGE_SIZE`].
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None — this is a read-only query.
     pub fn get_assets_page(env: Env, start_index: u32, page_size: u32) -> Vec<AssetEntry> {
         let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
         if counter == 0 {
@@ -1148,3 +1176,5 @@ fn validate_asset_type(env: &Env, asset_type: &String) {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_567_get_assets_page_zero_empty;
