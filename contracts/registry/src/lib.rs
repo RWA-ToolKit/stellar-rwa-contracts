@@ -783,6 +783,9 @@ impl RegistryContract {
     /// This is a convenient index-based companion to `get_all_assets`, which
     /// uses an id-based range. Both ultimately iterate over the same ordered
     /// sequence of registered ids.
+    ///
+    /// # Authority
+    /// None — this read-only method is open to any caller.
     pub fn get_assets_page(env: Env, start_index: u32, page_size: u32) -> Vec<AssetEntry> {
         let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
         if counter == 0 {
