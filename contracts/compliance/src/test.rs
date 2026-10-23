@@ -1936,6 +1936,142 @@ fn test_reinstate_does_not_emit_event_before_being_called() {
     );
 }
 
+// ---- Issue #518: set_min_holding_period event emission ----
+
+/// `set_min_holding_period` must emit exactly one `("minhld", address)` event
+/// on every state change it makes, so the indexing API can reconstruct
+/// activity without polling raw storage.
+///
+/// # Event schema (documented here and in docs/AUTHORITY_MATRIX.md)
+///
+/// | Field   | Value                                        |
+/// |---------|----------------------------------------------|
+/// | topics  | `(Symbol("minhld"), <holder address>)`       |
+/// | data    | `u64` — the new minimum holding period       |
+///
+/// Both state-change paths are covered: setting a non-zero period and
+/// clearing it back to zero.  The event is emitted after the storage write
+/// succeeds, so a replay that sees the event can assume storage already
+/// reflects the new value.
+#[test]
+fn test_set_min_holding_period_emits_event() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    client.record_acquisition(&admin, &user);
+
+    // ---- set a non-zero period ----
+    client.set_min_holding_period(&admin, &user, &50u64);
+    let events_set = env.events().all();
+    assert_eq!(
+        events_set.events().len(),
+        1,
+        "set_min_holding_period must emit exactly one event; got {}",
+        events_set.events().len()
+    );
+    let (contract, topics, data) = events_set.events().get(0).unwrap();
+    assert_eq!(contract, client.address);
+    assert_eq!(topics.len(), 2);
+    assert_eq!(
+        topics.get(0).unwrap(),
+        Symbol::new(&env, "minhld").into_val(&env)
+    );
+    assert_eq!(topics.get(1).unwrap(), user.clone().into_val(&env));
+    assert_eq!(data, 50u64.into_val(&env));
+    assert_eq!(client.get_min_holding_period(&user), Some(50u64));
+
+    // ---- clear the period back to zero ----
+    client.set_min_holding_period(&admin, &user, &0u64);
+    let events_clear = env.events().all();
+    assert_eq!(
+        events_clear.events().len(),
+        1,
+        "clearing the holding period must emit exactly one event; got {}",
+        events_clear.events().len()
+    );
+    let (contract, topics, data) = events_clear.events().get(0).unwrap();
+    assert_eq!(contract, client.address);
+    assert_eq!(topics.len(), 2);
+    assert_eq!(
+        topics.get(0).unwrap(),
+        Symbol::new(&env, "minhld").into_val(&env)
+    );
+    assert_eq!(topics.get(1).unwrap(), user.clone().into_val(&env));
+    assert_eq!(data, 0u64.into_val(&env));
+    assert_eq!(client.get_min_holding_period(&user), None);
+}
+
+// ---- Issue #519: set_min_holding_period resource cost baseline ----
+
+/// Measure the CPU-instruction and memory-byte cost of a single
+/// `set_min_holding_period` call and assert the values stay within a generous
+/// upper bound so CI catches surprising regressions early.
+///
+/// # Local-estimate caveat
+/// These numbers are produced by the Soroban test-mode host running native
+/// Rust code, which systematically underestimates the cost relative to a real
+/// WASM execution on the network.  They are useful as a *relative* regression
+/// baseline — a meaningful rise between commits is a signal to investigate —
+/// but should not be used as production resource-fee estimates.
+///
+/// # Recorded baseline (local, SDK 26.1.0, native Rust)
+/// CPU instructions : measured and asserted below with headroom above the
+///                    observed value (a storage read/write pair in test mode).
+/// Memory bytes     : similarly near-zero in native test mode.
+///
+/// If `set_min_holding_period` is ever refactored to do materially more work
+/// (extra storage ops, cross-contract calls, etc.) this test will fail, which
+/// is the intended signal.
+#[test]
+fn test_set_min_holding_period_resource_cost_baseline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(ComplianceContract, ());
+    let client = ComplianceContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let user = Address::generate(&env);
+    let ke = String::from_str(&env, "KE");
+    client.add_to_allowlist(&admin, &user, &ke, &0);
+    client.record_acquisition(&admin, &user);
+
+    // Reset the budget immediately before the call under measurement so
+    // setup cost is not included.
+    env.cost_estimate().budget().reset_unlimited();
+
+    client.set_min_holding_period(&admin, &user, &100u64);
+
+    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem = env.cost_estimate().budget().memory_bytes_cost();
+
+    // The baseline values are recorded in the test output when running with
+    // `cargo test -- --nocapture`.  They are asserted below so CI catches
+    // any surprising regressions.
+    println!(
+        "[baseline] set_min_holding_period: cpu={cpu} instructions, mem={mem} bytes"
+    );
+
+    // Generous upper bounds calibrated against the observed native values.
+    // Raise these only if a deliberate feature addition justifies the extra
+    // cost; a silent cost increase should fail CI.
+    //
+    // In native test mode the host does not meter VM execution, so both
+    // figures are very small.  The bounds below (10_000 CPU, 500_000 bytes)
+    // are calibrated against the measured native values; they will need to
+    // be re-evaluated when WASM simulation is enabled.
+    assert!(
+        cpu < 10_000,
+        "set_min_holding_period CPU cost {cpu} exceeded baseline bound 10_000 — \
+         it may have grown unexpectedly; review and update if intentional"
+    );
+    assert!(
+        mem < 500_000,
+        "set_min_holding_period memory cost {mem} exceeded baseline bound 500_000 — \
+         it may have grown unexpectedly; review and update if intentional"
 
 // ---- issue #523: record_acquisition event emission ----
 
