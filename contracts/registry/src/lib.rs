@@ -1148,3 +1148,11 @@ fn validate_asset_type(env: &Env, asset_type: &String) {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_zero_empty;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_events;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_resource_cost;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_deactivated;
