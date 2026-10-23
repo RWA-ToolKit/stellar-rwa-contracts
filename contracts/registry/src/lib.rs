@@ -774,7 +774,8 @@ impl RegistryContract {
     /// Return a page of assets by zero-based index offset.
     ///
     /// `start_index` is a zero-based position in the logical list of all
-    /// registered assets ordered by id. `page_size` is capped at
+    /// registered assets ordered by id, including deactivated assets.
+    /// `page_size` is capped at
     /// [`MAX_PAGE_SIZE`] (100); passing `0` or a value above the cap returns
     /// up to the cap. An `start_index` at or beyond the total count returns
     /// an empty `Vec`, which signals the end of the list.

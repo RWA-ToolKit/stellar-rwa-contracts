@@ -965,6 +965,22 @@ fn test_get_assets_page_all_in_one_shot() {
     }
 }
 
+/// `get_assets_page` includes deactivated assets; the page is over all
+/// registrations, unlike `get_active_assets_page`.
+#[test]
+fn test_get_assets_page_includes_deactivated_asset() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let asset_id = register(&env, &client, &issuer, "real_estate", 100);
+    client.deactivate_asset(&admin, &asset_id);
+
+    let page = client.get_assets_page(&0u32, &10u32);
+
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap().id, asset_id);
+    assert!(!page.get(0).unwrap().active);
+}
+
 /// `get_assets_page` on an empty registry returns an empty vec.
 #[test]
 fn test_get_assets_page_empty_registry() {
