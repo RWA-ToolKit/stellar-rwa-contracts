@@ -1,7 +1,9 @@
 #![cfg(test)]
+extern crate std;
 use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env, String};
+use std::println;
 
 fn setup() -> (Env, RegistryContractClient<'static>, Address) {
     let env = Env::default();
@@ -594,6 +596,31 @@ fn test_reactivate_asset_restores_tvl_and_active_count() {
     client.reactivate_asset(&admin, &id);
     assert_eq!(client.total_value_locked(), 100);
     assert_eq!(client.active_count(), 1);
+    assert!(client.get_asset(&id).active);
+}
+
+#[test]
+fn test_reactivate_asset_resource_cost_baseline() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "bond", 100);
+    client.deactivate_asset(&admin, &id);
+
+    env.cost_estimate().budget().reset_default();
+    client.reactivate_asset(&admin, &id);
+    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let memory = env.cost_estimate().budget().memory_bytes_cost();
+    println!(
+        "[baseline] reactivate_asset (one deactivated asset): cpu={cpu} instructions, mem={memory} bytes"
+    );
+
+    assert!(cpu > 0, "CPU cost must be non-zero");
+    assert!(memory > 0, "memory cost must be non-zero");
+    assert!(
+        cpu < 100_000_000,
+        "CPU cost {cpu} exceeds 100M instructions"
+    );
+    assert!(memory < 40_960_000, "memory cost {memory} exceeds 40MB");
     assert!(client.get_asset(&id).active);
 }
 
