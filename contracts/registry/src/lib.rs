@@ -617,6 +617,10 @@ impl RegistryContract {
     /// count.  Idempotent: does nothing and emits no event if the asset is
     /// already active.
     ///
+    /// The registry has no pause flag. This operation changes the registry
+    /// entry's active state and does not inspect the token contract's pause
+    /// state.
+    ///
     /// Deactivation is not treated as final: assets are sometimes deactivated
     /// by mistake (wrong id, premature admin action), and re-registering under
     /// a new id would break existing references.  Reactivation restores the
