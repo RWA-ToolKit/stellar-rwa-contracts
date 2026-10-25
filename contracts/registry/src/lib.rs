@@ -420,6 +420,9 @@ impl RegistryContract {
     /// Order: ascending asset id, i.e. registration order. The index is
     /// append-only, so the same ids appear in the same order as
     /// `get_assets_by_type` and as `get_all_assets` filtered by type.
+    ///
+    /// # Authority
+    /// None — this public read requires no authorization.
     pub fn get_assets_by_type_page(
         env: Env,
         asset_type: String,
