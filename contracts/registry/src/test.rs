@@ -169,6 +169,16 @@ fn test_get_assets_by_issuer() {
 }
 
 #[test]
+fn test_get_assets_by_issuer_page_is_public_without_authorization() {
+    let env = Env::default();
+    let id = env.register(RegistryContract, ());
+    let client = RegistryContractClient::new(&env, &id);
+    let issuer = Address::generate(&env);
+
+    assert_eq!(client.get_assets_by_issuer_page(&issuer, &0, &10).len(), 0);
+}
+
+#[test]
 fn test_issuer_can_deactivate_asset() {
     let (env, client, _admin) = setup();
     let issuer = Address::generate(&env);

@@ -361,6 +361,9 @@ impl RegistryContract {
     /// append-only, so the same ids appear in the same order as
     /// `get_assets_by_issuer` and as `get_all_assets` filtered by issuer.
     ///
+    /// # Authority
+    /// None — anyone may call. This is a public read-only query.
+    ///
     /// Example — iterate all assets for an issuer in blocks of 50:
     /// ```text
     /// page=0, page_size=50  → first  50 assets (ids[  0.. 49])
