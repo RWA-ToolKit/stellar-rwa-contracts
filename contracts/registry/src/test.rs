@@ -1003,6 +1003,32 @@ fn test_get_assets_page_all_in_one_shot() {
     }
 }
 
+#[test]
+fn test_get_assets_page_resource_cost_baseline() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    for _ in 0..10 {
+        register(&env, &client, &issuer, "real_estate", 100);
+    }
+
+    env.cost_estimate().budget().reset_default();
+    let page = client.get_assets_page(&2u32, &5u32);
+    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let memory = env.cost_estimate().budget().memory_bytes_cost();
+    println!(
+        "[baseline] get_assets_page (5 entries from 10): cpu={cpu} instructions, mem={memory} bytes"
+    );
+
+    assert_eq!(page.len(), 5);
+    assert!(cpu > 0, "CPU cost must be non-zero");
+    assert!(memory > 0, "memory cost must be non-zero");
+    assert!(
+        cpu < 100_000_000,
+        "CPU cost {cpu} exceeds 100M instructions"
+    );
+    assert!(memory < 40_960_000, "memory cost {memory} exceeds 40MB");
+}
+
 /// `get_assets_page` on an empty registry returns an empty vec.
 #[test]
 fn test_get_assets_page_empty_registry() {
