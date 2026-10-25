@@ -226,6 +226,11 @@ Deactivated assets remain in this page with `active = false`; deactivation does
 not remove a registration or change its position. Use
 `get_active_assets_page` when the page should include only one active state.
 
+This is a query and emits no activity event. It does not change registry data;
+it may extend the TTL of persistent asset entries that it reads. Indexers can
+reconstruct registry activity from the registration and lifecycle events
+without treating page reads as activity.
+
 | Parameter     | Semantics |
 |---------------|-----------|
 | `start_index` | First entry to return (0-based). Returns empty when ≥ total count. |
