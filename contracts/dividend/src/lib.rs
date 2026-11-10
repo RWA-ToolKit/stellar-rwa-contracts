@@ -307,13 +307,16 @@ impl DividendContract {
     ///   accepted and leaves a one-ledger claim window.
     ///
     /// # Authority
-    /// `admin` must be the stored admin and must sign the transaction.
+    /// `admin` must be either the stored dividend contract admin or the asset
+    /// token admin (`require_admin_or_asset_admin`), and must sign the transaction.
+    /// Unprivileged callers with no special authority are rejected with
+    /// [`Error::Unauthorized`].
     ///
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
-    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
-    /// - [`Error::InvalidAmount`] — `total_amount` ≤ 0, `eligible` is empty,
-    ///   or any entry's balance is negative.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin or asset admin.
+    /// - [`Error::InvalidAmount`] — `total_amount` ≤ 0, `eligible` snapshot list is empty,
+    ///   or any entry's balance is negative. Minimal or zero input is deliberately rejected.
     /// - [`Error::DeadlineInPast`] — `deadline != 0` and `deadline` is less
     ///   than the current ledger sequence.
     /// - [`Error::ZeroSupply`] — `asset_token` reports a zero total supply.
@@ -350,7 +353,7 @@ impl DividendContract {
             panic_err(&env, Error::ZeroSupply);
         }
         // Reject distributions with empty eligible set (issue #365).
-        if eligible.len() == 0 {
+        if eligible.is_empty() {
             panic_err(&env, Error::InvalidAmount);
         }
         // Validate the eligible list and total its balances *before* pulling any
@@ -675,6 +678,76 @@ impl DividendContract {
         env.events().publish(
             (symbol_short!("reclaim"), admin),
             (distribution_id, remaining),
+        );
+        remaining
+    }
+
+    /// Withdraw whatever remains unclaimed from a distribution once it has
+    /// reached `min_age_ledgers`. Admin-authorized only.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `distribution_id`: Id of the distribution to withdraw from.
+    /// - `recipient`: Address that will receive the remaining funds.
+    /// - `min_age_ledgers`: Minimum age in ledgers since creation before withdrawal is allowed.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::DistributionNotFound`] — no distribution with `distribution_id` exists.
+    /// - [`Error::DistributionTooYoung`] — distribution age is less than `min_age_ledgers`.
+    /// - [`Error::DeadlineNotReached`] — distribution has a deadline that has not yet elapsed.
+    /// - [`Error::NothingToClaim`] — distribution is already completed or has zero remaining escrow.
+    ///
+    /// # Events
+    /// Emits topic `("withdraw", admin)` with data `(distribution_id, recipient, remaining)`.
+    pub fn withdraw_unclaimed(
+        env: Env,
+        admin: Address,
+        distribution_id: u64,
+        recipient: Address,
+        min_age_ledgers: u32,
+    ) -> i128 {
+        Self::require_admin(&env, &admin);
+        let mut dist = Self::load(&env, distribution_id);
+        let age = env.ledger().sequence().saturating_sub(dist.created_at);
+        if age < min_age_ledgers {
+            panic_err(&env, Error::DistributionTooYoung);
+        }
+        if dist.deadline != 0 && env.ledger().sequence() <= dist.deadline {
+            panic_err(&env, Error::DeadlineNotReached);
+        }
+        let remaining = dist.total_amount - dist.distributed;
+        if dist.completed || remaining <= 0 {
+            panic_err(&env, Error::NothingToClaim);
+        }
+
+        let this = env.current_contract_address();
+        TokenClient::new(&env, &dist.payment_token).transfer(&this, &recipient, &remaining);
+
+        dist.distributed = dist.total_amount;
+        dist.completed = true;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Snapshot(distribution_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Supply(distribution_id));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dist(distribution_id), &dist);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Dist(distribution_id),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        bump(&env);
+        env.events().publish(
+            (symbol_short!("withdraw"), admin),
+            (distribution_id, recipient, remaining),
         );
         remaining
     }

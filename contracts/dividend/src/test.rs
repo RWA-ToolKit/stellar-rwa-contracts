@@ -149,13 +149,8 @@ fn test_asset_admin_can_create_distribution() {
 fn test_unrelated_address_cannot_create_distribution() {
     let ctx = setup();
     let stranger = Address::generate(&ctx.env);
-    ctx.dividend.create_distribution(
-        &stranger,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &500,
-        &eligible(&ctx),
-    );
+    ctx.dividend
+        .create_distribution(&stranger, &ctx.asset_id, &ctx.pay_id, &500, &eligible(&ctx));
 }
 
 #[test]
@@ -845,11 +840,7 @@ fn test_propose_accept_admin_moves_role_only_on_acceptance() {
     assert_eq!(ctx.dividend.get_pending_admin(), None);
 
     // The old admin has lost its privileges.
-    let mut v = Vec::new(&ctx.env);
-    v.push_back((ctx.h1.clone(), 300i128));
-    let res =
-        ctx.dividend
-            .try_create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &300, &v);
+    let res = ctx.dividend.try_propose_admin(&ctx.admin, &successor);
     assert_eq!(res, Err(Ok(Error::Unauthorized.into())));
 }
 
@@ -1411,4 +1402,86 @@ fn test_uneven_distribution_leaves_dust() {
     // can be claimed (distribution is exhausted / no deadline to reclaim).
     assert_eq!(pay_balance(&ctx, &div_addr), dust);
     assert!(!d.completed); // distributed (1000) < total_amount (1001)
+}
+
+// ---- issue #576: create_distribution_deadline rejects unauthorised caller ----
+
+#[test]
+fn test_create_distribution_deadline_unauthorised_caller_rejected() {
+    let ctx = setup();
+    let stranger = Address::generate(&ctx.env);
+    let deadline = ctx.env.ledger().sequence() + 100;
+    let admin_before = pay_balance(&ctx, &ctx.admin);
+    let div_addr = ctx.dividend.address.clone();
+
+    let res = ctx.dividend.try_create_distribution_deadline(
+        &stranger,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+        &deadline,
+    );
+    assert_eq!(res, Err(Ok(Error::Unauthorized.into())));
+
+    // Unauthorised call must not move any escrow funds.
+    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+}
+
+// ---- issue #577: create_distribution_deadline rejects zero/empty input ----
+
+#[test]
+fn test_create_distribution_deadline_rejects_zero_and_negative_amount() {
+    let ctx = setup();
+    let deadline = ctx.env.ledger().sequence() + 100;
+    let admin_before = pay_balance(&ctx, &ctx.admin);
+    let div_addr = ctx.dividend.address.clone();
+
+    let zero_result = ctx.dividend.try_create_distribution_deadline(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &0,
+        &eligible(&ctx),
+        &deadline,
+    );
+    assert_eq!(zero_result, Err(Ok(Error::InvalidAmount.into())));
+
+    let negative_result = ctx.dividend.try_create_distribution_deadline(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &-1,
+        &eligible(&ctx),
+        &deadline,
+    );
+    assert_eq!(negative_result, Err(Ok(Error::InvalidAmount.into())));
+
+    // Neither rejected call moves any payment token funds.
+    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+}
+
+#[test]
+fn test_create_distribution_deadline_rejects_empty_eligible_list() {
+    let ctx = setup();
+    let deadline = ctx.env.ledger().sequence() + 100;
+    let empty_eligible = Vec::new(&ctx.env);
+    let admin_before = pay_balance(&ctx, &ctx.admin);
+    let div_addr = ctx.dividend.address.clone();
+
+    let res = ctx.dividend.try_create_distribution_deadline(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &empty_eligible,
+        &deadline,
+    );
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+
+    // Rejected call moves no payment token funds.
+    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
 }
