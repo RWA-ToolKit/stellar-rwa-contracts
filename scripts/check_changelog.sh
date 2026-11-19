@@ -16,8 +16,29 @@
 
 set -euo pipefail
 
-BASE="${1:?usage: check_changelog.sh <base-ref> [head-ref]}"
+usage() {
+  printf 'Usage: check_changelog.sh <base-ref> [head-ref]\n'
+}
+
+if [ "$#" -eq 1 ] && [ "$1" = "--help" ]; then
+  usage
+  exit 0
+fi
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ] || [[ "$1" == -* ]]; then
+  usage >&2
+  exit 2
+fi
+
+BASE="$1"
 HEAD="${2:-HEAD}"
+for ref in "$BASE" "$HEAD"; do
+  if ! git rev-parse --verify --quiet --end-of-options "${ref}^{commit}" >/dev/null; then
+    printf 'Error: invalid commit ref: %s\n' "$ref" >&2
+    usage >&2
+    exit 2
+  fi
+done
 CHANGELOG=CHANGELOG.md
 
 # A behaviour change is a contract source or manifest edit. Any file under

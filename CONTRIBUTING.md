@@ -132,6 +132,16 @@ using the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format:
 - `compliance`: block transfers to sanctioned jurisdictions (#123)
 ```
 
+To run the changelog check locally against the main branch:
+
+```bash
+git fetch origin main
+./scripts/check_changelog.sh origin/main
+```
+
+Use `./scripts/check_changelog.sh --help` to see the accepted arguments. An
+optional second ref selects the head to compare (default: `HEAD`).
+
 Guidelines:
 
 - One bullet per user-visible change; reference the issue or PR number.
