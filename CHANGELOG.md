@@ -9,6 +9,12 @@ the full convention; CI flags contract changes that do not update this file.
 
 ## [Unreleased]
 
+### Changed
+- **asset-token**: moved `panic_err` and `check_str` helpers into a dedicated `internal` module; no behavior change (#769).
+- **compliance**: split `lib.rs` (1491 lines) into `allowlist`, `jurisdiction`, `admin`, and `internal` submodules; no behavior change (#767).
+- **docs**: added inline illustrative usage examples to `transfer_batch`, `add_to_allowlist_batch`, `create_distribution`, and `register_asset` doc comments (#749).
+- **contributing**: added concrete bug-fix and feature CHANGELOG entry examples to CONTRIBUTING.md (#750).
+
 ### Added
 - **registry**: define and test zero-sized `get_assets_by_type_page` requests as empty results (#557).
 - **admin handover**: all four contracts now test that only the proposed successor can accept, cancellation clears the pending address, and a new proposal replaces the previous nominee; added an end-to-end CLI walkthrough.

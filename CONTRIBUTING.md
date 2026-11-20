@@ -132,6 +132,35 @@ using the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format:
 - `compliance`: block transfers to sanctioned jurisdictions (#123)
 ```
 
+**Concrete examples** — copy the pattern that fits your PR:
+
+Bug-fix PR:
+
+```markdown
+## [Unreleased]
+
+### Fixed
+- `asset-token`: division-by-zero in `transfer_batch` when amount is zero (#456)
+```
+
+Feature PR:
+
+```markdown
+## [Unreleased]
+
+### Added
+- `compliance`: `add_to_allowlist_batch` for bulk KYC approvals in one transaction (#338)
+```
+
+Refactor / docs-only PR (no contract source change — CI skip):
+
+```markdown
+## [Unreleased]
+
+### Changed
+- `compliance`: split `lib.rs` into submodules for readability (#767)
+```
+
 Guidelines:
 
 - One bullet per user-visible change; reference the issue or PR number.

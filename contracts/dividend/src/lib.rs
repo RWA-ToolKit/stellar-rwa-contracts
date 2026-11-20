@@ -246,6 +246,15 @@ impl DividendContract {
     ///
     /// # Events
     /// Emits topic `("created", admin)` with data `(id, total_amount)`.
+    ///
+    /// # Example (illustrative — see `tests/` for a runnable version)
+    ///
+    /// ```text
+    /// // Create a distribution of 1000 USDC split between alice (600 tokens) and bob (400 tokens).
+    /// // eligible: Vec<(holder: Address, snapshot_balance: i128)>
+    /// let eligible = vec![&env, (alice.clone(), 600_i128), (bob.clone(), 400_i128)];
+    /// let dist_id = client.create_distribution(&admin, &asset_token_id, &usdc_id, &1000_i128, &eligible);
+    /// ```
     pub fn create_distribution(
         env: Env,
         admin: Address,

@@ -23,6 +23,16 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Vec,
 };
 
+mod admin;
+mod allowlist;
+mod internal;
+mod jurisdiction;
+
+use admin::{bump_instance, load_record, require_admin};
+use allowlist::{allowlist_meta, append_to_allowlist, remove_from_allowlist};
+use internal::{normalize_jurisdiction, panic_with_error};
+use jurisdiction::blocked_list;
+
 /// Approval state of an address.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -241,7 +251,7 @@ impl ComplianceContract {
         jurisdiction: String,
         expires_at: u32,
     ) {
-        Self::require_admin(&env, &admin);
+        require_admin(&env, &admin);
         let now = env.ledger().sequence();
         if expires_at != 0 && expires_at <= now {
             panic_with_error(&env, Error::InvalidExpiry);
@@ -269,9 +279,9 @@ impl ComplianceContract {
         // Only a genuinely new address needs to be appended to a page; a
         // re-approval or reinstatement already has a page slot.
         if prev.is_none() {
-            Self::append_to_allowlist(&env, &address);
+            append_to_allowlist(&env, &address);
         }
-        Self::bump_instance(&env);
+        bump_instance(&env);
 
         // Emit before/after state so off-chain systems can distinguish a fresh
         // approval from a re-classification or reinstatement (issue #20).
@@ -330,8 +340,20 @@ impl ComplianceContract {
     /// # Events
     /// Emits one `("approved", address)` event per entry in the batch (same
     /// payload as [`Self::add_to_allowlist`]).
+    ///
+    /// # Example (illustrative — see `tests/` for a runnable version)
+    ///
+    /// ```text
+    /// // Approve alice (US, permanent) and bob (GB, expires at ledger 50000) in one call.
+    /// // AllowlistEntry { address, jurisdiction: String, expires_at: u32 }
+    /// let entries = vec![&env,
+    ///     AllowlistEntry { address: alice.clone(), jurisdiction: String::from_str(&env, "US"), expires_at: 0 },
+    ///     AllowlistEntry { address: bob.clone(),   jurisdiction: String::from_str(&env, "GB"), expires_at: 50000 },
+    /// ];
+    /// client.add_to_allowlist_batch(&admin, &entries);
+    /// ```
     pub fn add_to_allowlist_batch(env: Env, admin: Address, entries: Vec<AllowlistEntry>) {
-        Self::require_admin(&env, &admin);
+        require_admin(&env, &admin);
         let now = env.ledger().sequence();
 
         for entry in entries.iter() {
@@ -359,7 +381,7 @@ impl ComplianceContract {
                 .set(&DataKey::Record(address.clone()), &record);
 
             if prev.is_none() {
-                Self::append_to_allowlist(&env, &address);
+                append_to_allowlist(&env, &address);
             }
 
             let (prev_jurisdiction, prev_expires_at, was_suspended) = match prev {
@@ -381,7 +403,7 @@ impl ComplianceContract {
                 ),
             );
         }
-        Self::bump_instance(&env);
+        bump_instance(&env);
     }
 
     /// Suspend an approved address.
@@ -410,13 +432,13 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("suspend", address)` with data `()`.
     pub fn suspend(env: Env, admin: Address, address: Address) {
-        Self::require_admin(&env, &admin);
-        let mut record = Self::load_record(&env, &address);
+        require_admin(&env, &admin);
+        let mut record = load_record(&env, &address);
         record.status = ComplianceStatus::Suspended;
         env.storage()
             .persistent()
             .set(&DataKey::Record(address.clone()), &record);
-        Self::bump_instance(&env);
+        bump_instance(&env);
         env.events()
             .publish((symbol_short!("suspend"), address), ());
     }
@@ -448,8 +470,8 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("reinstat", address)` with data `()`.
     pub fn reinstate(env: Env, admin: Address, address: Address) {
-        Self::require_admin(&env, &admin);
-        let mut record = Self::load_record(&env, &address);
+        require_admin(&env, &admin);
+        let mut record = load_record(&env, &address);
         if record.status != ComplianceStatus::Suspended {
             panic_with_error(&env, Error::NotSuspended);
         }
@@ -457,7 +479,7 @@ impl ComplianceContract {
         env.storage()
             .persistent()
             .set(&DataKey::Record(address.clone()), &record);
-        Self::bump_instance(&env);
+        bump_instance(&env);
         env.events()
             .publish((symbol_short!("reinstat"), address), ());
     }
@@ -483,7 +505,7 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("removed", address)` with data `()`.
     pub fn remove(env: Env, admin: Address, address: Address) {
-        Self::require_admin(&env, &admin);
+        require_admin(&env, &admin);
         if !env
             .storage()
             .persistent()
@@ -494,8 +516,8 @@ impl ComplianceContract {
         env.storage()
             .persistent()
             .remove(&DataKey::Record(address.clone()));
-        Self::remove_from_allowlist(&env, &address);
-        Self::bump_instance(&env);
+        remove_from_allowlist(&env, &address);
+        bump_instance(&env);
         env.events()
             .publish((symbol_short!("removed"), address), ());
     }
@@ -661,7 +683,7 @@ impl ComplianceContract {
     /// None.
     pub fn get_allowlist(env: Env) -> Vec<Address> {
         let mut all = Vec::new(&env);
-        let (current_page, _) = Self::allowlist_meta(&env);
+        let (current_page, _) = allowlist_meta(&env);
         for page_idx in 0..=current_page {
             let page: Option<Vec<Address>> = env
                 .storage()
@@ -766,7 +788,7 @@ impl ComplianceContract {
         };
         let mut result = Vec::new(&env);
         let mut skipped: u32 = 0;
-        let (current_page, _) = Self::allowlist_meta(&env);
+        let (current_page, _) = allowlist_meta(&env);
         for page_idx in 0..=current_page {
             if result.len() as u32 >= limit {
                 break;
@@ -816,7 +838,7 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("blockjur",)` with data `jurisdiction`.
     pub fn block_jurisdiction(env: Env, admin: Address, jurisdiction: String) {
-        Self::require_admin(&env, &admin);
+        require_admin(&env, &admin);
         let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
         let already_blocked: bool = env
             .storage()
@@ -827,11 +849,11 @@ impl ComplianceContract {
             .persistent()
             .set(&DataKey::Blocked(jurisdiction.clone()), &true);
         if !already_blocked {
-            let mut list = Self::blocked_list(&env);
+            let mut list = blocked_list(&env);
             list.push_back(jurisdiction.clone());
             env.storage().instance().set(&DataKey::BlockedList, &list);
         }
-        Self::bump_instance(&env);
+        bump_instance(&env);
         env.events()
             .publish((symbol_short!("blockjur"),), jurisdiction);
     }
@@ -858,12 +880,12 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("unblkjur",)` with data `jurisdiction`.
     pub fn unblock_jurisdiction(env: Env, admin: Address, jurisdiction: String) {
-        Self::require_admin(&env, &admin);
+        require_admin(&env, &admin);
         let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
         env.storage()
             .persistent()
             .remove(&DataKey::Blocked(jurisdiction.clone()));
-        let list = Self::blocked_list(&env);
+        let list = blocked_list(&env);
         let mut next = Vec::new(&env);
         for j in list.iter() {
             if j != jurisdiction {
@@ -871,7 +893,7 @@ impl ComplianceContract {
             }
         }
         env.storage().instance().set(&DataKey::BlockedList, &next);
-        Self::bump_instance(&env);
+        bump_instance(&env);
         env.events()
             .publish((symbol_short!("unblkjur"),), jurisdiction);
     }
@@ -919,7 +941,7 @@ impl ComplianceContract {
     /// # Events
     /// None.
     pub fn get_blocked_jurisdictions(env: Env) -> Vec<String> {
-        Self::blocked_list(&env)
+        blocked_list(&env)
     }
 
     /// Prune expired records from the allowlist. Admin only (issue #21).
@@ -955,9 +977,9 @@ impl ComplianceContract {
     /// Emits topic `("expired", address)` with data `expires_at` for each
     /// record pruned.
     pub fn prune_expired(env: Env, admin: Address, max_records: u32) -> u32 {
-        Self::require_admin(&env, &admin);
+        require_admin(&env, &admin);
         let now = env.ledger().sequence();
-        let (current_page, _) = Self::allowlist_meta(&env);
+        let (current_page, _) = allowlist_meta(&env);
         let mut examined: u32 = 0;
         for page_idx in 0..=current_page {
             let page: Option<Vec<Address>> = env
@@ -1028,11 +1050,11 @@ impl ComplianceContract {
                         total_remaining += p.len();
                     }
                 }
-                Self::bump_instance(&env);
+                bump_instance(&env);
                 return total_remaining;
             }
         }
-        Self::bump_instance(&env);
+        bump_instance(&env);
         0
     }
 
@@ -1077,11 +1099,11 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("proposed", admin)` with data `new_admin`.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
-        Self::require_admin(&env, &admin);
+        require_admin(&env, &admin);
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
-        Self::bump_instance(&env);
+        bump_instance(&env);
         env.events()
             .publish((symbol_short!("proposed"), admin), new_admin);
     }
@@ -1102,12 +1124,12 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("cancelled", admin)` with data `()`.
     pub fn cancel_admin_proposal(env: Env, admin: Address) {
-        Self::require_admin(&env, &admin);
+        require_admin(&env, &admin);
         if !env.storage().instance().has(&DataKey::PendingAdmin) {
             panic_with_error(&env, Error::NoPendingAdmin);
         }
         env.storage().instance().remove(&DataKey::PendingAdmin);
-        Self::bump_instance(&env);
+        bump_instance(&env);
         env.events()
             .publish((symbol_short!("cancelled"), admin), ());
     }
@@ -1152,7 +1174,7 @@ impl ComplianceContract {
             .unwrap_or_else(|| panic_with_error(&env, Error::NotInitialized));
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.storage().instance().remove(&DataKey::PendingAdmin);
-        Self::bump_instance(&env);
+        bump_instance(&env);
         env.events()
             .publish((symbol_short!("set_admin"), old_admin), new_admin);
     }
@@ -1223,7 +1245,7 @@ impl ComplianceContract {
         holder: Address,
         min_ledgers: u64,
     ) {
-        Self::require_admin(&env, &admin);
+        require_admin(&env, &admin);
         let key = DataKey::MinHoldingPeriod(holder.clone());
         if min_ledgers == 0 {
             env.storage().persistent().remove(&key);
@@ -1235,7 +1257,7 @@ impl ComplianceContract {
                 INSTANCE_BUMP_AMOUNT,
             );
         }
-        Self::bump_instance(&env);
+        bump_instance(&env);
         // Published outside the set/remove branches so both paths emit.
         env.events()
             .publish((symbol_short!("minhld"), holder), min_ledgers);
@@ -1278,7 +1300,7 @@ impl ComplianceContract {
     ///
     /// Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
     pub fn record_acquisition(env: Env, admin: Address, holder: Address) {
-        Self::require_admin(&env, &admin);
+        require_admin(&env, &admin);
         let key = DataKey::FirstAcquiredLedger(holder.clone());
         if !env.storage().persistent().has(&key) {
             let now = env.ledger().sequence();
@@ -1291,7 +1313,7 @@ impl ComplianceContract {
             env.events()
                 .publish((symbol_short!("acquired"), holder), now as u64);
         }
-        Self::bump_instance(&env);
+        bump_instance(&env);
     }
 
     /// Return the minimum holding period (in ledgers) for `holder`, if any.
@@ -1315,176 +1337,6 @@ impl ComplianceContract {
             .get(&DataKey::FirstAcquiredLedger(holder))
     }
 
-    // ---- internal helpers ----
-
-    fn require_admin(env: &Env, admin: &Address) {
-        let stored: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error(env, Error::NotInitialized));
-        // The declared admin must both match storage and authorize the call.
-        admin.require_auth();
-        if stored != *admin {
-            panic_with_error(env, Error::Unauthorized);
-        }
-    }
-
-    fn load_record(env: &Env, address: &Address) -> KycRecord {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Record(address.clone()))
-            .unwrap_or_else(|| panic_with_error(env, Error::RecordNotFound))
-    }
-
-    /// The current blocked-jurisdiction list, or empty if none are blocked.
-    fn blocked_list(env: &Env) -> Vec<String> {
-        env.storage()
-            .instance()
-            .get(&DataKey::BlockedList)
-            .unwrap_or_else(|| Vec::new(env))
-    }
-
-    fn bump_instance(env: &Env) {
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-    }
-
-    /// Current (page index, length of that page) append cursor. Defaults to
-    /// an empty page 0 when nothing has been added yet.
-    fn allowlist_meta(env: &Env) -> (u32, u32) {
-        env.storage()
-            .instance()
-            .get(&DataKey::AllowlistMeta)
-            .unwrap_or((0u32, 0u32))
-    }
-
-    /// Append a new address to the current allowlist page, rolling over to a
-    /// fresh page once the current one is full (issue #177).
-    fn append_to_allowlist(env: &Env, address: &Address) {
-        let (mut page_idx, mut page_len) = Self::allowlist_meta(env);
-        if page_len >= ALLOWLIST_PAGE_SIZE {
-            page_idx += 1;
-            page_len = 0;
-        }
-        let mut page: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AllowlistPage(page_idx))
-            .unwrap_or_else(|| Vec::new(env));
-        page.push_back(address.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::AllowlistPage(page_idx), &page);
-        env.storage()
-            .persistent()
-            .set(&DataKey::AllowlistPageOf(address.clone()), &page_idx);
-        page_len += 1;
-        env.storage()
-            .instance()
-            .set(&DataKey::AllowlistMeta, &(page_idx, page_len));
-
-        let count: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::AllowlistCount)
-            .unwrap_or(0u32);
-        env.storage()
-            .instance()
-            .set(&DataKey::AllowlistCount, &(count + 1));
-    }
-
-    /// Remove an address from whichever page it lives on. Leaves the page
-    /// under-full rather than repacking pages, which keeps removal O(page
-    /// size) instead of O(list size) (issue #177).
-    ///
-    /// # Fragmentation tradeoff (issue #308)
-    ///
-    /// This is an intentional design decision: removal rewrites the page
-    /// without the evicted address but never compacts it into a neighbouring
-    /// page or decrements the append cursor. As a consequence, on a
-    /// long-lived allowlist with heavy churn a page can end up mostly empty
-    /// while `append_to_allowlist` has already moved on to a later page.
-    /// That permanently under-full page will still be visited by
-    /// `get_allowlist` and `prune_expired` on every call (though both now
-    /// skip pages that are absent or empty — issue #306).
-    ///
-    /// The alternative — compacting two half-full pages into one and
-    /// rewriting `AllowlistPageOf` for every moved address — costs O(page
-    /// size) writes per removal and re-introduces the O(list size) worst
-    /// case that paging was designed to avoid.
-    ///
-    /// If fragmentation becomes a practical concern (e.g. a significant
-    /// fraction of pages have fewer than ~10 live entries), operators can
-    /// run a periodic off-chain reorganisation by removing and re-adding
-    /// all current members, or a future contract upgrade can add an explicit
-    /// `compact` admin operation.
-    fn remove_from_allowlist(env: &Env, address: &Address) {
-        let page_idx: Option<u32> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AllowlistPageOf(address.clone()));
-        let Some(page_idx) = page_idx else {
-            return;
-        };
-        let page: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AllowlistPage(page_idx))
-            .unwrap_or_else(|| Vec::new(env));
-        let mut next = Vec::new(env);
-        for a in page.iter() {
-            if a != *address {
-                next.push_back(a);
-            }
-        }
-        env.storage()
-            .persistent()
-            .set(&DataKey::AllowlistPage(page_idx), &next);
-        env.storage()
-            .persistent()
-            .remove(&DataKey::AllowlistPageOf(address.clone()));
-
-        let count: u32 = env
-            .storage()
-            .instance()
-            .get(&DataKey::AllowlistCount)
-            .unwrap_or(0u32);
-        env.storage()
-            .instance()
-            .set(&DataKey::AllowlistCount, &count.saturating_sub(1));
-    }
-}
-
-/// Small wrapper so call sites read cleanly and never use `unwrap`/`expect`.
-fn panic_with_error(env: &Env, error: Error) -> ! {
-    soroban_sdk::panic_with_error!(env, error)
-}
-
-/// Normalize and validate a jurisdiction code (issue #47).
-/// Strips spaces, uppercases, then enforces exactly 2 ASCII alpha characters
-/// so only real ISO-3166-1 alpha-2 codes (e.g. "US", "KE") are accepted.
-fn normalize_jurisdiction(env: &Env, jurisdiction: &String) -> String {
-    let raw = jurisdiction.to_bytes();
-    let len = raw.len();
-    let mut buf = [0u8; 2];
-    let mut out_len: usize = 0;
-    for i in 0..len {
-        let b = raw.get(i).unwrap_or(0);
-        if b == b' ' {
-            continue;
-        }
-        if out_len >= 2 || !b.is_ascii_alphabetic() {
-            panic_with_error(env, Error::InvalidJurisdiction);
-        }
-        buf[out_len] = b.to_ascii_uppercase();
-        out_len += 1;
-    }
-    if out_len != 2 {
-        panic_with_error(env, Error::InvalidJurisdiction);
-    }
-    String::from_bytes(env, &buf[..2])
 }
 
 #[cfg(test)]

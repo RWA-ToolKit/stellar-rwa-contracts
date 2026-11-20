@@ -31,6 +31,9 @@ use soroban_sdk::{
     Env, String, Vec,
 };
 
+mod internal;
+use internal::{check_str, panic_err};
+
 #[cfg(test)]
 mod test_rdj_allowance;
 
@@ -350,6 +353,15 @@ impl AssetTokenContract {
     /// Batch transfer to multiple compliance-approved recipients in a single
     /// call. Each `(recipient, amount)` pair is checked individually; if any
     /// entry fails, the entire call reverts and no balances move.
+    ///
+    /// # Example (illustrative — see `tests/` for a runnable version)
+    ///
+    /// ```text
+    /// // Transfer 100 units to alice and 50 units to bob in one atomic call.
+    /// // Tuple ordering: (recipient: Address, amount: i128)
+    /// let transfers = vec![&env, (alice.clone(), 100_i128), (bob.clone(), 50_i128)];
+    /// client.transfer_batch(&from, &transfers);
+    /// ```
     ///
     /// ## Atomicity: all-or-nothing, including a failing middle entry
     /// Entries are processed in order, but a failure at any position (first,
@@ -1179,20 +1191,8 @@ impl AssetTokenContract {
     }
 }
 
-fn panic_err(env: &Env, error: Error) -> ! {
-    soroban_sdk::panic_with_error!(env, error)
-}
-
 #[cfg(test)]
 mod test_makeem_approve;
-
-/// Reject strings that are empty or exceed `max_len` bytes (issue #46).
-fn check_str(env: &Env, s: &String, min_len: u32, max_len: u32) {
-    let len = s.len();
-    if len < min_len || len > max_len {
-        panic_err(env, Error::InvalidInput);
-    }
-}
 
 #[cfg(test)]
 mod test;
