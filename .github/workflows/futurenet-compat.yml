@@ -1,0 +1,118 @@
+name: Soroban Futurenet Compatibility
+
+on:
+  schedule:
+    - cron: "0 6 1 * *"  # Monthly on the 1st at 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  futurenet-smoke-test:
+    name: Deploy & call smoke test against Stellar futurenet
+    runs-on: ubuntu-latest
+    env:
+      NETWORK: futurenet
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install Stellar CLI
+        run: |
+          cargo install --locked stellar-cli --features opt 2>/dev/null || true
+          stellar --version
+
+      - name: Configure Stellar CLI for futurenet
+        run: |
+          stellar network add futurenet \
+            --rpc-url https://rpc-futurenet.stellar.org \
+            --network-passphrase "Test SDF Future Network ; October 2022"
+          stellar keys generate smoke-test-key --network futurenet --fund
+
+      - name: Build contracts
+        run: stellar contract build
+
+      - name: Deploy asset-token contract
+        id: deploy_asset_token
+        run: |
+          CONTRACT_ID=$(stellar contract deploy \
+            --wasm target/wasm32-unknown-unknown/release/asset_token.wasm \
+            --network futurenet \
+            --source smoke-test-key)
+          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Initialize asset-token contract
+        run: |
+          ADMIN=$(stellar keys address smoke-test-key)
+          stellar contract invoke \
+            --id "${{ steps.deploy_asset_token.outputs.contract_id }}" \
+            --network futurenet \
+            --source smoke-test-key \
+            -- initialize \
+            --admin "$ADMIN" \
+            --name "SmokeTest" \
+            --symbol "SMK" \
+            --asset_type "equity" \
+            --asset_description "Futurenet smoke test token" \
+            --decimals 7
+
+      - name: Verify basic read operation
+        run: |
+          stellar contract invoke \
+            --id "${{ steps.deploy_asset_token.outputs.contract_id }}" \
+            --network futurenet \
+            --source smoke-test-key \
+            -- name
+
+      - name: Deploy registry contract
+        id: deploy_registry
+        run: |
+          CONTRACT_ID=$(stellar contract deploy \
+            --wasm target/wasm32-unknown-unknown/release/registry.wasm \
+            --network futurenet \
+            --source smoke-test-key)
+          echo "contract_id=$CONTRACT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Initialize registry contract
+        run: |
+          ADMIN=$(stellar keys address smoke-test-key)
+          stellar contract invoke \
+            --id "${{ steps.deploy_registry.outputs.contract_id }}" \
+            --network futurenet \
+            --source smoke-test-key \
+            -- initialize \
+            --admin "$ADMIN"
+
+      - name: Smoke test admin handover on asset-token
+        run: |
+          ADMIN=$(stellar keys address smoke-test-key)
+          stellar keys generate smoke-test-new-admin --network futurenet --fund
+          NEW_ADMIN=$(stellar keys address smoke-test-new-admin)
+          stellar contract invoke \
+            --id "${{ steps.deploy_asset_token.outputs.contract_id }}" \
+            --network futurenet \
+            --source smoke-test-key \
+            -- propose_admin \
+            --admin "$ADMIN" \
+            --new_admin "$NEW_ADMIN"
+          stellar contract invoke \
+            --id "${{ steps.deploy_asset_token.outputs.contract_id }}" \
+            --network futurenet \
+            --source smoke-test-key \
+            -- cancel_admin_proposal \
+            --admin "$ADMIN"
+
+      - name: Report success
+        run: echo "Futurenet smoke test passed — no protocol-breaking changes detected."

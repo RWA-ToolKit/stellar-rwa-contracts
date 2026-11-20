@@ -30,6 +30,7 @@ use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, String, Vec,
 };
+use rwa_common::validation::check_str as common_check_str;
 
 #[cfg(test)]
 mod test_rdj_allowance;
@@ -1186,12 +1187,10 @@ fn panic_err(env: &Env, error: Error) -> ! {
 #[cfg(test)]
 mod test_makeem_approve;
 
-/// Reject strings that are empty or exceed `max_len` bytes (issue #46).
+/// Reject strings that are empty or exceed `max_len` bytes (issue #46 / #765).
+/// Delegates to the shared `rwa-common` implementation.
 fn check_str(env: &Env, s: &String, min_len: u32, max_len: u32) {
-    let len = s.len();
-    if len < min_len || len > max_len {
-        panic_err(env, Error::InvalidInput);
-    }
+    common_check_str(env, s, min_len, max_len, Error::InvalidInput);
 }
 
 #[cfg(test)]
