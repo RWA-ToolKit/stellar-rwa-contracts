@@ -775,6 +775,12 @@ impl RegistryContract {
     /// Equivalent to `asset_count`; provided under this name so callers that
     /// are building paginated UIs can use a uniform naming convention:
     /// `get_total_asset_count` / `get_assets_page` pair naturally together.
+    /// Total number of registered assets (active and inactive), as `u32`.
+    ///
+    /// **Deprecated** (#766): prefer `asset_count()` which returns the same
+    /// value as `u64` without truncation, and whose name matches the counter
+    /// it reads (`DataKey::Counter`).  This function is kept for backwards
+    /// compatibility and will be removed in a future version.
     pub fn get_total_asset_count(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -1166,5 +1172,22 @@ fn validate_asset_type(env: &Env, asset_type: &String) {
 
 #[cfg(test)]
 mod test;
+// Issue #768: renamed from numbered (test_558_…, etc.) to feature-named files.
 #[cfg(test)]
-mod test_563_reactivate_asset_events;
+mod test_assets_by_type_page_events;
+#[cfg(test)]
+mod test_assets_by_type_page_resource_cost;
+#[cfg(test)]
+mod test_reactivate_asset_zero_input;
+#[cfg(test)]
+mod test_reactivate_asset_events;
+#[cfg(test)]
+mod test_assets_page_zero_empty;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_deactivated;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_events;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_resource_cost;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_zero_empty;
