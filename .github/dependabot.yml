@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # Rust / Cargo dependencies (issue #760)
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    # Group minor and patch bumps into one PR per week so reviewers aren't
+    # flooded with single-crate bump PRs.  Major bumps stay individual because
+    # they may require code changes.
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    # Keep soroban-sdk upgrades individual — they can require contract changes.
+    ignore:
+      - dependency-name: "soroban-sdk"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    groups:
+      actions-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "chore(ci)"
