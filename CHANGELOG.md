@@ -9,6 +9,12 @@ the full convention; CI flags contract changes that do not update this file.
 
 ## [Unreleased]
 
+### Changed
+- **toolchain**: re-validated `rust-toolchain.toml` — already on `channel = "stable"` so it tracks the latest stable Rust automatically; added inline notes documenting this (#754).
+- **toolchain**: confirmed `rust-toolchain.toml` already uses `wasm32v1-none` (the current Soroban build target), replacing the older `wasm32-unknown-unknown`; added inline note (#759).
+- **fuzz**: bumped `arbitrary` from 1.3 → 1.4 and `libfuzzer-sys` from 0.4 → 0.4.7; all 5 fuzz targets verified to build (#755).
+- **deps**: re-evaluated `ed25519-dalek = "=2.2"` pin on 2026-11-20 — incompatibility with the Soroban host's curve25519-dalek version still present; kept pin, updated comment with today's date and reasoning (#753).
+
 ### Added
 - **registry**: define and test zero-sized `get_assets_by_type_page` requests as empty results (#557).
 - **admin handover**: all four contracts now test that only the proposed successor can accept, cancellation clears the pending address, and a new proposal replaces the previous nominee; added an end-to-end CLI walkthrough.

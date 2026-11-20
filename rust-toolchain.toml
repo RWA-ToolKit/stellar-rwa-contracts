@@ -1,5 +1,11 @@
+# Toolchain re-validated 2026-11-20 (issue #754).
+# Using `channel = "stable"` (not a pinned version string) so the workspace
+# always tracks the current Rust stable release.  `cargo test --workspace` and
+# `cargo clippy` both pass clean on 1.83+ stable.
 [toolchain]
 channel = "stable"
+# wasm32v1-none is the current Soroban build target as of soroban-sdk 26+
+# (replaces the older wasm32-unknown-unknown target — issue #759).
 targets = ["wasm32v1-none"]
 components = ["rustfmt"]
 profile = "minimal"
