@@ -94,7 +94,7 @@ pub const MAX_NAME_LEN: u32 = 64;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 #[contractclient(name = "AssetClient")]
 pub trait AssetInterface {
@@ -623,6 +623,89 @@ impl RegistryContract {
             (symbol_short!("valuation"), asset_id),
             (old_valuation, new_valuation),
         );
+    }
+
+    /// Update valuations for multiple assets in a single call. Admin only.
+    ///
+    /// Mirrors `update_valuation` for every `(asset_id, new_valuation)` pair.
+    /// All entries are validated first; then each entry is applied in order,
+    /// adjusting TVL only for active assets and emitting one `valuation` event
+    /// per entry. A panic on any entry reverts the entire invocation, so no
+    /// valuation is left partially updated. Repeated ids are applied in order
+    /// (the last update wins).
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address. Must authorize the call.
+    /// - `updates`: Pairs of registry asset id and new USD-cent valuation.
+    ///   An empty batch is a valid no-op.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
+    /// - [`Error::AssetNotFound`] — no asset exists for one of the ids.
+    /// - [`Error::InvalidValuation`] — any `new_valuation` < 0.
+    /// - [`Error::Overflow`] — TVL would overflow or underflow `i128`.
+    ///
+    /// # Events
+    /// Emits topic `("valuation", asset_id)` with data
+    /// `(old_valuation, new_valuation)` once per entry.
+    pub fn update_valuations_batch(env: Env, admin: Address, updates: Vec<(u64, i128)>) {
+        Self::require_admin(&env, &admin);
+
+        // Validate every entry before writing so a bad id or negative value
+        // fails before any state change (the invocation would revert anyway).
+        for (asset_id, new_valuation) in updates.iter() {
+            if new_valuation < 0 {
+                panic_err(&env, Error::InvalidValuation);
+            }
+            let _: AssetEntry = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Asset(asset_id))
+                .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
+        }
+
+        for (asset_id, new_valuation) in updates.iter() {
+            let key = DataKey::Asset(asset_id);
+            let mut entry: AssetEntry = env
+                .storage()
+                .persistent()
+                .get(&key)
+                .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
+            let old_valuation = entry.valuation;
+            entry.valuation = new_valuation;
+            env.storage().persistent().set(&key, &entry);
+            env.storage().persistent().extend_ttl(
+                &key,
+                INSTANCE_LIFETIME_THRESHOLD,
+                INSTANCE_BUMP_AMOUNT,
+            );
+
+            if entry.active {
+                let tvl: i128 = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::TotalValuation)
+                    .unwrap_or(0);
+                let new_tvl = tvl
+                    .checked_sub(old_valuation)
+                    .and_then(|v| v.checked_add(new_valuation))
+                    .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+                env.storage()
+                    .instance()
+                    .set(&DataKey::TotalValuation, &new_tvl);
+            }
+
+            env.events().publish(
+                (symbol_short!("valuation"), asset_id),
+                (old_valuation, new_valuation),
+            );
+        }
+
+        bump(&env);
     }
 
     /// Reactivate a previously deactivated asset. Admin only.
