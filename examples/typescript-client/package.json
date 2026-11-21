@@ -1,0 +1,19 @@
+{
+  "name": "stellar-rwa-typescript-client-example",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Minimal TypeScript example using Soroban generated bindings for asset-token",
+  "type": "module",
+  "scripts": {
+    "generate": "stellar contract bindings typescript --wasm ../../target/wasm32v1-none/release/asset_token.wasm --output-dir bindings --overwrite",
+    "example": "tsx src/example.ts"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^22.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
