@@ -30,7 +30,9 @@ use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, String, Vec,
 };
-use rwa_common::validation::check_str as common_check_str;
+
+mod internal;
+use internal::{check_str, panic_err};
 
 #[cfg(test)]
 mod test_rdj_allowance;
@@ -137,11 +139,6 @@ mod test_jhaydeeee_transfer_batch;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-///
-/// **Convention (#775):** bump this constant whenever a public function
-/// signature, event schema, or storage layout changes in a way that affects
-/// integrators.  Every bump must be accompanied by a `CHANGELOG.md` entry
-/// under `## [Unreleased]` that describes the change and references the PR.
 pub const VERSION: u32 = 1;
 
 #[contract]
@@ -356,6 +353,15 @@ impl AssetTokenContract {
     /// Batch transfer to multiple compliance-approved recipients in a single
     /// call. Each `(recipient, amount)` pair is checked individually; if any
     /// entry fails, the entire call reverts and no balances move.
+    ///
+    /// # Example (illustrative — see `tests/` for a runnable version)
+    ///
+    /// ```text
+    /// // Transfer 100 units to alice and 50 units to bob in one atomic call.
+    /// // Tuple ordering: (recipient: Address, amount: i128)
+    /// let transfers = vec![&env, (alice.clone(), 100_i128), (bob.clone(), 50_i128)];
+    /// client.transfer_batch(&from, &transfers);
+    /// ```
     ///
     /// ## Atomicity: all-or-nothing, including a failing middle entry
     /// Entries are processed in order, but a failure at any position (first,
@@ -1185,18 +1191,8 @@ impl AssetTokenContract {
     }
 }
 
-fn panic_err(env: &Env, error: Error) -> ! {
-    soroban_sdk::panic_with_error!(env, error)
-}
-
 #[cfg(test)]
 mod test_makeem_approve;
-
-/// Reject strings that are empty or exceed `max_len` bytes (issue #46 / #765).
-/// Delegates to the shared `rwa-common` implementation.
-fn check_str(env: &Env, s: &String, min_len: u32, max_len: u32) {
-    common_check_str(env, s, min_len, max_len, Error::InvalidInput);
-}
 
 #[cfg(test)]
 mod test;

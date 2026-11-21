@@ -188,6 +188,20 @@ impl RegistryContract {
     ///
     /// # Events
     /// Emits topic `("register", issuer)` with data `id`.
+    ///
+    /// # Example (illustrative — see `tests/` for a runnable version)
+    ///
+    /// ```text
+    /// // Register a tokenised real-estate asset worth $500,000 (in USD cents: 50_000_000_00).
+    /// // Returns the new numeric asset id.
+    /// let asset_id = client.register_asset(
+    ///     &issuer,
+    ///     &token_contract,
+    ///     &String::from_str(&env, "Downtown Office Building"),
+    ///     &String::from_str(&env, "real_estate"),
+    ///     &5_000_000_000_i128, // USD cents
+    /// );
+    /// ```
     pub fn register_asset(
         env: Env,
         issuer: Address,

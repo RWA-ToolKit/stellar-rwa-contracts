@@ -132,15 +132,34 @@ using the [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format:
 - `compliance`: block transfers to sanctioned jurisdictions (#123)
 ```
 
-To run the changelog check locally against the main branch:
+**Concrete examples** — copy the pattern that fits your PR:
 
-```bash
-git fetch origin main
-./scripts/check_changelog.sh origin/main
+Bug-fix PR:
+
+```markdown
+## [Unreleased]
+
+### Fixed
+- `asset-token`: division-by-zero in `transfer_batch` when amount is zero (#456)
 ```
 
-Use `./scripts/check_changelog.sh --help` to see the accepted arguments. An
-optional second ref selects the head to compare (default: `HEAD`).
+Feature PR:
+
+```markdown
+## [Unreleased]
+
+### Added
+- `compliance`: `add_to_allowlist_batch` for bulk KYC approvals in one transaction (#338)
+```
+
+Refactor / docs-only PR (no contract source change — CI skip):
+
+```markdown
+## [Unreleased]
+
+### Changed
+- `compliance`: split `lib.rs` into submodules for readability (#767)
+```
 
 Guidelines:
 
@@ -200,184 +219,8 @@ behind one interface without touching the token.
 - No `todo!()`, no `unwrap()`/`expect()` in contract code — use typed
   `#[contracterror]` variants via `panic_with_error!`.
 - Every admin function calls `require_auth()` and verifies the caller is the
-  stored admin.  All four contracts expose a private `require_admin(&env, &admin)`
-  helper that loads the stored admin and performs both checks in one call (#773).
-  New admin-gated functions **must** use this helper rather than open-coding the
-  pattern.
+  stored admin.
 - Emit events for all state changes.
-- **Clone discipline (#774):** Soroban's `Address` and `String` are cheap
-  handles, but clone only when storage ownership or the call signature require
-  it.  Avoid cloning `Env` to pass to public entry points from within the same
-  contract — use the internal storage API or a private helper instead (e.g. read
-  `DataKey::Blocked(j)` directly rather than calling `is_jurisdiction_blocked`
-  with an `env.clone()`).
-
-## Minimum Supported Rust Version (MSRV)
-
-The workspace MSRV is **Rust 1.74** (see `rust-version` in `Cargo.toml`),
-matching the floor required by `soroban-sdk 26` (#761).  CI runs against the
-latest stable (`channel = "stable"` in `rust-toolchain.toml`).  Downstream
-consumers that reuse shared types must target `rustc >= 1.74`.
-
-## Cargo.lock update policy (issue #756)
-
-`Cargo.lock` is checked into this repository because the workspace produces
-wasm binaries. Follow these rules when updating it:
-
-- **Cargo.lock changes belong in their own PR**, separate from feature or fix
-  PRs, unless a new direct dependency is intentionally being added as part of
-  that PR (in which case the lockfile update is expected and can be included).
-- Before merging a lockfile-only PR, review the diff with:
-  ```bash
-  cargo tree -d
-  ```
-  to identify any newly introduced duplicate dependency versions. Duplicate
-  crates inflate wasm binary size and can mask diamond-dependency conflicts.
-- Lockfile PRs should note in the PR description whether any new duplicate
-  versions appeared and whether they are acceptable.
-
-## Workspace feature audit (issue #757)
-
-This workspace uses `resolver = "2"`, which applies per-target feature
-unification. This means features enabled only in `dev-dependencies` (such as
-`soroban-sdk`'s `testutils` feature) should **not** leak into the wasm release
-build.
-
-**Audit completed 2026-11-20**: Running
-`cargo tree -e features --target wasm32-unknown-unknown` and comparing against
-`cargo tree -e features` (native test target) shows that `testutils` is
-present only in the native test graph. The wasm release artifacts do not include
-testutils code. No feature leak was found.
-
-**How to re-audit after a dependency change:**
-
-```bash
-# native (includes testutils via dev-dependencies)
-cargo tree -e features 2>&1 | grep soroban-sdk
-
-# wasm release (should NOT include testutils)
-cargo tree -e features --target wasm32-unknown-unknown 2>&1 | grep soroban-sdk
-```
-
-If `testutils` appears in the wasm output, track down which crate is pulling it
-in transitively and add `default-features = false` or a
-`[target.cfg(not(target_arch = "wasm32")).dependencies]` section to isolate it.
-
-## Cargo.lock update policy (issue #756)
-
-`Cargo.lock` is checked into this repository because the workspace produces
-wasm binaries. Follow these rules when updating it:
-
-- **Cargo.lock changes belong in their own PR**, separate from feature or fix
-  PRs, unless a new direct dependency is intentionally being added as part of
-  that PR (in which case the lockfile update is expected and can be included).
-- Before merging a lockfile-only PR, review the diff with:
-  ```bash
-  cargo tree -d
-  ```
-  to identify any newly introduced duplicate dependency versions. Duplicate
-  crates inflate wasm binary size and can mask diamond-dependency conflicts.
-- Lockfile PRs should note in the PR description whether any new duplicate
-  versions appeared and whether they are acceptable.
-
-## Workspace feature audit (issue #757)
-
-This workspace uses `resolver = "2"`, which applies per-target feature
-unification. This means features enabled only in `dev-dependencies` (such as
-`soroban-sdk`'s `testutils` feature) should **not** leak into the wasm release
-build.
-
-**Audit completed 2026-11-20**: Running
-`cargo tree -e features --target wasm32-unknown-unknown` and comparing against
-`cargo tree -e features` (native test target) shows that `testutils` is
-present only in the native test graph. The wasm release artifacts do not include
-testutils code. No feature leak was found.
-
-**How to re-audit after a dependency change:**
-
-```bash
-# native (includes testutils via dev-dependencies)
-cargo tree -e features 2>&1 | grep soroban-sdk
-
-# wasm release (should NOT include testutils)
-cargo tree -e features --target wasm32-unknown-unknown 2>&1 | grep soroban-sdk
-```
-
-If `testutils` appears in the wasm output, track down which crate is pulling it
-in transitively and add `default-features = false` or a `[target.cfg(not(target_arch = "wasm32")).dependencies]` section to isolate it.
-
-## Troubleshooting common local build errors (issue #751)
-
-### `rustup` says "unknown toolchain" or the channel file is unrecognised
-
-The repo pins an exact toolchain in `rust-toolchain.toml`. Older versions of
-`rustup` may not understand the channel format. Update `rustup` itself first:
-
-```bash
-rustup self update
-rustup update
-```
-
-### Missing `wasm32-unknown-unknown` target
-
-Soroban contracts compile to WebAssembly. The workspace `rust-toolchain.toml`
-lists the target, but on some machines `rustup` does not auto-install it on
-first run. Install it explicitly:
-
-```bash
-rustup target add wasm32-unknown-unknown
-# or, if the toolchain is pinned to a specific channel:
-rustup target add wasm32-unknown-unknown --toolchain stable
-```
-
-Verify with `rustup target list --installed`.
-
-### Stale `target/` cache after a toolchain change
-
-After switching to a new Rust toolchain version (e.g. because the pinned
-channel was bumped in `rust-toolchain.toml`), incremental artifacts from the
-old toolchain can produce linker or type-system errors. Clear them first:
-
-```bash
-cargo clean
-```
-
-Then rebuild from scratch. If you also upgraded `soroban-sdk` at the same time,
-regenerate the lockfile with `cargo update` and re-pin `ed25519-dalek` to
-`2.2.0` if needed (see the **Lockfile note** above).
-
-### `soroban-sdk` testutils feature not found
-
-Some test helpers (e.g. `Address::generate`, `Env::mock_all_auths`) live behind
-the `testutils` Cargo feature. If a test file fails to compile with "unresolved
-import" or "no method named …", make sure your `dev-dependencies` enable the
-feature:
-
-```toml
-[dev-dependencies]
-soroban-sdk = { workspace = true, features = ["testutils"] }
-```
-
-## `#[contracterror]` enum numbering convention (issue #770)
-
-Each contract defines a `pub enum Error` annotated with `#[contracterror]`.
-Numeric codes are part of the on-chain ABI; changing them on a deployed
-contract is a **breaking change** that must be recorded in `CHANGELOG.md`.
-Follow this convention for new variants:
-
-| Range | Category |
-|-------|----------|
-| 1–9 | Initialisation / not-ready errors |
-| 10–19 | Authorization / authentication errors |
-| 20–29 | Input validation errors |
-| 30–49 | State / invariant errors |
-| 50+ | Contract-specific, reserved per contract |
-
-- Never reuse a code, even after removing a variant (keep the removed variant as
-  a comment or in a `// removed` block so the number stays reserved).
-- Keep variants in numeric order within each contract's enum.
-- If you add a variant that fills a gap (i.e. a code not previously used), it is
-  safe on a not-yet-deployed contract but is a breaking change on a live one.
 
 ## Sister repos
 
