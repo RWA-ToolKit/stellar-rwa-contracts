@@ -385,6 +385,31 @@ compliance officer can independently approve/suspend addresses and the asset
 admin can independently mint/pause, and confirms neither admin can act on the
 other's contract.
 
+## Bulk-importing KYC entries (issue #739)
+
+`scripts/import_allowlist.py` reads a CSV export from a KYC provider and
+submits it with `add_to_allowlist_batch` using the Stellar CLI. The CSV must
+have exactly the header `address,jurisdiction,expiry`; `jurisdiction` is a
+two-letter ISO country code and `expiry` is a ledger sequence (`0` = never
+expires). See [`scripts/sample_allowlist.csv`](../scripts/sample_allowlist.csv)
+for a template (replace the sample addresses with real account IDs).
+
+```bash
+python3 scripts/import_allowlist.py scripts/sample_allowlist.csv \
+  --contract-id "$COMPLIANCE_ID" \
+  --source admin \
+  --network testnet \
+  --batch-size 50
+```
+
+Use `--admin ADDRESS` when the compliance admin differs from the CLI
+`--source` identity, and `--dry-run` to validate the CSV and print the
+`stellar contract invoke` commands without submitting them. Each batch is a
+separate transaction; a rejected batch leaves already-submitted earlier
+batches in place, so re-run with a reduced CSV if only part of an import
+fails. Validation (header, non-empty fields, two-letter jurisdiction,
+non-negative integer expiry) happens before any transaction is sent.
+
 ## Security considerations
 
 - All state-changing functions require the **stored admin** to both authorize
