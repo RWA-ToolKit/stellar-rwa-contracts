@@ -38,13 +38,22 @@ fn setup() -> (Env, RegistryContractClient<'static>, Address) {
 fn register_one(env: &Env, client: &RegistryContractClient) -> u64 {
     let issuer = Address::generate(env);
     let token = Address::generate(env);
-    client.register_asset(
+    let id = client.register_asset(
         &issuer,
         &token,
         &String::from_str(env, "Asset"),
         &String::from_str(env, "real_estate"),
         &100,
-    )
+    );
+    assert!(
+        id > 0,
+        "shared helper register_one: register_asset must return a non-zero id"
+    );
+    assert!(
+        client.get_asset(&id).active,
+        "shared helper register_one: newly registered asset must be active"
+    );
+    id
 }
 
 // ---------------------------------------------------------------------------
@@ -83,7 +92,11 @@ fn test_get_assets_page_empty_registry_both_zero_returns_empty() {
 fn test_get_assets_page_empty_registry_zero_page_size_returns_empty() {
     let (_env, client, _admin) = setup();
     let result = client.get_assets_page(&0u32, &0u32);
-    assert_eq!(result.len(), 0);
+    assert_eq!(
+        result.len(),
+        0,
+        "scenario get assets page empty registry zero page size returns empty: assertion failed"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +146,11 @@ fn test_get_assets_page_zero_start_index_returns_first_asset() {
     let (env, client, _admin) = setup();
     let id = register_one(&env, &client);
     let result = client.get_assets_page(&0u32, &1u32);
-    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result.len(),
+        1,
+        "scenario get assets page zero start index returns first asset: assertion failed"
+    );
     assert_eq!(
         result.get(0).unwrap().id,
         id,
@@ -160,6 +177,14 @@ fn test_get_assets_page_both_zero_returns_assets() {
         "start=0 and page_size=0 must return all assets up to MAX_PAGE_SIZE"
     );
     // Results are in ascending id order.
-    assert_eq!(result.get(0).unwrap().id, 1);
-    assert_eq!(result.get(1).unwrap().id, 2);
+    assert_eq!(
+        result.get(0).unwrap().id,
+        1,
+        "scenario get assets page both zero returns assets: assertion failed"
+    );
+    assert_eq!(
+        result.get(1).unwrap().id,
+        2,
+        "scenario get assets page both zero returns assets: assertion failed"
+    );
 }
