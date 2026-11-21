@@ -3,6 +3,68 @@
 Thanks for helping build the Stellar RWA Toolkit contracts. This guide covers
 local setup, testing, deployment, the compliance model, and how to extend it.
 
+## Your First PR
+
+A literal walkthrough for a small, self-contained "good first issue" (for
+example a docs typo or a missing test). Every command below works on a clean
+checkout; run them from your terminal in order.
+
+1. **Fork** the upstream repository with the GitHub "Fork" button, or:
+   ```bash
+   gh repo fork RWA-ToolKit/stellar-rwa-contracts --clone=false
+   ```
+2. **Clone your fork** (replace `<your-user>` with your GitHub username) and
+   show the toolchain selected by the committed `rust-toolchain.toml`. rustup
+   reads that file automatically when you enter the directory:
+   ```bash
+   git clone git@github.com:<your-user>/stellar-rwa-contracts.git
+   cd stellar-rwa-contracts
+   rustup show
+   ```
+   If the `wasm32v1-none` target is not installed, `rustup show` tells you what
+   is missing; install it with `rustup target add wasm32v1-none`.
+3. **Verify the baseline before changing anything**:
+   ```bash
+   cargo test --workspace
+   ```
+   Baseline caveat: on a clean checkout of `main`, dependency resolution
+   currently fails because the separate `fuzz` crate requires `arbitrary ^1.4`
+   while `soroban-sdk 26` requires `~1.3.0`. This is a pre-existing issue;
+   `--exclude rwa-fuzz` does not bypass Cargo's workspace-wide resolution.
+   Until it is fixed separately, the command above cannot be verified on this
+   checkout. The fuzz targets are built separately as described in
+   [FUZZING.md](FUZZING.md).
+4. **Make a branch** named `fix/<issue-number>-<short-topic>` (or
+   `feat/<issue-number>-<short-topic>` for a feature):
+   ```bash
+   git switch -c fix/743-first-pr-walkthrough
+   ```
+5. **Make the smallest change that resolves the issue**, then check formatting
+   and rerun the full suite. If you changed `contracts/**`, add a `CHANGELOG.md`
+   entry under `## [Unreleased]` as described below:
+   ```bash
+   cargo fmt --all -- --check
+   cargo test --workspace
+   git diff --check
+   ```
+6. **Commit and push** to your fork:
+   ```bash
+   git add <files-you-changed>
+   git commit -m "docs: add first-PR walkthrough (#743)"
+   git push -u origin fix/743-first-pr-walkthrough
+   ```
+7. **Open the PR against the upstream repository**, not your fork. `main` is
+   the base branch; the head is the branch on your fork:
+   ```bash
+   gh pr create --repo RWA-ToolKit/stellar-rwa-contracts \
+     --base main --head <your-user>:fix/743-first-pr-walkthrough
+   ```
+   PR description expectations: state what changed and why, how you verified it
+   (paste the commands you ran), link the issue with `Closes #<issue-number>`,
+   and note the `CHANGELOG.md` entry when contract source changed. Keep one
+   logical change per PR. There is currently no `.github/PULL_REQUEST_TEMPLATE.md`,
+   so the body you write here is the template future reviewers will read.
+
 ## Soroban local dev setup
 
 1. Install Rust and the wasm target:
@@ -232,6 +294,45 @@ needs **no changes** because it only calls `is_allowed`.
 
 Because the gate is a single boolean, arbitrarily complex policies compose
 behind one interface without touching the token.
+
+## Failure signaling convention (audit: November 2026)
+
+All four contracts use the **panic-with-typed-error-code** convention for every
+public (ABI-exposed) contract function. Failures are raised with
+`soroban_sdk::panic_with_error!`, usually through each contract's local
+`panic_err(env, Error::...)` helper (`asset-token` and `compliance` also have a
+`check_str!` helper that panics on invalid input). Errors are declared as
+`#[contracterror]` enums. SDK/client code should therefore detect failure from
+the invocation result / error code, not by branching on a `Result` value.
+
+Audit of all `#[contract]` public entry points:
+
+| Contract | Public functions returning `Result<T, E>` | Failure convention |
+| --- | --- | --- |
+| `asset-token` | 0 | panic with `Error` code |
+| `compliance` | 0 | panic with `Error` code |
+| `dividend` | 0 | panic with `Error` code |
+| `registry` | 0 | panic with `Error` code |
+
+Findings: no public function in any of the four contracts returns
+`Result<T, Error>`. `Option` is used only as a successful return value (for
+example `status_of` and `get_pending_admin`) and is not a failure channel. The
+only `Result` in contract support code is the private helper
+`rwa_common::admin::accept`, whose `Option<Result<(Address, Address), ()>>`
+models an internal "no proposal / wrong nominee / accepted" state; every caller
+translates it into the same panic-based errors (`NoPendingAdmin`,
+`Unauthorized`) before returning to the client. It is not part of any contract
+ABI. No inconsistencies were found, so no follow-up issues are needed for this
+audit.
+
+When adding a function: return the value directly on success and call
+`panic_err!`/`panic_with_error!` with the appropriate `#[contracterror]` variant
+on failure. Do not introduce `Result` returns in the public interface; if a new
+internal helper needs a different shape, keep it private and map it to a typed
+panic at the ABI boundary. State-changing operations are atomic: a panic reverts
+the whole invocation (including events), which is why batch operations such as
+`transfer_batch`, `mint_batch`, and `add_to_allowlist_batch` validate every
+entry and revert as a unit.
 
 ## Coding standards
 

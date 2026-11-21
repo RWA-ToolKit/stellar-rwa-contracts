@@ -17,6 +17,7 @@ the full convention; CI flags contract changes that do not update this file.
 - **contributing**: added concrete bug-fix and feature CHANGELOG entry examples to CONTRIBUTING.md (#750).
 
 ### Added
+- **registry**: `update_valuations_batch` updates valuations for many assets in one admin call, with per-entry validation, one `valuation` event per asset, and all-or-nothing TVL updates (#735).
 - **registry**: define and test zero-sized `get_assets_by_type_page` requests as empty results (#557).
 - **admin handover**: all four contracts now test that only the proposed successor can accept, cancellation clears the pending address, and a new proposal replaces the previous nominee; added an end-to-end CLI walkthrough.
 - **asset-token**: `mint_batch` mints to multiple compliance-approved recipients in one call. Admin only; each `(recipient, amount)` pair is checked individually and the whole call reverts if any recipient fails compliance.
