@@ -10,16 +10,19 @@ the full convention; CI flags contract changes that do not update this file.
 ## [Unreleased]
 
 ### Changed
+- **compliance**: added `AllowlistEntry::new` / `with_expires_at` Rust helpers with the documented `expires_at = 0` (permanent) default; no ABI or behavior change (#742).
 - **asset-token**: moved `panic_err` and `check_str` helpers into a dedicated `internal` module; no behavior change (#769).
 - **compliance**: split `lib.rs` (1491 lines) into `allowlist`, `jurisdiction`, `admin`, and `internal` submodules; no behavior change (#767).
 - **docs**: added inline illustrative usage examples to `transfer_batch`, `add_to_allowlist_batch`, `create_distribution`, and `register_asset` doc comments (#749).
 - **contributing**: added concrete bug-fix and feature CHANGELOG entry examples to CONTRIBUTING.md (#750).
 
 ### Added
+- **registry**: `update_valuations_batch` updates valuations for many assets in one admin call, with per-entry validation, one `valuation` event per asset, and all-or-nothing TVL updates (#735).
 - **registry**: define and test zero-sized `get_assets_by_type_page` requests as empty results (#557).
 - **admin handover**: all four contracts now test that only the proposed successor can accept, cancellation clears the pending address, and a new proposal replaces the previous nominee; added an end-to-end CLI walkthrough.
 - **asset-token**: `mint_batch` mints to multiple compliance-approved recipients in one call. Admin only; each `(recipient, amount)` pair is checked individually and the whole call reverts if any recipient fails compliance.
 - **compliance**: `add_to_allowlist_batch` adds many addresses at once, with the same expiry check, jurisdiction normalisation, audit-trail capture and per-address `approved` event as `add_to_allowlist`. A failing entry reverts the call.
+- **compliance**: `suspend_batch`, `reinstate_batch`, and `remove_batch` apply the corresponding single-address operation to a `Vec<Address>` in one transaction, keeping the same admin auth, status checks, and per-address events (#729). A failing entry reverts the whole batch.
 - **compliance**: `status_of` returns an address's stored KYC status, distinguishing "never seen" (`None`) from an approved record. Deprecated `Pending`/`Rejected` variants are never written and remain only for ABI stability.
 - **compliance**: `reinstate` flips a `Suspended` record back to `Approved` without resupplying or overwriting `jurisdiction`, `verified_at`, or `expires_at`. Admin only; rejects non-suspended addresses with `NotSuspended (#8)`. Does not restart the minimum holding-period clock.
 - **compliance**: `get_allowlist_count` returns the current number of allowlist entries in O(1) via a maintained counter. Includes suspended addresses; unaffected by jurisdiction blocks or expiry. Returns `0` on a fresh contract.
@@ -43,6 +46,7 @@ the full convention; CI flags contract changes that do not update this file.
 - Asset-scoped dividend and registry operations now allow either the contract admin or the asset's admin to act.
 
 ### Fixed
+- **asset-token**: `panic_err` now publishes `("panic_dbg", <offending value>)` diagnostic events under the `release-with-logs` profile only; standard release wasm is unchanged (#740).
 - Registry asset-name validation now enforces the same 64-byte cap as the asset-token metadata checks and documents the UTF-8 byte-based rule.
 - `deploy.sh` no longer tries to friendbot on `mainnet` and avoids silently ignoring a checked-in `.env` file.
 

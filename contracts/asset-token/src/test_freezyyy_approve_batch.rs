@@ -46,6 +46,10 @@ fn setup(supply: i128) -> Setup {
 
 fn allow(env: &Env, c: &ComplianceContractClient, admin: &Address, who: &Address) {
     c.add_to_allowlist(admin, who, &String::from_str(env, "US"), &0);
+    assert!(
+        c.is_allowed(who),
+        "shared helper allow: address must be approved on compliance after allowlist call"
+    );
 }
 
 // ---- issue #531: approve's unauthorised caller ----
@@ -61,7 +65,11 @@ fn test_approve_without_owner_auth_is_rejected() {
     let exp = s.env.ledger().sequence() + 100;
     let res = s.token.try_approve(&s.admin, &spender, &100, &exp);
     assert!(res.is_err(), "approve must require auth from `from`");
-    assert_eq!(s.token.allowance(&s.admin, &spender), 0);
+    assert_eq!(
+        s.token.allowance(&s.admin, &spender),
+        0,
+        "scenario approve without owner auth is rejected: assertion failed"
+    );
 }
 
 /// `approve` is intentionally open to any address that authorises itself: it
@@ -72,12 +80,23 @@ fn test_approve_open_to_unprivileged_self_authorised_caller() {
     let s = setup(1_000);
     let stranger = Address::generate(&s.env);
     let spender = Address::generate(&s.env);
-    assert!(!s.compliance.is_allowed(&stranger));
+    assert!(
+        !s.compliance.is_allowed(&stranger),
+        "scenario approve open to unprivileged self authorised caller: assertion failed"
+    );
     let exp = s.env.ledger().sequence() + 100;
     s.token.approve(&stranger, &spender, &50, &exp);
-    assert_eq!(s.token.allowance(&stranger, &spender), 50);
+    assert_eq!(
+        s.token.allowance(&stranger, &spender),
+        50,
+        "scenario approve open to unprivileged self authorised caller: assertion failed"
+    );
     // It did not touch the admin's allowance for the same spender.
-    assert_eq!(s.token.allowance(&s.admin, &spender), 0);
+    assert_eq!(
+        s.token.allowance(&s.admin, &spender),
+        0,
+        "scenario approve open to unprivileged self authorised caller: assertion failed"
+    );
 }
 
 // ---- issue #530: transfer_batch while paused / deactivated ----
@@ -95,9 +114,21 @@ fn test_transfer_batch_rejected_when_paused_with_deliberate_error() {
     let mut batch = Vec::new(&s.env);
     batch.push_back((bob.clone(), 100i128));
     let res = s.token.try_transfer_batch(&s.admin, &batch);
-    assert_eq!(res, Err(Ok(Error::Paused)));
-    assert_eq!(s.token.balance(&s.admin), 1_000);
-    assert_eq!(s.token.balance(&bob), 0);
+    assert_eq!(
+        res,
+        Err(Ok(Error::Paused)),
+        "scenario transfer batch rejected when paused with deliberate error: assertion failed"
+    );
+    assert_eq!(
+        s.token.balance(&s.admin),
+        1_000,
+        "scenario transfer batch rejected when paused with deliberate error: assertion failed"
+    );
+    assert_eq!(
+        s.token.balance(&bob),
+        0,
+        "scenario transfer batch rejected when paused with deliberate error: assertion failed"
+    );
 }
 
 /// Pause is checked even for an empty batch, and unpausing restores service.
@@ -118,7 +149,11 @@ fn test_transfer_batch_paused_empty_batch_and_unpause_restores() {
     let mut batch = Vec::new(&s.env);
     batch.push_back((bob.clone(), 100i128));
     s.token.transfer_batch(&s.admin, &batch);
-    assert_eq!(s.token.balance(&bob), 100);
+    assert_eq!(
+        s.token.balance(&bob),
+        100,
+        "scenario transfer batch paused empty batch and unpause restores: assertion failed"
+    );
 }
 
 // ---- issue #529: transfer_batch resource cost ----
@@ -152,7 +187,10 @@ fn test_transfer_batch_resource_cost_baseline_and_linear_scaling() {
     assert!(mem10 < 20_000_000, "n=10 mem {mem10} exceeds baseline");
     // More entries cost more, but sub-quadratically: 10 entries must cost
     // well under 10x(+overhead) of one entry.
-    assert!(cpu10 > cpu1);
+    assert!(
+        cpu10 > cpu1,
+        "scenario transfer batch resource cost baseline and linear scaling: assertion failed"
+    );
     assert!(cpu10 < cpu1 * 15, "cost grows faster than linearly");
 }
 
@@ -177,9 +215,9 @@ fn test_transfer_batch_emits_one_event_per_entry_including_repeats_and_self() {
     s.token.transfer_batch(&s.admin, &batch);
 
     // Read events before view calls, which would replace them.
-    assert_eq!(s.env.events().all().events().len(), 3);
-    assert_eq!(s.token.balance(&s.admin), 850);
-    assert_eq!(s.token.balance(&bob), 150);
+    assert_eq!(s.env.events().all().events().len(), 3, "scenario transfer batch emits one event per entry including repeats and self: assertion failed");
+    assert_eq!(s.token.balance(&s.admin), 850, "scenario transfer batch emits one event per entry including repeats and self: assertion failed");
+    assert_eq!(s.token.balance(&bob), 150, "scenario transfer batch emits one event per entry including repeats and self: assertion failed");
 }
 
 /// A reverted batch publishes no events that persist, and an empty batch
@@ -189,5 +227,9 @@ fn test_transfer_batch_empty_emits_no_events() {
     let s = setup(1_000);
     let empty: Vec<(Address, i128)> = Vec::new(&s.env);
     s.token.transfer_batch(&s.admin, &empty);
-    assert_eq!(s.env.events().all().events().len(), 0);
+    assert_eq!(
+        s.env.events().all().events().len(),
+        0,
+        "scenario transfer batch empty emits no events: assertion failed"
+    );
 }

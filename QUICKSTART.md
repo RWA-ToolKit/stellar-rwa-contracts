@@ -141,4 +141,11 @@ interface spec (under `target/interface-specs/`). The CI job
 drift between the docs and the actual contract signatures will fail CI
 before it can be merged.
 
+## Integrating from TypeScript
+
+For wallets and dApps, use the generated Soroban TypeScript client instead of
+raw CLI calls. A complete, runnable example (generate bindings for
+`asset-token`, then call `balance` and `transfer` against a local network) is
+in [`examples/typescript-client/`](examples/typescript-client/README.md).
+
 See `docs/` for deeper per-contract guides.

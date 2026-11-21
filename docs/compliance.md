@@ -57,6 +57,17 @@ casing/whitespace variant of the same code resolve to the same jurisdiction.
 > lapse no matter how far the ledger advances. `0` is never a real expiry
 > ledger sequence, so there is no collision with genuinely-expired records.
 
+### `AllowlistEntry` ergonomics (batch KYC)
+
+`AllowlistEntry` (used by `add_to_allowlist_batch`) keeps all three fields
+required in the contract ABI — no breaking change. For Rust clients,
+`AllowlistEntry::new(address, jurisdiction)` supplies the documented default
+`expires_at = 0` (permanent approval); chain `.with_expires_at(ledger)` when an
+expiry is needed. Jurisdiction has no "unrestricted" sentinel: every approval
+carries a canonical two-letter code because `is_allowed` checks it against the
+blocked-jurisdiction list. Omitting it would silently weaken that policy, so it
+is intentionally not an `Option`.
+
 ## Functions
 
 ### `initialize(admin: Address)`
@@ -418,3 +429,17 @@ non-negative integer expiry) happens before any transaction is sent.
   on it inside transfers.
 - Expiry is enforced against `env.ledger().sequence()` at read time, so an
   expired KYC blocks transfers without any keeper/cron.
+
+## Emergency pause (issue #731)
+
+The compliance contract has its own emergency stop, independent of the asset
+token's pause. `pause(caller)` may be called by the admin or an optional
+guardian set with `set_guardian(admin, guardian)`; `unpause(admin)` is
+admin-only. While paused, all state-mutating operations
+(`add_to_allowlist`, `add_to_allowlist_batch`, `suspend`, `reinstate`,
+`remove`, `block_jurisdiction`, `unblock_jurisdiction`, `prune_expired`,
+`set_min_holding_period`, `record_acquisition`) fail with `Error::Paused`.
+Read-only checks such as `is_allowed` and the allowlist getters keep working,
+so existing approvals remain usable. Admin role management and guardian
+changes stay available while paused, matching the asset-token pattern, so an
+incident can always be resolved.
