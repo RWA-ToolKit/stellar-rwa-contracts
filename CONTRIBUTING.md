@@ -306,6 +306,79 @@ cargo tree -e features --target wasm32-unknown-unknown 2>&1 | grep soroban-sdk
 If `testutils` appears in the wasm output, track down which crate is pulling it
 in transitively and add `default-features = false` or a `[target.cfg(not(target_arch = "wasm32")).dependencies]` section to isolate it.
 
+## Troubleshooting common local build errors (issue #751)
+
+### `rustup` says "unknown toolchain" or the channel file is unrecognised
+
+The repo pins an exact toolchain in `rust-toolchain.toml`. Older versions of
+`rustup` may not understand the channel format. Update `rustup` itself first:
+
+```bash
+rustup self update
+rustup update
+```
+
+### Missing `wasm32-unknown-unknown` target
+
+Soroban contracts compile to WebAssembly. The workspace `rust-toolchain.toml`
+lists the target, but on some machines `rustup` does not auto-install it on
+first run. Install it explicitly:
+
+```bash
+rustup target add wasm32-unknown-unknown
+# or, if the toolchain is pinned to a specific channel:
+rustup target add wasm32-unknown-unknown --toolchain stable
+```
+
+Verify with `rustup target list --installed`.
+
+### Stale `target/` cache after a toolchain change
+
+After switching to a new Rust toolchain version (e.g. because the pinned
+channel was bumped in `rust-toolchain.toml`), incremental artifacts from the
+old toolchain can produce linker or type-system errors. Clear them first:
+
+```bash
+cargo clean
+```
+
+Then rebuild from scratch. If you also upgraded `soroban-sdk` at the same time,
+regenerate the lockfile with `cargo update` and re-pin `ed25519-dalek` to
+`2.2.0` if needed (see the **Lockfile note** above).
+
+### `soroban-sdk` testutils feature not found
+
+Some test helpers (e.g. `Address::generate`, `Env::mock_all_auths`) live behind
+the `testutils` Cargo feature. If a test file fails to compile with "unresolved
+import" or "no method named …", make sure your `dev-dependencies` enable the
+feature:
+
+```toml
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+```
+
+## `#[contracterror]` enum numbering convention (issue #770)
+
+Each contract defines a `pub enum Error` annotated with `#[contracterror]`.
+Numeric codes are part of the on-chain ABI; changing them on a deployed
+contract is a **breaking change** that must be recorded in `CHANGELOG.md`.
+Follow this convention for new variants:
+
+| Range | Category |
+|-------|----------|
+| 1–9 | Initialisation / not-ready errors |
+| 10–19 | Authorization / authentication errors |
+| 20–29 | Input validation errors |
+| 30–49 | State / invariant errors |
+| 50+ | Contract-specific, reserved per contract |
+
+- Never reuse a code, even after removing a variant (keep the removed variant as
+  a comment or in a `// removed` block so the number stays reserved).
+- Keep variants in numeric order within each contract's enum.
+- If you add a variant that fills a gap (i.e. a code not previously used), it is
+  safe on a not-yet-deployed contract but is a breaking change on a live one.
+
 ## Sister repos
 
 - **Web app:** https://github.com/RWA-ToolKit/stellar-rwa-web
