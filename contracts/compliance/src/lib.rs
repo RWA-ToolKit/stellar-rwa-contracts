@@ -1145,6 +1145,8 @@ impl ComplianceContract {
     /// Propose a new admin. The role does not transfer until `new_admin` calls
     /// [`Self::accept_admin`] (issue #4).
     ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
+    ///
     /// The two-step handover makes a mistyped `new_admin` harmless — re-propose
     /// or cancel — rather than permanently bricking administration in a single
     /// call.
@@ -1174,6 +1176,8 @@ impl ComplianceContract {
 
     /// Cancel a pending admin proposal.
     ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
+    ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
     ///
@@ -1202,6 +1206,9 @@ impl ComplianceContract {
     ///
     /// Must be called by the proposed successor (`new_admin`); the role only
     /// ever moves here, never in [`Self::propose_admin`] (issue #4).
+    ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
+    ///
     /// Emits `set_admin` carrying both the previous and new admin so
     /// off-chain indexers can observe this security-critical transition
     /// (issue #2).

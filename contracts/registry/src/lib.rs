@@ -953,6 +953,8 @@ impl RegistryContract {
     /// or cancel — rather than permanently bricking administration in a single
     /// call.
     ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
+    ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
     /// - `new_admin`: Address being nominated as successor.
@@ -976,6 +978,8 @@ impl RegistryContract {
     }
 
     /// Cancel a pending admin proposal.
+    ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
@@ -1008,6 +1012,8 @@ impl RegistryContract {
     /// Emits `set_admin` carrying both the previous and new admin so
     /// off-chain indexers can observe this security-critical transition
     /// (issue #2).
+    ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
     ///
     /// # Parameters
     /// - `new_admin`: The address accepting the admin role.  Must match the
