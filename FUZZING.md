@@ -10,6 +10,19 @@ This directory contains fuzz targets for the RWA contracts. The targets focus on
   compliance gating, with edge-case amounts (issue #493:
   `asset_token_transfer_batch`)
 
+## Lockfile
+
+`fuzz/` is listed as a workspace member in the root `Cargo.toml`
+(`members = ["contracts/*", "fuzz"]`), so it shares the single root
+`Cargo.lock` file. There is no separate `fuzz/Cargo.lock`. Both the main
+test suite and the fuzz targets always build against the same resolved
+dependency versions; there is no drift risk between the two.
+
+If you are evaluating whether to use `cargo-fuzz` (which historically set
+up `fuzz/` as its own independent workspace), note that this repository's
+fuzz targets run as ordinary Rust binaries instead, which lets them live
+inside the shared workspace without a separate lockfile.
+
 ## Fuzz crate layout
 
 ```
