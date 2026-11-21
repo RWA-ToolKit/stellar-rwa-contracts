@@ -393,3 +393,17 @@ other's contract.
   on it inside transfers.
 - Expiry is enforced against `env.ledger().sequence()` at read time, so an
   expired KYC blocks transfers without any keeper/cron.
+
+## Emergency pause (issue #731)
+
+The compliance contract has its own emergency stop, independent of the asset
+token's pause. `pause(caller)` may be called by the admin or an optional
+guardian set with `set_guardian(admin, guardian)`; `unpause(admin)` is
+admin-only. While paused, all state-mutating operations
+(`add_to_allowlist`, `add_to_allowlist_batch`, `suspend`, `reinstate`,
+`remove`, `block_jurisdiction`, `unblock_jurisdiction`, `prune_expired`,
+`set_min_holding_period`, `record_acquisition`) fail with `Error::Paused`.
+Read-only checks such as `is_allowed` and the allowlist getters keep working,
+so existing approvals remain usable. Admin role management and guardian
+changes stay available while paused, matching the asset-token pattern, so an
+incident can always be resolved.

@@ -89,6 +89,10 @@ enum DataKey {
     /// acceptance via `accept_admin` (issue #4). Absent when there is no
     /// proposal in flight.
     PendingAdmin,
+    /// Emergency-stop flag for state-mutating operations (issue #731).
+    Paused,
+    /// Optional delegate allowed to pause but not unpause (issue #731).
+    Guardian,
     /// Small fixed-size (current_page, current_page_len) cursor for appends.
     AllowlistMeta,
     /// One page of up to `ALLOWLIST_PAGE_SIZE` addresses, in persistent storage
@@ -149,6 +153,8 @@ pub enum Error {
     /// `set_min_holding_period` was called with `min_ledgers` overflowing when
     /// added to a realistic ledger sequence; treated as an invalid input.
     InvalidHoldingPeriod = 9,
+    /// A state-mutating operation was attempted while paused (issue #731).
+    Paused = 10,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280; // ~5s ledgers
@@ -159,7 +165,7 @@ mod test_jhaydeeee_record_acquisition;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 #[contract]
 pub struct ComplianceContract;
@@ -251,6 +257,7 @@ impl ComplianceContract {
         jurisdiction: String,
         expires_at: u32,
     ) {
+        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let now = env.ledger().sequence();
         if expires_at != 0 && expires_at <= now {
@@ -353,6 +360,7 @@ impl ComplianceContract {
     /// client.add_to_allowlist_batch(&admin, &entries);
     /// ```
     pub fn add_to_allowlist_batch(env: Env, admin: Address, entries: Vec<AllowlistEntry>) {
+        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let now = env.ledger().sequence();
 
@@ -432,6 +440,7 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("suspend", address)` with data `()`.
     pub fn suspend(env: Env, admin: Address, address: Address) {
+        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let mut record = load_record(&env, &address);
         record.status = ComplianceStatus::Suspended;
@@ -470,6 +479,7 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("reinstat", address)` with data `()`.
     pub fn reinstate(env: Env, admin: Address, address: Address) {
+        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let mut record = load_record(&env, &address);
         if record.status != ComplianceStatus::Suspended {
@@ -505,6 +515,7 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("removed", address)` with data `()`.
     pub fn remove(env: Env, admin: Address, address: Address) {
+        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         if !env
             .storage()
@@ -838,6 +849,7 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("blockjur",)` with data `jurisdiction`.
     pub fn block_jurisdiction(env: Env, admin: Address, jurisdiction: String) {
+        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
         let already_blocked: bool = env
@@ -880,6 +892,7 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("unblkjur",)` with data `jurisdiction`.
     pub fn unblock_jurisdiction(env: Env, admin: Address, jurisdiction: String) {
+        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
         env.storage()
@@ -977,6 +990,7 @@ impl ComplianceContract {
     /// Emits topic `("expired", address)` with data `expires_at` for each
     /// record pruned.
     pub fn prune_expired(env: Env, admin: Address, max_records: u32) -> u32 {
+        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let now = env.ledger().sequence();
         let (current_page, _) = allowlist_meta(&env);
@@ -1056,6 +1070,58 @@ impl ComplianceContract {
         }
         bump_instance(&env);
         0
+    }
+
+    /// Reject state-mutating calls while the compliance contract is paused.
+    fn require_unpaused(env: &Env) {
+        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
+        if paused {
+            panic_with_error(env, Error::Paused);
+        }
+    }
+
+    /// Pause all state-mutating compliance operations (issue #731).
+    ///
+    /// Callable by the admin or the optional guardian. Read-only checks such as
+    /// `is_allowed` and all allowlist getters keep working, so already-approved
+    /// holders are not affected beyond new KYC state changes.
+    pub fn pause(env: Env, caller: Address) {
+        caller.require_auth();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_with_error(&env, Error::NotInitialized));
+        let guardian: Option<Address> = env.storage().instance().get(&DataKey::Guardian);
+        if caller != admin && guardian.as_ref() != Some(&caller) {
+            panic_with_error(&env, Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::Paused, &true);
+        bump_instance(&env);
+        env.events().publish((symbol_short!("pause"),), caller);
+    }
+
+    /// Resume state-mutating operations. Admin only; guardian cannot unpause.
+    pub fn unpause(env: Env, admin: Address) {
+        require_admin(&env, &admin);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        bump_instance(&env);
+        env.events().publish((symbol_short!("unpause"),), admin);
+    }
+
+    /// Set or clear the optional pause guardian. Admin only; usable while paused.
+    pub fn set_guardian(env: Env, admin: Address, guardian: Option<Address>) {
+        require_admin(&env, &admin);
+        env.storage().instance().set(&DataKey::Guardian, &guardian);
+        bump_instance(&env);
+        env.events().publish((symbol_short!("guardian"),), guardian);
+    }
+
+    /// Whether state-mutating operations are currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+    }
+
+    /// The current pause guardian, if one is configured.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Guardian)
     }
 
     /// Returns the configured admin address.
@@ -1245,6 +1311,7 @@ impl ComplianceContract {
         holder: Address,
         min_ledgers: u64,
     ) {
+        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let key = DataKey::MinHoldingPeriod(holder.clone());
         if min_ledgers == 0 {
@@ -1300,6 +1367,7 @@ impl ComplianceContract {
     ///
     /// Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
     pub fn record_acquisition(env: Env, admin: Address, holder: Address) {
+        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let key = DataKey::FirstAcquiredLedger(holder.clone());
         if !env.storage().persistent().has(&key) {
@@ -1341,3 +1409,5 @@ impl ComplianceContract {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_pause;
