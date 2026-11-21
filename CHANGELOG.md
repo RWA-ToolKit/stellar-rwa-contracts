@@ -44,6 +44,7 @@ the full convention; CI flags contract changes that do not update this file.
 - Asset-scoped dividend and registry operations now allow either the contract admin or the asset's admin to act.
 
 ### Fixed
+- **asset-token**: `panic_err` now publishes `("panic_dbg", <offending value>)` diagnostic events under the `release-with-logs` profile only; standard release wasm is unchanged (#740).
 - Registry asset-name validation now enforces the same 64-byte cap as the asset-token metadata checks and documents the UTF-8 byte-based rule.
 - `deploy.sh` no longer tries to friendbot on `mainnet` and avoids silently ignoring a checked-in `.env` file.
 

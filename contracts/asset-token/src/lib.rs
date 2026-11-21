@@ -32,7 +32,7 @@ use soroban_sdk::{
 };
 
 mod internal;
-use internal::{check_str, panic_err};
+use internal::{check_str, panic_err, panic_err_value};
 
 #[cfg(test)]
 mod test_rdj_allowance;
@@ -220,7 +220,7 @@ impl AssetTokenContract {
         }
         admin.require_auth();
         if total_supply < 0 || valuation < 0 {
-            panic_err(&env, Error::InvalidAmount);
+            panic_err_value(&env, Error::InvalidAmount, (total_supply, valuation));
         }
         // Validate string metadata: non-empty and within max lengths (issue #46).
         check_str(&env, &name, 1, MAX_NAME_LEN);
@@ -229,7 +229,7 @@ impl AssetTokenContract {
         check_str(&env, &asset_description, 1, MAX_DESC_LEN);
         // The admin must be allowed to hold the initial supply.
         if !Self::compliant(&env, &compliance_contract, &admin) {
-            panic_err(&env, Error::RecipientNotCompliant);
+            panic_err_value(&env, Error::RecipientNotCompliant, admin.clone());
         }
         let metadata = AssetMetadata {
             name,
@@ -311,14 +311,14 @@ impl AssetTokenContract {
             panic_err(&env, Error::Paused);
         }
         if !Self::compliant(&env, &meta.compliance_contract, &from) {
-            panic_err(&env, Error::SenderNotCompliant);
+            panic_err_value(&env, Error::SenderNotCompliant, from.clone());
         }
         if !Self::compliant(&env, &meta.compliance_contract, &to) {
-            panic_err(&env, Error::RecipientNotCompliant);
+            panic_err_value(&env, Error::RecipientNotCompliant, to.clone());
         }
         let from_bal = Self::balance(env.clone(), from.clone());
         if from_bal < amount {
-            panic_err(&env, Error::InsufficientBalance);
+            panic_err_value(&env, Error::InsufficientBalance, (amount, from_bal));
         }
         // A self-transfer is a no-op: reading `to_bal` and writing it back after
         // the `from` write would otherwise overwrite the debit and inflate the
@@ -1170,7 +1170,7 @@ impl AssetTokenContract {
 
     fn check_amount(env: &Env, amount: i128) {
         if amount <= 0 {
-            panic_err(env, Error::InvalidAmount);
+            panic_err_value(env, Error::InvalidAmount, amount);
         }
     }
 
