@@ -923,6 +923,25 @@ fn test_cancel_admin_proposal_by_current_admin() {
     assert_eq!(ctx.dividend.get_admin(), ctx.admin);
 }
 
+// Issue #691: `get_pending_admin` must return `None` after a pending proposal
+// is explicitly cancelled (as opposed to accepted).
+#[test]
+fn test_get_pending_admin_none_after_cancel_admin_proposal() {
+    let ctx = setup();
+    let successor = Address::generate(&ctx.env);
+
+    ctx.dividend.propose_admin(&ctx.admin, &successor);
+    assert_eq!(ctx.dividend.get_pending_admin(), Some(successor.clone()));
+
+    ctx.dividend.cancel_admin_proposal(&ctx.admin);
+    assert_eq!(ctx.dividend.get_pending_admin(), None);
+
+    // The cancelled successor can no longer accept, and the admin is unchanged.
+    let res = ctx.dividend.try_accept_admin(&successor);
+    assert_eq!(res, Err(Ok(Error::NoPendingAdmin.into())));
+    assert_eq!(ctx.dividend.get_admin(), ctx.admin);
+}
+
 #[test]
 fn test_cancel_admin_proposal_with_nothing_pending_fails() {
     let ctx = setup();
