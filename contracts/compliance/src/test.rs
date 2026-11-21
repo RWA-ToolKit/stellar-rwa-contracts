@@ -2438,3 +2438,30 @@ fn test_clear_holding_period_unaffected_by_suspended_state() {
         "holding period must be cleared even while the holder is suspended"
     );
 }
+
+#[test]
+fn test_jurisdiction_cap_set_get_and_clear() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    client.add_to_allowlist(&admin, &user, &String::from_str(&env, "us"), &0);
+    assert_eq!(
+        client.get_jurisdiction(&user),
+        Some(String::from_str(&env, "US"))
+    );
+
+    assert_eq!(client.get_jurisdiction_cap(&String::from_str(&env, "US")), None);
+    client.set_jurisdiction_cap(&admin, &String::from_str(&env, "us"), &Some(2_000));
+    assert_eq!(
+        client.get_jurisdiction_cap(&String::from_str(&env, "US")),
+        Some(2_000)
+    );
+    client.set_jurisdiction_cap(&admin, &String::from_str(&env, "US"), &None);
+    assert_eq!(client.get_jurisdiction_cap(&String::from_str(&env, "US")), None);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_jurisdiction_cap_above_10000_rejected() {
+    let (env, client, admin) = setup();
+    client.set_jurisdiction_cap(&admin, &String::from_str(&env, "US"), &Some(10_001));
+}

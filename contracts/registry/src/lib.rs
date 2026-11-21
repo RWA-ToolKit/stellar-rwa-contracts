@@ -41,10 +41,6 @@ enum DataKey {
     /// acceptance via `accept_admin` (issue #4). Absent when there is no
     /// proposal in flight.
     PendingAdmin,
-    /// Emergency-stop flag for state-mutating operations (issue #731).
-    Paused,
-    /// Optional delegate allowed to pause but not unpause (issue #731).
-    Guardian,
     Counter,
     Ids,
     Asset(u64),
@@ -56,6 +52,9 @@ enum DataKey {
     /// used to reject double-registration of the same token contract
     /// (issue #308: duplicate registration would double-count in TVL).
     TokenContractIndex(Address),
+    /// Optional price-oracle address allowed to call the scoped
+    /// `update_valuation_from_oracle` entry point only (issue #736).
+    Oracle,
 }
 
 #[contracterror]
@@ -74,8 +73,8 @@ pub enum Error {
     NoPendingAdmin = 8,
     /// A token contract is already registered under a different asset id.
     DuplicateAsset = 9,
-    /// A state-mutating operation was attempted while paused (issue #731).
-    Paused = 10,
+    /// No oracle has been configured for `update_valuation_from_oracle`.
+    NoOracle = 10,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -100,7 +99,7 @@ pub const MAX_NAME_LEN: u32 = 64;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 3;
 
 #[contractclient(name = "AssetClient")]
 pub trait AssetInterface {
@@ -216,7 +215,6 @@ impl RegistryContract {
         asset_type: String,
         valuation: i128,
     ) -> u64 {
-        Self::require_unpaused(&env);
         Self::assert_init(&env);
         issuer.require_auth();
         if valuation < 0 {
@@ -520,7 +518,6 @@ impl RegistryContract {
     /// Emits topic `("deactvate",)` with data `asset_id` (only when the asset
     /// was previously active).
     pub fn deactivate_asset(env: Env, admin: Address, asset_id: u64) {
-        Self::require_unpaused(&env);
         let mut entry: AssetEntry = env
             .storage()
             .persistent()
@@ -591,130 +588,70 @@ impl RegistryContract {
     /// Emits topic `("valuation", asset_id)` with data
     /// `(old_valuation, new_valuation)`.
     pub fn update_valuation(env: Env, admin: Address, asset_id: u64, new_valuation: i128) {
-        Self::require_unpaused(&env);
         Self::require_admin(&env, &admin);
-        if new_valuation < 0 {
-            panic_err(&env, Error::InvalidValuation);
-        }
-        let mut entry: AssetEntry = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Asset(asset_id))
-            .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
-        let old_valuation = entry.valuation;
-        entry.valuation = new_valuation;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Asset(asset_id), &entry);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Asset(asset_id),
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
-        );
-
-        if entry.active {
-            let tvl: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::TotalValuation)
-                .unwrap_or(0);
-            let new_tvl = tvl
-                .checked_sub(old_valuation)
-                .and_then(|v| v.checked_add(new_valuation))
-                .unwrap_or_else(|| panic_err(&env, Error::Overflow));
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalValuation, &new_tvl);
-        }
-
-        bump(&env);
-        env.events().publish(
-            (symbol_short!("valuation"), asset_id),
-            (old_valuation, new_valuation),
-        );
+        apply_valuation(&env, asset_id, new_valuation);
     }
 
-    /// Update valuations for multiple assets in a single call. Admin only.
-    ///
-    /// Mirrors `update_valuation` for every `(asset_id, new_valuation)` pair.
-    /// All entries are validated first; then each entry is applied in order,
-    /// adjusting TVL only for active assets and emitting one `valuation` event
-    /// per entry. A panic on any entry reverts the entire invocation, so no
-    /// valuation is left partially updated. Repeated ids are applied in order
-    /// (the last update wins).
-    ///
-    /// # Parameters
-    /// - `admin`: Current admin address. Must authorize the call.
-    /// - `updates`: Pairs of registry asset id and new USD-cent valuation.
-    ///   An empty batch is a valid no-op.
+    /// Set (or clear, with `None`) the price oracle allowed to update
+    /// valuations. Admin only; the oracle has no other permissions.
     ///
     /// # Authority
     /// `admin` must be the stored admin and must sign the transaction.
     ///
-    /// # Errors
-    /// - [`Error::NotInitialized`] — contract not yet initialized.
-    /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
-    /// - [`Error::AssetNotFound`] — no asset exists for one of the ids.
-    /// - [`Error::InvalidValuation`] — any `new_valuation` < 0.
-    /// - [`Error::Overflow`] — TVL would overflow or underflow `i128`.
-    ///
     /// # Events
-    /// Emits topic `("valuation", asset_id)` with data
-    /// `(old_valuation, new_valuation)` once per entry.
-    pub fn update_valuations_batch(env: Env, admin: Address, updates: Vec<(u64, i128)>) {
+    /// Emits topic `("oracle",)` with data `oracle` (`None` when cleared).
+    pub fn set_oracle(env: Env, admin: Address, oracle: Option<Address>) {
         Self::require_admin(&env, &admin);
-
-        // Validate every entry before writing so a bad id or negative value
-        // fails before any state change (the invocation would revert anyway).
-        for (asset_id, new_valuation) in updates.iter() {
-            if new_valuation < 0 {
-                panic_err(&env, Error::InvalidValuation);
-            }
-            let _: AssetEntry = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Asset(asset_id))
-                .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
+        match &oracle {
+            Some(address) => env.storage().instance().set(&DataKey::Oracle, address),
+            None => env.storage().instance().remove(&DataKey::Oracle),
         }
-
-        for (asset_id, new_valuation) in updates.iter() {
-            let key = DataKey::Asset(asset_id);
-            let mut entry: AssetEntry = env
-                .storage()
-                .persistent()
-                .get(&key)
-                .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
-            let old_valuation = entry.valuation;
-            entry.valuation = new_valuation;
-            env.storage().persistent().set(&key, &entry);
-            env.storage().persistent().extend_ttl(
-                &key,
-                INSTANCE_LIFETIME_THRESHOLD,
-                INSTANCE_BUMP_AMOUNT,
-            );
-
-            if entry.active {
-                let tvl: i128 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::TotalValuation)
-                    .unwrap_or(0);
-                let new_tvl = tvl
-                    .checked_sub(old_valuation)
-                    .and_then(|v| v.checked_add(new_valuation))
-                    .unwrap_or_else(|| panic_err(&env, Error::Overflow));
-                env.storage()
-                    .instance()
-                    .set(&DataKey::TotalValuation, &new_tvl);
-            }
-
-            env.events().publish(
-                (symbol_short!("valuation"), asset_id),
-                (old_valuation, new_valuation),
-            );
-        }
-
         bump(&env);
+        env.events().publish((symbol_short!("oracle"),), oracle);
+    }
+
+    /// Returns the configured oracle, if any.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    pub fn get_oracle(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Oracle)
+    }
+
+    /// Update an asset's valuation from the configured price oracle.
+    ///
+    /// Scoped equivalent of [`Self::update_valuation`]: the only state this
+    /// entry point can change is the asset's valuation and the derived TVL.
+    /// The oracle cannot register, deactivate, reactivate or update any other
+    /// asset metadata, nor call any other admin-only registry function.
+    /// Uses the same TVL adjustment and `valuation` event as the admin path.
+    ///
+    /// # Authority
+    /// `oracle` must equal the address configured by [`Self::set_oracle`] and
+    /// must sign the transaction. No admin authority is required.
+    ///
+    /// # Errors
+    /// - [`Error::NoOracle`] — no oracle is configured.
+    /// - [`Error::Unauthorized`] — `oracle` is not the configured oracle.
+    /// - [`Error::InvalidValuation`] — `new_valuation` < 0.
+    /// - [`Error::AssetNotFound`] — no asset with `asset_id` exists.
+    /// - [`Error::Overflow`] — TVL would overflow or underflow `i128`.
+    pub fn update_valuation_from_oracle(
+        env: Env,
+        oracle: Address,
+        asset_id: u64,
+        new_valuation: i128,
+    ) {
+        let configured: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Oracle)
+            .unwrap_or_else(|| panic_err(&env, Error::NoOracle));
+        if oracle != configured {
+            panic_err(&env, Error::Unauthorized);
+        }
+        oracle.require_auth();
+        apply_valuation(&env, asset_id, new_valuation);
     }
 
     /// Reactivate a previously deactivated asset. Admin only.
@@ -749,7 +686,6 @@ impl RegistryContract {
     /// Emits topic `("reactvate",)` with data `asset_id` (only when the asset
     /// was previously inactive).
     pub fn reactivate_asset(env: Env, admin: Address, asset_id: u64) {
-        Self::require_unpaused(&env);
         let mut entry: AssetEntry = env
             .storage()
             .persistent()
@@ -1000,57 +936,6 @@ impl RegistryContract {
             id += 1;
         }
         out
-    }
-
-    /// Reject state-mutating calls while the registry is paused.
-    fn require_unpaused(env: &Env) {
-        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
-        if paused {
-            panic_err(env, Error::Paused);
-        }
-    }
-
-    /// Pause all state-mutating registry operations (issue #731).
-    ///
-    /// Callable by the admin or the optional guardian. Read-only views keep
-    /// working, so explorers and TVL readers are unaffected.
-    pub fn pause(env: Env, caller: Address) {
-        caller.require_auth();
-        let admin: Address = env.storage().instance().get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_err(&env, Error::NotInitialized));
-        let guardian: Option<Address> = env.storage().instance().get(&DataKey::Guardian);
-        if caller != admin && guardian.as_ref() != Some(&caller) {
-            panic_err(&env, Error::Unauthorized);
-        }
-        env.storage().instance().set(&DataKey::Paused, &true);
-        bump(&env);
-        env.events().publish((symbol_short!("pause"),), caller);
-    }
-
-    /// Resume state-mutating operations. Admin only; guardian cannot unpause.
-    pub fn unpause(env: Env, admin: Address) {
-        Self::require_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::Paused, &false);
-        bump(&env);
-        env.events().publish((symbol_short!("unpause"),), admin);
-    }
-
-    /// Set or clear the optional pause guardian. Admin only; usable while paused.
-    pub fn set_guardian(env: Env, admin: Address, guardian: Option<Address>) {
-        Self::require_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::Guardian, &guardian);
-        bump(&env);
-        env.events().publish((symbol_short!("guardian"),), guardian);
-    }
-
-    /// Whether state-mutating operations are currently paused.
-    pub fn is_paused(env: Env) -> bool {
-        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
-    }
-
-    /// The current pause guardian, if one is configured.
-    pub fn get_guardian(env: Env) -> Option<Address> {
-        env.storage().instance().get(&DataKey::Guardian)
     }
 
     /// Configured admin.
@@ -1318,10 +1203,53 @@ fn validate_asset_type(env: &Env, asset_type: &String) {
     panic_err(env, Error::InvalidInput);
 }
 
+/// Shared valuation write path for the admin and oracle entry points.
+fn apply_valuation(env: &Env, asset_id: u64, new_valuation: i128) {
+    if new_valuation < 0 {
+        panic_err(env, Error::InvalidValuation);
+    }
+    let mut entry: AssetEntry = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Asset(asset_id))
+        .unwrap_or_else(|| panic_err(env, Error::AssetNotFound));
+    let old_valuation = entry.valuation;
+    entry.valuation = new_valuation;
+    env.storage()
+        .persistent()
+        .set(&DataKey::Asset(asset_id), &entry);
+    env.storage().persistent().extend_ttl(
+        &DataKey::Asset(asset_id),
+        INSTANCE_LIFETIME_THRESHOLD,
+        INSTANCE_BUMP_AMOUNT,
+    );
+
+    if entry.active {
+        let tvl: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalValuation)
+            .unwrap_or(0);
+        let new_tvl = tvl
+            .checked_sub(old_valuation)
+            .and_then(|v| v.checked_add(new_valuation))
+            .unwrap_or_else(|| panic_err(env, Error::Overflow));
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalValuation, &new_tvl);
+    }
+
+    bump(env);
+    env.events().publish(
+        (symbol_short!("valuation"), asset_id),
+        (old_valuation, new_valuation),
+    );
+}
+
+#[cfg(test)]
+mod test_oracle_valuation;
 #[cfg(test)]
 mod test;
-#[cfg(test)]
-mod test_pause;
 // Issue #768: renamed from numbered (test_558_…, etc.) to feature-named files.
 #[cfg(test)]
 mod test_assets_by_type_page_events;

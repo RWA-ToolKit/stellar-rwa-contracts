@@ -52,32 +52,12 @@ pub enum ComplianceStatus {
 /// One entry of an [`ComplianceContract::add_to_allowlist_batch`] call. Mirrors
 /// the parameters of [`ComplianceContract::add_to_allowlist`] exactly, so each
 /// entry is validated the same way it would be if submitted individually.
-///
-/// Field defaults (issue #742): `expires_at = 0` means a **permanent**
-/// approval. Jurisdiction remains mandatory because `is_allowed` always
-/// checks the record against the blocked-jurisdiction list; there is no
-/// "unrestricted" sentinel. Use [`AllowlistEntry::new`] to get the permanent
-/// expiry default instead of repeating `0` at every call site.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllowlistEntry {
     pub address: Address,
     pub jurisdiction: String,
     pub expires_at: u32,
-}
-
-impl AllowlistEntry {
-    /// Build an entry with the sensible default of no expiry (`0`).
-    /// `jurisdiction` is still required; see the struct docs above.
-    pub fn new(address: Address, jurisdiction: String) -> Self {
-        Self { address, jurisdiction, expires_at: 0 }
-    }
-
-    /// Set an explicit expiry ledger. Pass `0` to keep the approval permanent.
-    pub fn with_expires_at(mut self, expires_at: u32) -> Self {
-        self.expires_at = expires_at;
-        self
-    }
 }
 
 /// A single KYC record for an address.
@@ -109,10 +89,6 @@ enum DataKey {
     /// acceptance via `accept_admin` (issue #4). Absent when there is no
     /// proposal in flight.
     PendingAdmin,
-    /// Emergency-stop flag for state-mutating operations (issue #731).
-    Paused,
-    /// Optional delegate allowed to pause but not unpause (issue #731).
-    Guardian,
     /// Small fixed-size (current_page, current_page_len) cursor for appends.
     AllowlistMeta,
     /// One page of up to `ALLOWLIST_PAGE_SIZE` addresses, in persistent storage
@@ -141,6 +117,9 @@ enum DataKey {
     /// Never updated once set so that the clock always starts from the
     /// earliest acquisition, not from a later top-up.
     FirstAcquiredLedger(Address),
+    /// Maximum holding, in basis points of total supply, permitted for one
+    /// jurisdiction (issue #737). Absent means uncapped.
+    JurisdictionCap(String),
 }
 
 /// Max addresses per allowlist page (issue #177). Bounds the size of any single
@@ -173,8 +152,8 @@ pub enum Error {
     /// `set_min_holding_period` was called with `min_ledgers` overflowing when
     /// added to a realistic ledger sequence; treated as an invalid input.
     InvalidHoldingPeriod = 9,
-    /// A state-mutating operation was attempted while paused (issue #731).
-    Paused = 10,
+    /// `set_jurisdiction_cap` called with a value above 10_000 bps.
+    InvalidCap = 10,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280; // ~5s ledgers
@@ -185,7 +164,7 @@ mod test_jhaydeeee_record_acquisition;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 3;
 
 #[contract]
 pub struct ComplianceContract;
@@ -277,7 +256,6 @@ impl ComplianceContract {
         jurisdiction: String,
         expires_at: u32,
     ) {
-        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let now = env.ledger().sequence();
         if expires_at != 0 && expires_at <= now {
@@ -380,7 +358,6 @@ impl ComplianceContract {
     /// client.add_to_allowlist_batch(&admin, &entries);
     /// ```
     pub fn add_to_allowlist_batch(env: Env, admin: Address, entries: Vec<AllowlistEntry>) {
-        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let now = env.ledger().sequence();
 
@@ -460,7 +437,6 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("suspend", address)` with data `()`.
     pub fn suspend(env: Env, admin: Address, address: Address) {
-        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let mut record = load_record(&env, &address);
         record.status = ComplianceStatus::Suspended;
@@ -499,7 +475,6 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("reinstat", address)` with data `()`.
     pub fn reinstate(env: Env, admin: Address, address: Address) {
-        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let mut record = load_record(&env, &address);
         if record.status != ComplianceStatus::Suspended {
@@ -535,7 +510,6 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("removed", address)` with data `()`.
     pub fn remove(env: Env, admin: Address, address: Address) {
-        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         if !env
             .storage()
@@ -551,71 +525,6 @@ impl ComplianceContract {
         bump_instance(&env);
         env.events()
             .publish((symbol_short!("removed"), address), ());
-    }
-
-    /// Suspend several addresses in one transaction (issue #729).
-    ///
-    /// Mirrors [`Self::suspend`] for every address: same admin authorization,
-    /// same `RecordNotFound` behaviour and one `("suspend", address)` event
-    /// per address. A failure reverts the whole invocation.
-    pub fn suspend_batch(env: Env, admin: Address, addresses: Vec<Address>) {
-        require_admin(&env, &admin);
-        for address in addresses.iter() {
-            let mut record = load_record(&env, &address);
-            record.status = ComplianceStatus::Suspended;
-            env.storage()
-                .persistent()
-                .set(&DataKey::Record(address.clone()), &record);
-            bump_instance(&env);
-            env.events()
-                .publish((symbol_short!("suspend"), address), ());
-        }
-    }
-
-    /// Reinstate several suspended addresses in one transaction (issue #729).
-    ///
-    /// Mirrors [`Self::reinstate`] for every address: original KYC metadata is
-    /// preserved, a non-suspended address raises `NotSuspended`, and one
-    /// `("reinstat", address)` event is emitted per address.
-    pub fn reinstate_batch(env: Env, admin: Address, addresses: Vec<Address>) {
-        require_admin(&env, &admin);
-        for address in addresses.iter() {
-            let mut record = load_record(&env, &address);
-            if record.status != ComplianceStatus::Suspended {
-                panic_with_error(&env, Error::NotSuspended);
-            }
-            record.status = ComplianceStatus::Approved;
-            env.storage()
-                .persistent()
-                .set(&DataKey::Record(address.clone()), &record);
-            bump_instance(&env);
-            env.events()
-                .publish((symbol_short!("reinstat"), address), ());
-        }
-    }
-
-    /// Remove several addresses in one transaction (issue #729).
-    ///
-    /// Mirrors [`Self::remove`] for every address: deletes each KYC record and
-    /// allowlist slot, and emits one `("removed", address)` event per address.
-    pub fn remove_batch(env: Env, admin: Address, addresses: Vec<Address>) {
-        require_admin(&env, &admin);
-        for address in addresses.iter() {
-            if !env
-                .storage()
-                .persistent()
-                .has(&DataKey::Record(address.clone()))
-            {
-                panic_with_error(&env, Error::RecordNotFound);
-            }
-            env.storage()
-                .persistent()
-                .remove(&DataKey::Record(address.clone()));
-            remove_from_allowlist(&env, &address);
-            bump_instance(&env);
-            env.events()
-                .publish((symbol_short!("removed"), address), ());
-        }
     }
 
     /// Core compliance check called by the asset-token contract on every
@@ -934,7 +843,6 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("blockjur",)` with data `jurisdiction`.
     pub fn block_jurisdiction(env: Env, admin: Address, jurisdiction: String) {
-        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
         let already_blocked: bool = env
@@ -977,7 +885,6 @@ impl ComplianceContract {
     /// # Events
     /// Emits topic `("unblkjur",)` with data `jurisdiction`.
     pub fn unblock_jurisdiction(env: Env, admin: Address, jurisdiction: String) {
-        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
         env.storage()
@@ -994,6 +901,65 @@ impl ComplianceContract {
         bump_instance(&env);
         env.events()
             .publish((symbol_short!("unblkjur"),), jurisdiction);
+    }
+
+    /// Set a graduated holding cap for a jurisdiction (issue #737).
+    ///
+    /// `max_bps` is the maximum share of an asset's total supply that holders
+    /// in this jurisdiction may collectively hold, in basis points
+    /// (`10_000` = 100%). `0` forbids holding any supply; passing `None`
+    /// removes a previously configured cap. The asset token consults this
+    /// value when checking a transfer or mint that increases the jurisdiction's
+    /// aggregate holdings; binary `block_jurisdiction` remains independent.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`] — `admin` is not the stored admin.
+    /// - [`Error::InvalidJurisdiction`] — not a two-letter alpha code.
+    /// - [`Error::InvalidCap`] — `max_bps` > 10_000.
+    ///
+    /// # Events
+    /// Emits topic `("jurcap", jurisdiction)` with data `max_bps`
+    /// (`None` when cleared).
+    pub fn set_jurisdiction_cap(
+        env: Env,
+        admin: Address,
+        jurisdiction: String,
+        max_bps: Option<u32>,
+    ) {
+        require_admin(&env, &admin);
+        let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
+        let key = DataKey::JurisdictionCap(jurisdiction.clone());
+        if let Some(bps) = max_bps {
+            if bps > 10_000 {
+                panic_with_error(&env, Error::InvalidCap);
+            }
+            env.storage().persistent().set(&key, &bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+        bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("jurcap"), jurisdiction), max_bps);
+    }
+
+    /// Returns the configured cap in basis points, or `None` if uncapped.
+    pub fn get_jurisdiction_cap(env: Env, jurisdiction: String) -> Option<u32> {
+        let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
+        env.storage()
+            .persistent()
+            .get(&DataKey::JurisdictionCap(jurisdiction))
+    }
+
+    /// Returns the canonical jurisdiction of an approved address, if known.
+    ///
+    /// Used by the asset token to classify holders when enforcing a
+    /// jurisdiction cap; exposes only the jurisdiction, never the full KYC
+    /// record.
+    pub fn get_jurisdiction(env: Env, address: Address) -> Option<String> {
+        Self::get_record(env, address).map(|record| record.jurisdiction)
     }
 
     /// Returns `true` if the given jurisdiction is currently blocked.
@@ -1075,7 +1041,6 @@ impl ComplianceContract {
     /// Emits topic `("expired", address)` with data `expires_at` for each
     /// record pruned.
     pub fn prune_expired(env: Env, admin: Address, max_records: u32) -> u32 {
-        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let now = env.ledger().sequence();
         let (current_page, _) = allowlist_meta(&env);
@@ -1155,58 +1120,6 @@ impl ComplianceContract {
         }
         bump_instance(&env);
         0
-    }
-
-    /// Reject state-mutating calls while the compliance contract is paused.
-    fn require_unpaused(env: &Env) {
-        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
-        if paused {
-            panic_with_error(env, Error::Paused);
-        }
-    }
-
-    /// Pause all state-mutating compliance operations (issue #731).
-    ///
-    /// Callable by the admin or the optional guardian. Read-only checks such as
-    /// `is_allowed` and all allowlist getters keep working, so already-approved
-    /// holders are not affected beyond new KYC state changes.
-    pub fn pause(env: Env, caller: Address) {
-        caller.require_auth();
-        let admin: Address = env.storage().instance().get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_with_error(&env, Error::NotInitialized));
-        let guardian: Option<Address> = env.storage().instance().get(&DataKey::Guardian);
-        if caller != admin && guardian.as_ref() != Some(&caller) {
-            panic_with_error(&env, Error::Unauthorized);
-        }
-        env.storage().instance().set(&DataKey::Paused, &true);
-        bump_instance(&env);
-        env.events().publish((symbol_short!("pause"),), caller);
-    }
-
-    /// Resume state-mutating operations. Admin only; guardian cannot unpause.
-    pub fn unpause(env: Env, admin: Address) {
-        require_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::Paused, &false);
-        bump_instance(&env);
-        env.events().publish((symbol_short!("unpause"),), admin);
-    }
-
-    /// Set or clear the optional pause guardian. Admin only; usable while paused.
-    pub fn set_guardian(env: Env, admin: Address, guardian: Option<Address>) {
-        require_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::Guardian, &guardian);
-        bump_instance(&env);
-        env.events().publish((symbol_short!("guardian"),), guardian);
-    }
-
-    /// Whether state-mutating operations are currently paused.
-    pub fn is_paused(env: Env) -> bool {
-        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
-    }
-
-    /// The current pause guardian, if one is configured.
-    pub fn get_guardian(env: Env) -> Option<Address> {
-        env.storage().instance().get(&DataKey::Guardian)
     }
 
     /// Returns the configured admin address.
@@ -1396,7 +1309,6 @@ impl ComplianceContract {
         holder: Address,
         min_ledgers: u64,
     ) {
-        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let key = DataKey::MinHoldingPeriod(holder.clone());
         if min_ledgers == 0 {
@@ -1452,7 +1364,6 @@ impl ComplianceContract {
     ///
     /// Errors: `Unauthorized (#5)`, `NotInitialized (#2)`.
     pub fn record_acquisition(env: Env, admin: Address, holder: Address) {
-        Self::require_unpaused(&env);
         require_admin(&env, &admin);
         let key = DataKey::FirstAcquiredLedger(holder.clone());
         if !env.storage().persistent().has(&key) {
@@ -1494,5 +1405,3 @@ impl ComplianceContract {
 
 #[cfg(test)]
 mod test;
-#[cfg(test)]
-mod test_pause;
