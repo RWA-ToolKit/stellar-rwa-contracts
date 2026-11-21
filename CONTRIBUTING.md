@@ -263,6 +263,49 @@ If `testutils` appears in the wasm output, track down which crate is pulling it
 in transitively and add `default-features = false` or a
 `[target.cfg(not(target_arch = "wasm32")).dependencies]` section to isolate it.
 
+## Cargo.lock update policy (issue #756)
+
+`Cargo.lock` is checked into this repository because the workspace produces
+wasm binaries. Follow these rules when updating it:
+
+- **Cargo.lock changes belong in their own PR**, separate from feature or fix
+  PRs, unless a new direct dependency is intentionally being added as part of
+  that PR (in which case the lockfile update is expected and can be included).
+- Before merging a lockfile-only PR, review the diff with:
+  ```bash
+  cargo tree -d
+  ```
+  to identify any newly introduced duplicate dependency versions. Duplicate
+  crates inflate wasm binary size and can mask diamond-dependency conflicts.
+- Lockfile PRs should note in the PR description whether any new duplicate
+  versions appeared and whether they are acceptable.
+
+## Workspace feature audit (issue #757)
+
+This workspace uses `resolver = "2"`, which applies per-target feature
+unification. This means features enabled only in `dev-dependencies` (such as
+`soroban-sdk`'s `testutils` feature) should **not** leak into the wasm release
+build.
+
+**Audit completed 2026-11-20**: Running
+`cargo tree -e features --target wasm32-unknown-unknown` and comparing against
+`cargo tree -e features` (native test target) shows that `testutils` is
+present only in the native test graph. The wasm release artifacts do not include
+testutils code. No feature leak was found.
+
+**How to re-audit after a dependency change:**
+
+```bash
+# native (includes testutils via dev-dependencies)
+cargo tree -e features 2>&1 | grep soroban-sdk
+
+# wasm release (should NOT include testutils)
+cargo tree -e features --target wasm32-unknown-unknown 2>&1 | grep soroban-sdk
+```
+
+If `testutils` appears in the wasm output, track down which crate is pulling it
+in transitively and add `default-features = false` or a `[target.cfg(not(target_arch = "wasm32")).dependencies]` section to isolate it.
+
 ## Sister repos
 
 - **Web app:** https://github.com/RWA-ToolKit/stellar-rwa-web
