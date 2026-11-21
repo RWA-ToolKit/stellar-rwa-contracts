@@ -10,6 +10,7 @@ the full convention; CI flags contract changes that do not update this file.
 ## [Unreleased]
 
 ### Changed
+- **compliance**: added `AllowlistEntry::new` / `with_expires_at` Rust helpers with the documented `expires_at = 0` (permanent) default; no ABI or behavior change (#742).
 - **asset-token**: moved `panic_err` and `check_str` helpers into a dedicated `internal` module; no behavior change (#769).
 - **compliance**: split `lib.rs` (1491 lines) into `allowlist`, `jurisdiction`, `admin`, and `internal` submodules; no behavior change (#767).
 - **docs**: added inline illustrative usage examples to `transfer_batch`, `add_to_allowlist_batch`, `create_distribution`, and `register_asset` doc comments (#749).

@@ -52,12 +52,32 @@ pub enum ComplianceStatus {
 /// One entry of an [`ComplianceContract::add_to_allowlist_batch`] call. Mirrors
 /// the parameters of [`ComplianceContract::add_to_allowlist`] exactly, so each
 /// entry is validated the same way it would be if submitted individually.
+///
+/// Field defaults (issue #742): `expires_at = 0` means a **permanent**
+/// approval. Jurisdiction remains mandatory because `is_allowed` always
+/// checks the record against the blocked-jurisdiction list; there is no
+/// "unrestricted" sentinel. Use [`AllowlistEntry::new`] to get the permanent
+/// expiry default instead of repeating `0` at every call site.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AllowlistEntry {
     pub address: Address,
     pub jurisdiction: String,
     pub expires_at: u32,
+}
+
+impl AllowlistEntry {
+    /// Build an entry with the sensible default of no expiry (`0`).
+    /// `jurisdiction` is still required; see the struct docs above.
+    pub fn new(address: Address, jurisdiction: String) -> Self {
+        Self { address, jurisdiction, expires_at: 0 }
+    }
+
+    /// Set an explicit expiry ledger. Pass `0` to keep the approval permanent.
+    pub fn with_expires_at(mut self, expires_at: u32) -> Self {
+        self.expires_at = expires_at;
+        self
+    }
 }
 
 /// A single KYC record for an address.
