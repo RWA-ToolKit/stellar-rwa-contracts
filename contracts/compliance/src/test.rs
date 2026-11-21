@@ -623,6 +623,82 @@ fn test_add_to_allowlist_batch_partial_failure_reverts_whole_batch() {
     client.add_to_allowlist_batch(&admin, &entries);
 }
 
+/// Issue #685: a batch containing the exact same address twice with
+/// conflicting KYC data must resolve deterministically as last-write-wins:
+/// the call succeeds, the address occupies exactly one allowlist slot, and
+/// the stored record reflects the *last* entry in the batch.
+#[test]
+fn test_add_to_allowlist_batch_duplicate_address_last_write_wins() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    let ke = String::from_str(&env, "KE");
+
+    let mut entries: Vec<AllowlistEntry> = Vec::new(&env);
+    entries.push_back(AllowlistEntry {
+        address: user.clone(),
+        jurisdiction: us.clone(),
+        expires_at: 1000,
+    });
+    // Same address again, with conflicting jurisdiction and expiry.
+    entries.push_back(AllowlistEntry {
+        address: user.clone(),
+        jurisdiction: ke.clone(),
+        expires_at: 2000,
+    });
+
+    client.add_to_allowlist_batch(&admin, &entries);
+
+    // The duplicate must not create a second allowlist slot.
+    assert_eq!(client.get_allowlist_count(), 1);
+    assert_eq!(client.get_allowlist().len(), 1);
+    assert_eq!(client.get_allowlist().get(0).unwrap(), user);
+
+    // Last-write-wins: the second entry's data is what is stored.
+    let rec = client.get_record(&user).unwrap();
+    assert_eq!(rec.address, user);
+    assert_eq!(rec.status, ComplianceStatus::Approved);
+    assert_eq!(rec.jurisdiction, ke);
+    assert_eq!(rec.expires_at, 2000);
+    assert!(client.is_allowed(&user));
+}
+
+/// Issue #685: when duplicate entries in one batch conflict such that one of
+/// them is invalid (past expiry), the whole batch must revert — no partial
+/// commit of the valid entry, and no allowlist slot created.
+#[test]
+fn test_add_to_allowlist_batch_duplicate_address_with_invalid_entry_reverts() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    env.ledger().with_mut(|l| l.sequence_number = 500);
+
+    let mut entries: Vec<AllowlistEntry> = Vec::new(&env);
+    // First entry is valid (no expiry).
+    entries.push_back(AllowlistEntry {
+        address: user.clone(),
+        jurisdiction: us.clone(),
+        expires_at: 0,
+    });
+    // Second entry for the same address has an expiry already in the past.
+    entries.push_back(AllowlistEntry {
+        address: user.clone(),
+        jurisdiction: us.clone(),
+        expires_at: 100,
+    });
+
+    assert_eq!(
+        client.try_add_to_allowlist_batch(&admin, &entries),
+        Err(Ok(Error::InvalidExpiry.into()))
+    );
+
+    // Nothing from the batch may have been committed.
+    assert_eq!(client.get_allowlist_count(), 0);
+    assert_eq!(client.get_allowlist().len(), 0);
+    assert!(client.get_record(&user).is_none());
+    assert!(!client.is_allowed(&user));
+}
+
 #[test]
 #[should_panic(expected = "Error(Contract, #5)")]
 fn test_add_to_allowlist_batch_non_admin_rejected() {

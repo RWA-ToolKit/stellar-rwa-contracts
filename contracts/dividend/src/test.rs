@@ -708,6 +708,22 @@ fn test_has_claimed_flips_once_and_second_claim_moves_no_funds() {
     assert_eq!(pay_balance(&ctx, &div_addr), escrow_after_first_claim);
 }
 
+// ---- issue #687: has_claimed on a non-existent distribution id must fail
+// DistributionNotFound rather than silently returning false (which could be
+// misread as "not claimed yet" instead of "doesn't exist"). ----
+
+#[test]
+fn test_has_claimed_on_nonexistent_distribution_fails() {
+    let ctx = setup();
+    // No distribution has been created yet, so the counter is still 0 —
+    // both an id above the counter and id 0 itself must fail the same way.
+    let above_counter = ctx.dividend.try_has_claimed(&99, &ctx.h1);
+    assert_eq!(above_counter, Err(Ok(Error::DistributionNotFound.into())));
+
+    let zero_id = ctx.dividend.try_has_claimed(&0, &ctx.h1);
+    assert_eq!(zero_id, Err(Ok(Error::DistributionNotFound.into())));
+}
+
 // ---- issue #217: create_distribution rejects a zero or negative amount ----
 
 #[test]
