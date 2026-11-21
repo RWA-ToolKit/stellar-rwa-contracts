@@ -48,6 +48,10 @@ pub trait ComplianceInterface {
 }
 
 /// On-chain metadata describing the tokenized asset.
+///
+/// Amounts (`total_supply`, `valuation`) follow the fixed-point scaling
+/// convention described in `docs/token-scaling.md` (see its "Convention"
+/// section).
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssetMetadata {
@@ -995,6 +999,9 @@ impl AssetTokenContract {
 
     /// Returns the full [`AssetMetadata`] struct.
     ///
+    /// Returned amounts follow the fixed-point scaling convention documented
+    /// in `docs/token-scaling.md` (see its "Convention" section).
+    ///
     /// # Parameters
     /// None.
     ///
@@ -1112,6 +1119,8 @@ impl AssetTokenContract {
     /// Propose a new admin. The role does not transfer until `new_admin` calls
     /// [`Self::accept_admin`] (issue #4).
     ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
+    ///
     /// The two-step handover makes a mistyped `new_admin` harmless — re-propose
     /// or cancel — rather than permanently bricking administration.  Note this
     /// does not affect the optional guardian (issue #1), which is set
@@ -1141,6 +1150,8 @@ impl AssetTokenContract {
 
     /// Cancel a pending admin proposal.
     ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
+    ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
     ///
@@ -1167,6 +1178,8 @@ impl AssetTokenContract {
     }
 
     /// Accept a pending admin proposal and complete the handover.
+    ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
     ///
     /// Must be called by the proposed successor (`new_admin`); the role only
     /// ever moves here, never in [`Self::propose_admin`] (issue #4).

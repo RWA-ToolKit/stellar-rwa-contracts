@@ -969,6 +969,8 @@ impl DividendContract {
     /// `new_admin` harmless (it can simply be re-proposed or cancelled)
     /// instead of a single-step transfer that would permanently brick
     /// administration.
+    ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         Self::require_admin(&env, &admin);
         env.storage()
@@ -980,6 +982,8 @@ impl DividendContract {
     }
 
     /// Cancel a pending admin proposal.
+    ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
@@ -1012,6 +1016,8 @@ impl DividendContract {
     /// Emits `set_admin` carrying both the previous and new admin so
     /// off-chain indexers can observe this security-critical transition
     /// (issue #2).
+    ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
     ///
     /// # Parameters
     /// - `new_admin`: The address accepting the admin role.  Must match the
