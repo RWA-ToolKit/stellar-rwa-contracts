@@ -52,6 +52,9 @@ enum DataKey {
     /// used to reject double-registration of the same token contract
     /// (issue #308: duplicate registration would double-count in TVL).
     TokenContractIndex(Address),
+    /// Optional price-oracle address allowed to call the scoped
+    /// `update_valuation_from_oracle` entry point only (issue #736).
+    Oracle,
 }
 
 #[contracterror]
@@ -70,6 +73,8 @@ pub enum Error {
     NoPendingAdmin = 8,
     /// A token contract is already registered under a different asset id.
     DuplicateAsset = 9,
+    /// No oracle has been configured for `update_valuation_from_oracle`.
+    NoOracle = 10,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -584,45 +589,69 @@ impl RegistryContract {
     /// `(old_valuation, new_valuation)`.
     pub fn update_valuation(env: Env, admin: Address, asset_id: u64, new_valuation: i128) {
         Self::require_admin(&env, &admin);
-        if new_valuation < 0 {
-            panic_err(&env, Error::InvalidValuation);
-        }
-        let mut entry: AssetEntry = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Asset(asset_id))
-            .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
-        let old_valuation = entry.valuation;
-        entry.valuation = new_valuation;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Asset(asset_id), &entry);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Asset(asset_id),
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
-        );
+        apply_valuation(&env, asset_id, new_valuation);
+    }
 
-        if entry.active {
-            let tvl: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::TotalValuation)
-                .unwrap_or(0);
-            let new_tvl = tvl
-                .checked_sub(old_valuation)
-                .and_then(|v| v.checked_add(new_valuation))
-                .unwrap_or_else(|| panic_err(&env, Error::Overflow));
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalValuation, &new_tvl);
+    /// Set (or clear, with `None`) the price oracle allowed to update
+    /// valuations. Admin only; the oracle has no other permissions.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Events
+    /// Emits topic `("oracle",)` with data `oracle` (`None` when cleared).
+    pub fn set_oracle(env: Env, admin: Address, oracle: Option<Address>) {
+        Self::require_admin(&env, &admin);
+        match &oracle {
+            Some(address) => env.storage().instance().set(&DataKey::Oracle, address),
+            None => env.storage().instance().remove(&DataKey::Oracle),
         }
-
         bump(&env);
-        env.events().publish(
-            (symbol_short!("valuation"), asset_id),
-            (old_valuation, new_valuation),
-        );
+        env.events().publish((symbol_short!("oracle"),), oracle);
+    }
+
+    /// Returns the configured oracle, if any.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    pub fn get_oracle(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Oracle)
+    }
+
+    /// Update an asset's valuation from the configured price oracle.
+    ///
+    /// Scoped equivalent of [`Self::update_valuation`]: the only state this
+    /// entry point can change is the asset's valuation and the derived TVL.
+    /// The oracle cannot register, deactivate, reactivate or update any other
+    /// asset metadata, nor call any other admin-only registry function.
+    /// Uses the same TVL adjustment and `valuation` event as the admin path.
+    ///
+    /// # Authority
+    /// `oracle` must equal the address configured by [`Self::set_oracle`] and
+    /// must sign the transaction. No admin authority is required.
+    ///
+    /// # Errors
+    /// - [`Error::NoOracle`] — no oracle is configured.
+    /// - [`Error::Unauthorized`] — `oracle` is not the configured oracle.
+    /// - [`Error::InvalidValuation`] — `new_valuation` < 0.
+    /// - [`Error::AssetNotFound`] — no asset with `asset_id` exists.
+    /// - [`Error::Overflow`] — TVL would overflow or underflow `i128`.
+    pub fn update_valuation_from_oracle(
+        env: Env,
+        oracle: Address,
+        asset_id: u64,
+        new_valuation: i128,
+    ) {
+        let configured: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Oracle)
+            .unwrap_or_else(|| panic_err(&env, Error::NoOracle));
+        if oracle != configured {
+            panic_err(&env, Error::Unauthorized);
+        }
+        oracle.require_auth();
+        apply_valuation(&env, asset_id, new_valuation);
     }
 
     /// Reactivate a previously deactivated asset. Admin only.
@@ -1174,6 +1203,51 @@ fn validate_asset_type(env: &Env, asset_type: &String) {
     panic_err(env, Error::InvalidInput);
 }
 
+/// Shared valuation write path for the admin and oracle entry points.
+fn apply_valuation(env: &Env, asset_id: u64, new_valuation: i128) {
+    if new_valuation < 0 {
+        panic_err(env, Error::InvalidValuation);
+    }
+    let mut entry: AssetEntry = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Asset(asset_id))
+        .unwrap_or_else(|| panic_err(env, Error::AssetNotFound));
+    let old_valuation = entry.valuation;
+    entry.valuation = new_valuation;
+    env.storage()
+        .persistent()
+        .set(&DataKey::Asset(asset_id), &entry);
+    env.storage().persistent().extend_ttl(
+        &DataKey::Asset(asset_id),
+        INSTANCE_LIFETIME_THRESHOLD,
+        INSTANCE_BUMP_AMOUNT,
+    );
+
+    if entry.active {
+        let tvl: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalValuation)
+            .unwrap_or(0);
+        let new_tvl = tvl
+            .checked_sub(old_valuation)
+            .and_then(|v| v.checked_add(new_valuation))
+            .unwrap_or_else(|| panic_err(env, Error::Overflow));
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalValuation, &new_tvl);
+    }
+
+    bump(env);
+    env.events().publish(
+        (symbol_short!("valuation"), asset_id),
+        (old_valuation, new_valuation),
+    );
+}
+
+#[cfg(test)]
+mod test_oracle_valuation;
 #[cfg(test)]
 mod test;
 // Issue #768: renamed from numbered (test_558_…, etc.) to feature-named files.
