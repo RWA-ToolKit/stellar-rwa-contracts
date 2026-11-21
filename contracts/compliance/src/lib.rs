@@ -827,6 +827,11 @@ impl ComplianceContract {
     /// `Approved` and unexpired.  Idempotent: blocking an already-blocked
     /// jurisdiction does not emit a second event.
     ///
+    /// Jurisdiction codes are case-insensitive: the incoming code is
+    /// normalized to uppercase (whitespace stripped) on this write path, and
+    /// [`Self::is_jurisdiction_blocked`] normalizes on its read path too, so
+    /// blocking `"US"` also blocks a holder whose record stores `"us"`.
+    ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
     /// - `jurisdiction`: Two-letter ISO country code to block.  Normalized
@@ -868,6 +873,10 @@ impl ComplianceContract {
     /// Removes the jurisdiction from the blocked set and from the ordered
     /// blocked-jurisdiction list.  Idempotent: calling on a jurisdiction that
     /// is not blocked succeeds silently.
+    ///
+    /// Jurisdiction codes are case-insensitive: the incoming code is
+    /// normalized to uppercase (whitespace stripped) before the lookup, so
+    /// unblocking `"us"` removes a block that was created with `"US"`.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
@@ -964,8 +973,11 @@ impl ComplianceContract {
 
     /// Returns `true` if the given jurisdiction is currently blocked.
     ///
-    /// The `jurisdiction` is normalized before the lookup, so `"us"` and
-    /// `"US"` are treated identically.
+    /// Jurisdiction codes are case-insensitive: the `jurisdiction` is
+    /// normalized to uppercase (whitespace stripped) before the lookup, so
+    /// `"us"` and `"US"` are treated identically. This mirrors the write
+    /// path in [`Self::block_jurisdiction`], which stores only the
+    /// normalized uppercase form.
     ///
     /// # Parameters
     /// - `jurisdiction`: Two-letter ISO country code to query.

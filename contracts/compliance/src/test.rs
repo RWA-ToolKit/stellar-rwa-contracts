@@ -2439,6 +2439,96 @@ fn test_clear_holding_period_unaffected_by_suspended_state() {
     );
 }
 
+// ---- Issue #689: jurisdiction case-sensitivity of block/is_blocked ----
+
+/// `block_jurisdiction` and `is_jurisdiction_blocked` normalise their input
+/// (uppercase) before touching storage, so a block recorded as "US" must be
+/// observed for "us" and "Us" too.  Callers are therefore *not* required to
+/// pre-normalise jurisdiction codes.
+#[test]
+fn test_block_jurisdiction_is_case_insensitive() {
+    let (env, client, admin) = setup();
+    let us = String::from_str(&env, "US");
+    let us_lower = String::from_str(&env, "us");
+    let us_mixed = String::from_str(&env, "Us");
+    let ir = String::from_str(&env, "IR");
+
+    client.block_jurisdiction(&admin, &us);
+
+    assert!(client.is_jurisdiction_blocked(&us));
+    assert!(client.is_jurisdiction_blocked(&us_lower));
+    assert!(client.is_jurisdiction_blocked(&us_mixed));
+    // An unrelated jurisdiction is unaffected.
+    assert!(!client.is_jurisdiction_blocked(&ir));
+}
+
+/// Blocking with a lowercase code must be visible through the uppercase
+/// query (and vice versa) — the write path normalises too.
+#[test]
+fn test_block_jurisdiction_lowercase_write_is_normalized() {
+    let (env, client, admin) = setup();
+    let us = String::from_str(&env, "US");
+    let us_lower = String::from_str(&env, "us");
+
+    client.block_jurisdiction(&admin, &us_lower);
+
+    assert!(client.is_jurisdiction_blocked(&us));
+    assert!(client.is_jurisdiction_blocked(&us_lower));
+    // The stored set holds the normalised code, not the raw input.
+    let blocked = client.get_blocked_jurisdictions();
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked.get(0).unwrap(), us);
+}
+
+/// Unblocking "US" must also clear the block for "us" / "Us".
+#[test]
+fn test_unblock_jurisdiction_is_case_insensitive() {
+    let (env, client, admin) = setup();
+    let us = String::from_str(&env, "US");
+    let us_lower = String::from_str(&env, "us");
+    let us_mixed = String::from_str(&env, "Us");
+
+    client.block_jurisdiction(&admin, &us);
+    assert!(client.is_jurisdiction_blocked(&us_lower));
+
+    client.unblock_jurisdiction(&admin, &us_lower);
+
+    assert!(!client.is_jurisdiction_blocked(&us));
+    assert!(!client.is_jurisdiction_blocked(&us_lower));
+    assert!(!client.is_jurisdiction_blocked(&us_mixed));
+    assert_eq!(client.get_blocked_jurisdictions().len(), 0);
+}
+
+/// A holder whose record stores "US" must be denied once "us" is blocked.
+#[test]
+fn test_block_jurisdiction_lowercase_denies_uppercase_holder() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    assert!(client.is_allowed(&user));
+
+    client.block_jurisdiction(&admin, &String::from_str(&env, "us"));
+    assert!(!client.is_allowed(&user));
+}
+
+// ---- Issue #691: get_pending_admin after cancel_admin_proposal ----
+
+/// `get_pending_admin` must return `None` once a pending proposal is
+/// explicitly cancelled (as opposed to accepted).
+#[test]
+fn test_get_pending_admin_none_after_cancel() {
+    let (env, client, admin) = setup();
+    let successor = Address::generate(&env);
+
+    assert_eq!(client.get_pending_admin(), None);
+    client.propose_admin(&admin, &successor);
+    assert_eq!(client.get_pending_admin(), Some(successor.clone()));
+
+    client.cancel_admin_proposal(&admin);
+    assert_eq!(client.get_pending_admin(), None);
+}
+
 #[test]
 fn test_jurisdiction_cap_set_get_and_clear() {
     let (env, client, admin) = setup();

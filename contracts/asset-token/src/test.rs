@@ -1297,6 +1297,24 @@ fn test_cancel_admin_proposal_by_current_admin() {
 }
 
 #[test]
+fn test_get_pending_admin_none_after_cancel_admin_proposal() {
+    let s = setup(1_000);
+    let successor = Address::generate(&s.env);
+
+    s.token.propose_admin(&s.admin, &successor);
+    assert_eq!(s.token.get_pending_admin(), Some(successor.clone()));
+
+    s.token.cancel_admin_proposal(&s.admin);
+    assert_eq!(s.token.get_pending_admin(), None);
+
+    // The cancelled successor can no longer accept.
+    let res = s.token.try_accept_admin(&successor);
+    assert_eq!(res, Err(Ok(Error::NoPendingAdmin.into())));
+    // The admin is unchanged.
+    assert_eq!(s.token.get_metadata().admin, s.admin);
+}
+
+#[test]
 fn test_cancel_admin_proposal_with_nothing_pending_fails() {
     let s = setup(1_000);
     let res = s.token.try_cancel_admin_proposal(&s.admin);

@@ -544,6 +544,26 @@ fn test_cancel_admin_proposal_by_current_admin() {
 }
 
 #[test]
+fn test_get_pending_admin_none_after_cancel_admin_proposal() {
+    // Issue #691: get_pending_admin must report None once a pending proposal
+    // has been explicitly cancelled (not just accepted).
+    let (env, client, admin) = setup();
+    let successor = Address::generate(&env);
+
+    client.propose_admin(&admin, &successor);
+    assert_eq!(client.get_pending_admin(), Some(successor.clone()));
+
+    client.cancel_admin_proposal(&admin);
+    assert_eq!(client.get_pending_admin(), None);
+
+    // The cancelled successor can no longer accept.
+    let res = client.try_accept_admin(&successor);
+    assert_eq!(res, Err(Ok(Error::NoPendingAdmin.into())));
+    // The admin is unchanged.
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
 fn test_cancel_admin_proposal_with_nothing_pending_fails() {
     let (_env, client, admin) = setup();
     let res = client.try_cancel_admin_proposal(&admin);
