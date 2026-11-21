@@ -29,6 +29,11 @@ struct FuzzEntry {
     /// Offset added to (or subtracted from) the current ledger sequence to
     /// produce `expires_at`. A value of 0 means "never expires".
     expires_offset: i32,
+    /// Bias toward duplicate addresses within a single batch. When this is
+    /// even, the entry reuses an earlier address from the batch (creating a
+    /// duplicate with potentially conflicting jurisdiction/expiry data);
+    /// when odd, a fresh address is generated.
+    reuse_addr: u8,
 }
 
 const JURISDICTIONS: &[&str] = &[
@@ -61,13 +66,22 @@ fn fuzz_one(entries_data: &[FuzzEntry]) {
     env.ledger().with_mut(|l| l.sequence_number = 1000);
     let now = env.ledger().sequence();
 
-    // Build the batch.
+    // Build the batch, biasing toward repeated addresses so that duplicate
+    // entries with conflicting jurisdiction/expiry data are exercised.
     let mut batch: Vec<AllowlistEntry> = Vec::new(&env);
     let mut has_invalid = false;
-    let addrs: std::vec::Vec<Address> = entries_data
-        .iter()
-        .map(|_| Address::generate(&env))
-        .collect();
+    let mut addrs: std::vec::Vec<Address> = std::vec::Vec::new();
+    for (i, e) in entries_data.iter().enumerate() {
+        // Even `reuse_addr` and a non-empty batch → reuse an earlier address
+        // (index i % 2) to force a duplicate within the batch. Otherwise
+        // generate a fresh address.
+        let addr = if e.reuse_addr % 2 == 0 && !addrs.is_empty() {
+            addrs[i % 2].clone()
+        } else {
+            Address::generate(&env)
+        };
+        addrs.push(addr);
+    }
 
     for (i, e) in entries_data.iter().enumerate() {
         let jur_str = JURISDICTIONS[(e.jurisdiction_idx as usize) % JURISDICTIONS.len()];
@@ -122,11 +136,18 @@ fn fuzz_one(entries_data: &[FuzzEntry]) {
     } else {
         // The batch must have succeeded; all addresses are now on the list.
         assert!(result.is_ok(), "valid batch must succeed");
-        // Counter must reflect exactly the new entries (none were pre-existing).
+        // Counter must reflect exactly the number of *distinct* newly admitted
+        // addresses (duplicates within the batch must not double-count).
+        let mut distinct: std::vec::Vec<Address> = std::vec::Vec::new();
+        for addr in addrs.iter() {
+            if !distinct.iter().any(|a| a == addr) {
+                distinct.push(addr.clone());
+            }
+        }
         assert_eq!(
             client.get_allowlist_count(),
-            count_before + batch.len() as u32,
-            "counter must equal number of newly admitted addresses"
+            count_before + distinct.len() as u32,
+            "counter must equal number of distinct newly admitted addresses"
         );
         // Every admitted address must pass is_allowed.
         for addr in addrs.iter() {
