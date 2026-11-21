@@ -3,6 +3,68 @@
 Thanks for helping build the Stellar RWA Toolkit contracts. This guide covers
 local setup, testing, deployment, the compliance model, and how to extend it.
 
+## Your First PR
+
+A literal walkthrough for a small, self-contained "good first issue" (for
+example a docs typo or a missing test). Every command below works on a clean
+checkout; run them from your terminal in order.
+
+1. **Fork** the upstream repository with the GitHub "Fork" button, or:
+   ```bash
+   gh repo fork RWA-ToolKit/stellar-rwa-contracts --clone=false
+   ```
+2. **Clone your fork** (replace `<your-user>` with your GitHub username) and
+   show the toolchain selected by the committed `rust-toolchain.toml`. rustup
+   reads that file automatically when you enter the directory:
+   ```bash
+   git clone git@github.com:<your-user>/stellar-rwa-contracts.git
+   cd stellar-rwa-contracts
+   rustup show
+   ```
+   If the `wasm32v1-none` target is not installed, `rustup show` tells you what
+   is missing; install it with `rustup target add wasm32v1-none`.
+3. **Verify the baseline before changing anything**:
+   ```bash
+   cargo test --workspace
+   ```
+   Baseline caveat: on a clean checkout of `main`, dependency resolution
+   currently fails because the separate `fuzz` crate requires `arbitrary ^1.4`
+   while `soroban-sdk 26` requires `~1.3.0`. This is a pre-existing issue;
+   `--exclude rwa-fuzz` does not bypass Cargo's workspace-wide resolution.
+   Until it is fixed separately, the command above cannot be verified on this
+   checkout. The fuzz targets are built separately as described in
+   [FUZZING.md](FUZZING.md).
+4. **Make a branch** named `fix/<issue-number>-<short-topic>` (or
+   `feat/<issue-number>-<short-topic>` for a feature):
+   ```bash
+   git switch -c fix/743-first-pr-walkthrough
+   ```
+5. **Make the smallest change that resolves the issue**, then check formatting
+   and rerun the full suite. If you changed `contracts/**`, add a `CHANGELOG.md`
+   entry under `## [Unreleased]` as described below:
+   ```bash
+   cargo fmt --all -- --check
+   cargo test --workspace
+   git diff --check
+   ```
+6. **Commit and push** to your fork:
+   ```bash
+   git add <files-you-changed>
+   git commit -m "docs: add first-PR walkthrough (#743)"
+   git push -u origin fix/743-first-pr-walkthrough
+   ```
+7. **Open the PR against the upstream repository**, not your fork. `main` is
+   the base branch; the head is the branch on your fork:
+   ```bash
+   gh pr create --repo RWA-ToolKit/stellar-rwa-contracts \
+     --base main --head <your-user>:fix/743-first-pr-walkthrough
+   ```
+   PR description expectations: state what changed and why, how you verified it
+   (paste the commands you ran), link the issue with `Closes #<issue-number>`,
+   and note the `CHANGELOG.md` entry when contract source changed. Keep one
+   logical change per PR. There is currently no `.github/PULL_REQUEST_TEMPLATE.md`,
+   so the body you write here is the template future reviewers will read.
+
 ## Soroban local dev setup
 
 1. Install Rust and the wasm target:
