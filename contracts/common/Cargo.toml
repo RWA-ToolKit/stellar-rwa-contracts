@@ -1,0 +1,13 @@
+[package]
+name = "rwa-common"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Shared validation and admin-handover helpers for the RWA ToolKit contracts."
+
+[lib]
+crate-type = ["lib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
