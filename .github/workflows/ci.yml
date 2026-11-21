@@ -17,7 +17,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -41,7 +41,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # Reads rust-toolchain.toml and installs/activates exactly the channel,
       # targets, and components pinned there, so CI can't drift onto a newer
@@ -83,7 +83,7 @@ jobs:
   build-wasm:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         run: rustup show
@@ -138,7 +138,7 @@ jobs:
     # of the interfaces. See CONTRIBUTING.md for how to consume the artifact.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         run: rustup show
@@ -174,7 +174,7 @@ jobs:
     # drift is caught before merge (issue #443).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Check QUICKSTART.md is consistent with the repo
         run: bash scripts/check_quickstart.sh
@@ -182,7 +182,7 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install Rust
         run: rustup show
@@ -216,7 +216,7 @@ jobs:
     # actually exist in the repository (issue #431).
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install shellcheck
         run: sudo apt-get install -y shellcheck
