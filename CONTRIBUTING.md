@@ -214,6 +214,45 @@ needs **no changes** because it only calls `is_allowed`.
 Because the gate is a single boolean, arbitrarily complex policies compose
 behind one interface without touching the token.
 
+## Failure signaling convention (audit: November 2026)
+
+All four contracts use the **panic-with-typed-error-code** convention for every
+public (ABI-exposed) contract function. Failures are raised with
+`soroban_sdk::panic_with_error!`, usually through each contract's local
+`panic_err(env, Error::...)` helper (`asset-token` and `compliance` also have a
+`check_str!` helper that panics on invalid input). Errors are declared as
+`#[contracterror]` enums. SDK/client code should therefore detect failure from
+the invocation result / error code, not by branching on a `Result` value.
+
+Audit of all `#[contract]` public entry points:
+
+| Contract | Public functions returning `Result<T, E>` | Failure convention |
+| --- | --- | --- |
+| `asset-token` | 0 | panic with `Error` code |
+| `compliance` | 0 | panic with `Error` code |
+| `dividend` | 0 | panic with `Error` code |
+| `registry` | 0 | panic with `Error` code |
+
+Findings: no public function in any of the four contracts returns
+`Result<T, Error>`. `Option` is used only as a successful return value (for
+example `status_of` and `get_pending_admin`) and is not a failure channel. The
+only `Result` in contract support code is the private helper
+`rwa_common::admin::accept`, whose `Option<Result<(Address, Address), ()>>`
+models an internal "no proposal / wrong nominee / accepted" state; every caller
+translates it into the same panic-based errors (`NoPendingAdmin`,
+`Unauthorized`) before returning to the client. It is not part of any contract
+ABI. No inconsistencies were found, so no follow-up issues are needed for this
+audit.
+
+When adding a function: return the value directly on success and call
+`panic_err!`/`panic_with_error!` with the appropriate `#[contracterror]` variant
+on failure. Do not introduce `Result` returns in the public interface; if a new
+internal helper needs a different shape, keep it private and map it to a typed
+panic at the ABI boundary. State-changing operations are atomic: a panic reverts
+the whole invocation (including events), which is why batch operations such as
+`transfer_batch`, `mint_batch`, and `add_to_allowlist_batch` validate every
+entry and revert as a unit.
+
 ## Coding standards
 
 - No `todo!()`, no `unwrap()`/`expect()` in contract code — use typed
