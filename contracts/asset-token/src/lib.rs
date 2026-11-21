@@ -97,21 +97,47 @@ pub struct AllowanceValue {
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` was called on a contract that has already been
+    /// initialized.
     AlreadyInitialized = 1,
+    /// A function requiring stored metadata was called before
+    /// `initialize`.
     NotInitialized = 2,
+    /// The caller is not the stored admin (or, for `pause`, neither the
+    /// admin nor the guardian), or `accept_admin` was called by an address
+    /// that does not match the pending proposal.
     Unauthorized = 3,
+    /// The sender's available balance (balance minus frozen amount) is less
+    /// than the requested amount, or a freeze/unfreeze would exceed the
+    /// balance or the frozen amount respectively.
     InsufficientBalance = 4,
+    /// An amount argument is not strictly positive (or, for `initialize` and
+    /// `update_valuation`, a supply/valuation is negative).
     InvalidAmount = 5,
+    /// The token is paused and the operation is a balance-changing one
+    /// (`transfer`, `transfer_from`, `mint`, `mint_batch`, `burn`,
+    /// `approve`).
     Paused = 6,
+    /// The sender (or, for `burn`, the caller) is not compliance-approved.
     SenderNotCompliant = 7,
+    /// The recipient is not compliance-approved.
     RecipientNotCompliant = 8,
+    /// An arithmetic operation would overflow or underflow `i128`.
     Overflow = 9,
+    /// An argument is structurally invalid, e.g. a string metadata field is
+    /// empty or too long, or an `approve` expiration is in the past.
     InvalidInput = 10,
+    /// The proposed compliance contract does not implement `is_allowed` or
+    /// does not approve the admin.
     InvalidCompliance = 11,
     /// `accept_admin` or `cancel_admin_proposal` called with no pending
     /// admin proposal on file (issue #4).
     NoPendingAdmin = 12,
+    /// The spender's allowance is expired or smaller than the requested
+    /// amount.
     InsufficientAllowance = 13,
+    /// An `update_valuation` call would change the valuation by more than
+    /// the permitted maximum (50% of the previous valuation).
     ValuationChangeTooLarge = 14,
     /// A transfer or mint would push the recipient jurisdiction above its
     /// configured holding cap (issue #737).
