@@ -1,4 +1,5 @@
 #![no_std]
+#![warn(missing_docs)]
 //! # Registry Contract
 //!
 //! A canonical, on-chain index of every tokenized asset on the platform. Each
@@ -21,15 +22,23 @@ use rwa_common::validation::check_str as common_check_str;
 #[contracttype]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AssetEntry {
+    /// Registry-assigned numeric id. Ids start at 1 and increase
+    /// monotonically; they are never recycled, even after deactivation.
     pub id: u64,
+    /// On-chain address of the asset-token contract for this asset.
     pub token_contract: Address,
+    /// Address of the issuer that registered the asset.
     pub issuer: Address,
+    /// Human-readable asset name (1..=[`MAX_NAME_LEN`] bytes).
     pub name: String,
+    /// Canonical asset-type string (one of the values in `VALID_ASSET_TYPES`).
     pub asset_type: String,
     /// Valuation in USD cents.
     pub valuation: i128,
     /// Ledger sequence at registration.
     pub created_at: u32,
+    /// Whether the asset is currently active. Deactivated assets are excluded
+    /// from TVL and the active count but remain in the registry.
     pub active: bool,
 }
 
@@ -57,16 +66,24 @@ enum DataKey {
     Oracle,
 }
 
+/// Error codes returned by the registry contract.
 #[contracterror]
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` was called on an already-initialized contract.
     AlreadyInitialized = 1,
+    /// The contract has not been initialized yet.
     NotInitialized = 2,
+    /// The caller is not authorized for the requested operation.
     Unauthorized = 3,
+    /// No asset exists with the requested id.
     AssetNotFound = 4,
+    /// A valuation was negative.
     InvalidValuation = 5,
+    /// An arithmetic operation would overflow or underflow `i128`.
     Overflow = 6,
+    /// An input failed validation (e.g. empty name, unknown asset type).
     InvalidInput = 7,
     /// `accept_admin` or `cancel_admin_proposal` called with no pending
     /// admin proposal on file (issue #4).
@@ -101,11 +118,16 @@ pub const MAX_NAME_LEN: u32 = 64;
 /// externally observable behavior so clients and the indexer can detect it.
 pub const VERSION: u32 = 3;
 
+/// Minimal client interface to an asset-token contract, used by the registry
+/// to look up an asset's admin for authorization checks.
 #[contractclient(name = "AssetClient")]
 pub trait AssetInterface {
+    /// Returns the asset-token contract's metadata, including its admin.
     fn get_metadata(env: Env) -> AssetMetadata;
 }
 
+/// The registry contract type. All entry points live in the
+/// `#[contractimpl]` block below.
 #[contract]
 pub struct RegistryContract;
 
@@ -346,8 +368,16 @@ impl RegistryContract {
     /// assets; use the `active` field on each [`AssetEntry`] to filter if
     /// needed.
     ///
+    /// The result is capped at [`MAX_PAGE_SIZE`] entries (issue #310). For
+    /// issuers with more assets than that, use
+    /// [`Self::get_assets_by_issuer_page`] to page through the full list.
+    ///
     /// # Parameters
     /// - `issuer`: Issuer address to query.
+    ///
+    /// # Returns
+    /// A `Vec` of [`AssetEntry`] in ascending asset-id (registration) order.
+    /// The index is append-only, so the ordering is stable across calls.
     ///
     /// # Authority
     /// None — anyone may call.
@@ -374,8 +404,29 @@ impl RegistryContract {
     /// append-only, so the same ids appear in the same order as
     /// `get_assets_by_issuer` and as `get_all_assets` filtered by issuer.
     ///
+    /// # Parameters
+    /// - `issuer`: Issuer address to query.
+    /// - `page`: Zero-based page index. The offset into the issuer's id index
+    ///   is `page * min(page_size, MAX_PAGE_SIZE)` (saturating). A `page` past
+    ///   the end of the list returns an empty `Vec`.
+    /// - `page_size`: Maximum number of entries to return. Clamped to
+    ///   [`MAX_PAGE_SIZE`]; a value of `0` returns an empty `Vec`.
+    ///
+    /// # Returns
+    /// A `Vec` of [`AssetEntry`] in ascending asset-id (registration) order,
+    /// containing at most `min(page_size, MAX_PAGE_SIZE)` entries. The range
+    /// is half-open: it starts at the computed offset (inclusive) and ends at
+    /// `offset + page_size` (exclusive) or the end of the index, whichever
+    /// comes first.
+    ///
     /// # Authority
     /// None — anyone may call. This is a public read-only query.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     ///
     /// Example — iterate all assets for an issuer in blocks of 50:
     /// ```text
@@ -408,8 +459,16 @@ impl RegistryContract {
     /// ever be registered (see `validate_asset_type`), a query must match one
     /// of those canonical strings exactly to return any results.
     ///
+    /// The result is capped at [`MAX_PAGE_SIZE`] entries (issue #310). For
+    /// types with more assets than that, use [`Self::get_assets_by_type_page`]
+    /// to page through the full list.
+    ///
     /// # Parameters
     /// - `asset_type`: Exact canonical asset-type string to query.
+    ///
+    /// # Returns
+    /// A `Vec` of [`AssetEntry`] in ascending asset-id (registration) order.
+    /// The index is append-only, so the ordering is stable across calls.
     ///
     /// # Authority
     /// None — anyone may call.
@@ -437,8 +496,29 @@ impl RegistryContract {
     /// append-only, so the same ids appear in the same order as
     /// `get_assets_by_type` and as `get_all_assets` filtered by type.
     ///
+    /// # Parameters
+    /// - `asset_type`: Exact canonical asset-type string to query.
+    /// - `page`: Zero-based page index. The offset into the type's id index is
+    ///   `page * min(page_size, MAX_PAGE_SIZE)` (saturating). A `page` past the
+    ///   end of the list returns an empty `Vec`.
+    /// - `page_size`: Maximum number of entries to return. Clamped to
+    ///   [`MAX_PAGE_SIZE`]; a value of `0` returns an empty `Vec`.
+    ///
+    /// # Returns
+    /// A `Vec` of [`AssetEntry`] in ascending asset-id (registration) order,
+    /// containing at most `min(page_size, MAX_PAGE_SIZE)` entries. The range
+    /// is half-open: it starts at the computed offset (inclusive) and ends at
+    /// `offset + page_size` (exclusive) or the end of the index, whichever
+    /// comes first.
+    ///
     /// # Authority
     /// None — this public read requires no authorization.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_assets_by_type_page(
         env: Env,
         asset_type: String,
@@ -462,9 +542,16 @@ impl RegistryContract {
     /// as long as they fit under the cap.
     ///
     /// # Parameters
-    /// - `start_id`: First asset id to include (minimum 1).
+    /// - `start_id`: First asset id to include (inclusive). Values below 1 are
+    ///   treated as 1.
     /// - `limit`: Maximum number of assets to return; clamped to
-    ///   [`MAX_PAGE_SIZE`].
+    ///   [`MAX_PAGE_SIZE`]. A value of `0` returns an empty `Vec`.
+    ///
+    /// # Returns
+    /// A `Vec` of [`AssetEntry`] in ascending asset-id (registration) order.
+    /// The id range is half-open: `[start_id, start_id + limit)`, further
+    /// capped at the current counter. Ids with no stored entry (should not
+    /// occur in practice) are skipped.
     ///
     /// # Authority
     /// None — anyone may call.
@@ -612,8 +699,21 @@ impl RegistryContract {
 
     /// Returns the configured oracle, if any.
     ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Returns
+    /// `Some(address)` of the configured oracle, or `None` if no oracle has
+    /// been set.
+    ///
     /// # Authority
     /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_oracle(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Oracle)
     }
@@ -807,17 +907,31 @@ impl RegistryContract {
 
     // ---- pagination helpers (issue #455) ----
 
-    /// Total number of registered assets (active and inactive).
+    /// Total number of registered assets (active and inactive), as `u32`.
     ///
     /// Equivalent to `asset_count`; provided under this name so callers that
     /// are building paginated UIs can use a uniform naming convention:
     /// `get_total_asset_count` / `get_assets_page` pair naturally together.
-    /// Total number of registered assets (active and inactive), as `u32`.
     ///
     /// **Deprecated** (#766): prefer `asset_count()` which returns the same
     /// value as `u64` without truncation, and whose name matches the counter
     /// it reads (`DataKey::Counter`).  This function is kept for backwards
     /// compatibility and will be removed in a future version.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Returns
+    /// The highest asset id ever assigned, truncated to `u32`.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_total_asset_count(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -838,8 +952,28 @@ impl RegistryContract {
     /// uses an id-based range. Both ultimately iterate over the same ordered
     /// sequence of registered ids.
     ///
+    /// # Parameters
+    /// - `start_index`: Zero-based index of the first asset to return. The
+    ///   corresponding asset id is `start_index + 1`. An index at or beyond
+    ///   the total count returns an empty `Vec`.
+    /// - `page_size`: Maximum number of entries to return. Clamped to
+    ///   [`MAX_PAGE_SIZE`]; a value of `0` (or above the cap) is treated as
+    ///   [`MAX_PAGE_SIZE`].
+    ///
+    /// # Returns
+    /// A `Vec` of [`AssetEntry`] in ascending asset-id (registration) order,
+    /// containing at most `min(page_size, MAX_PAGE_SIZE)` entries. The range
+    /// is half-open: it starts at `start_index` (inclusive) and ends at
+    /// `start_index + page_size` (exclusive) or the end of the list.
+    ///
     /// # Authority
     /// None — this read-only method is open to any caller.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_assets_page(env: Env, start_index: u32, page_size: u32) -> Vec<AssetEntry> {
         let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
         if counter == 0 {
@@ -894,8 +1028,31 @@ impl RegistryContract {
     /// with the total registry size, not just the matching subset. For large
     /// registries, prefer per-issuer or per-type index queries when possible.
     ///
+    /// # Parameters
+    /// - `start_index`: Zero-based index into the **filtered** list of the
+    ///   first asset to return. An index at or beyond the filtered count
+    ///   returns an empty `Vec`.
+    /// - `page_size`: Maximum number of matching entries to return. Clamped to
+    ///   [`MAX_PAGE_SIZE`]; a value of `0` (or above the cap) is treated as
+    ///   [`MAX_PAGE_SIZE`].
+    /// - `active_only`: When `true`, only active assets are considered; when
+    ///   `false`, only deactivated assets are considered.
+    ///
+    /// # Returns
+    /// A `Vec` of [`AssetEntry`] in ascending asset-id (registration) order,
+    /// containing at most `min(page_size, MAX_PAGE_SIZE)` matching entries.
+    /// The range is half-open over the filtered list: it starts at
+    /// `start_index` (inclusive) and ends at `start_index + page_size`
+    /// (exclusive) or the end of the list.
+    ///
     /// # Authority
     /// None — this read query is intentionally available to any caller.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
     pub fn get_active_assets_page(
         env: Env,
         start_index: u32,
@@ -938,7 +1095,22 @@ impl RegistryContract {
         out
     }
 
-    /// Configured admin.
+    /// Returns the configured admin address.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Returns
+    /// The address currently holding the admin role.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    ///
+    /// # Events
+    /// None.
     pub fn get_admin(env: Env) -> Address {
         env.storage()
             .instance()
@@ -1049,6 +1221,10 @@ impl RegistryContract {
     ///
     /// # Parameters
     /// None.
+    ///
+    /// # Returns
+    /// `Some(address)` of the pending admin nominee, or `None` when no
+    /// proposal is in flight.
     ///
     /// # Authority
     /// None — anyone may call.
