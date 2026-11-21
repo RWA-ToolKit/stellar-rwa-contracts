@@ -200,8 +200,24 @@ behind one interface without touching the token.
 - No `todo!()`, no `unwrap()`/`expect()` in contract code — use typed
   `#[contracterror]` variants via `panic_with_error!`.
 - Every admin function calls `require_auth()` and verifies the caller is the
-  stored admin.
+  stored admin.  All four contracts expose a private `require_admin(&env, &admin)`
+  helper that loads the stored admin and performs both checks in one call (#773).
+  New admin-gated functions **must** use this helper rather than open-coding the
+  pattern.
 - Emit events for all state changes.
+- **Clone discipline (#774):** Soroban's `Address` and `String` are cheap
+  handles, but clone only when storage ownership or the call signature require
+  it.  Avoid cloning `Env` to pass to public entry points from within the same
+  contract — use the internal storage API or a private helper instead (e.g. read
+  `DataKey::Blocked(j)` directly rather than calling `is_jurisdiction_blocked`
+  with an `env.clone()`).
+
+## Minimum Supported Rust Version (MSRV)
+
+The workspace MSRV is **Rust 1.74** (see `rust-version` in `Cargo.toml`),
+matching the floor required by `soroban-sdk 26` (#761).  CI runs against the
+latest stable (`channel = "stable"` in `rust-toolchain.toml`).  Downstream
+consumers that reuse shared types must target `rustc >= 1.74`.
 
 ## Sister repos
 
