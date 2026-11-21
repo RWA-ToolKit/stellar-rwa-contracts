@@ -42,6 +42,9 @@ mod test_rdj_allowance;
 #[contractclient(name = "ComplianceClient")]
 pub trait ComplianceInterface {
     fn is_allowed(env: Env, address: Address) -> bool;
+    fn get_allowlist(env: Env) -> Vec<Address>;
+    fn get_jurisdiction(env: Env, address: Address) -> Option<String>;
+    fn get_jurisdiction_cap(env: Env, jurisdiction: String) -> Option<u32>;
 }
 
 /// On-chain metadata describing the tokenized asset.
@@ -75,6 +78,10 @@ pub struct AssetMetadata {
 enum DataKey {
     Metadata,
     Balance(Address),
+    /// Amount of a holder's balance that cannot be transferred or burned
+    /// (issue #738). Kept separate from the balance itself and from compliance
+    /// status so a partial freeze does not affect KYC approval.
+    FrozenBalance(Address),
     Allowance(Address, Address),
 }
 
@@ -106,6 +113,9 @@ pub enum Error {
     NoPendingAdmin = 12,
     InsufficientAllowance = 13,
     ValuationChangeTooLarge = 14,
+    /// A transfer or mint would push the recipient jurisdiction above its
+    /// configured holding cap (issue #737).
+    JurisdictionCapExceeded = 15,
 }
 
 #[cfg(test)]
@@ -317,8 +327,28 @@ impl AssetTokenContract {
             panic_err(&env, Error::RecipientNotCompliant);
         }
         let from_bal = Self::balance(env.clone(), from.clone());
-        if from_bal < amount {
+        let frozen: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::FrozenBalance(from.clone()))
+            .unwrap_or(0);
+        if from_bal - frozen < amount {
             panic_err(&env, Error::InsufficientBalance);
+        }
+        // A jurisdiction cap only constrains an *increase* in a jurisdiction's
+        // aggregate holdings. Intra-jurisdiction transfers (and self-transfers)
+        // leave that aggregate unchanged, so they are exempt.
+        if from != to {
+            let compliance_client = ComplianceClient::new(&env, &meta.compliance_contract);
+            if compliance_client.get_jurisdiction(&from) != compliance_client.get_jurisdiction(&to) {
+                Self::enforce_jurisdiction_cap(
+                    &env,
+                    &meta.compliance_contract,
+                    &to,
+                    amount,
+                    meta.total_supply,
+                );
+            }
         }
         // A self-transfer is a no-op: reading `to_bal` and writing it back after
         // the `from` write would otherwise overwrite the debit and inflate the
@@ -418,13 +448,30 @@ impl AssetTokenContract {
         if !Self::compliant(&env, &meta.compliance_contract, &from) {
             panic_err(&env, Error::SenderNotCompliant);
         }
+        let from_jurisdiction = ComplianceClient::new(&env, &meta.compliance_contract)
+            .get_jurisdiction(&from);
         for (to, amount) in transfers.iter() {
             Self::check_amount(&env, amount);
             if !Self::compliant(&env, &meta.compliance_contract, &to) {
                 panic_err(&env, Error::RecipientNotCompliant);
             }
+            let compliance_client = ComplianceClient::new(&env, &meta.compliance_contract);
+            if from_jurisdiction != compliance_client.get_jurisdiction(&to) {
+                Self::enforce_jurisdiction_cap(
+                    &env,
+                    &meta.compliance_contract,
+                    &to,
+                    amount,
+                    meta.total_supply,
+                );
+            }
             let from_bal = Self::balance(env.clone(), from.clone());
-            if from_bal < amount {
+            let frozen: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::FrozenBalance(from.clone()))
+                .unwrap_or(0);
+            if from_bal - frozen < amount {
                 panic_err(&env, Error::InsufficientBalance);
             }
             // A self-transfer is a no-op for the same reason as in `transfer`:
@@ -498,6 +545,13 @@ impl AssetTokenContract {
             .total_supply
             .checked_add(amount)
             .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+        Self::enforce_jurisdiction_cap(
+            &env,
+            &meta.compliance_contract,
+            &to,
+            amount,
+            new_supply,
+        );
         let to_bal = Self::balance(env.clone(), to.clone());
         let new_to_bal = to_bal
             .checked_add(amount)
@@ -557,6 +611,13 @@ impl AssetTokenContract {
             new_supply = new_supply
                 .checked_add(amount)
                 .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+            Self::enforce_jurisdiction_cap(
+                &env,
+                &meta.compliance_contract,
+                &to,
+                amount,
+                new_supply,
+            );
             let to_bal = Self::balance(env.clone(), to.clone());
             let new_to_bal = to_bal
                 .checked_add(amount)
@@ -611,7 +672,12 @@ impl AssetTokenContract {
             panic_err(&env, Error::SenderNotCompliant);
         }
         let from_bal = Self::balance(env.clone(), from.clone());
-        if from_bal < amount {
+        let frozen: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::FrozenBalance(from.clone()))
+            .unwrap_or(0);
+        if from_bal - frozen < amount {
             panic_err(&env, Error::InsufficientBalance);
         }
         Self::set_balance(&env, &from, from_bal - amount);
@@ -743,6 +809,16 @@ impl AssetTokenContract {
         if !Self::compliant(&env, &meta.compliance_contract, &to) {
             panic_err(&env, Error::RecipientNotCompliant);
         }
+        let compliance_client = ComplianceClient::new(&env, &meta.compliance_contract);
+        if compliance_client.get_jurisdiction(&from) != compliance_client.get_jurisdiction(&to) {
+            Self::enforce_jurisdiction_cap(
+                &env,
+                &meta.compliance_contract,
+                &to,
+                amount,
+                meta.total_supply,
+            );
+        }
         let key = DataKey::Allowance(from.clone(), spender.clone());
         let current = env
             .storage()
@@ -756,7 +832,12 @@ impl AssetTokenContract {
             panic_err(&env, Error::InsufficientAllowance);
         }
         let from_bal = Self::balance(env.clone(), from.clone());
-        if from_bal < amount {
+        let frozen: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::FrozenBalance(from.clone()))
+            .unwrap_or(0);
+        if from_bal - frozen < amount {
             panic_err(&env, Error::InsufficientBalance);
         }
         let new_from_bal = from_bal - amount;
@@ -1146,6 +1227,76 @@ impl AssetTokenContract {
         Self::metadata(&env).pending_admin
     }
 
+    /// Freeze `amount` of `holder`'s balance (issue #738).
+    ///
+    /// A frozen amount remains part of the holder's balance and of total
+    /// supply, but cannot be transferred or burned until unfrozen. This is
+    /// deliberately independent of the compliance allowlist: the holder's KYC
+    /// status is untouched, unlike `compliance::suspend`. Multiple freezes
+    /// accumulate; the total frozen may never exceed the holder's balance.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidAmount`] — `amount` ≤ 0.
+    /// - [`Error::InsufficientBalance`] — freezing would exceed the balance.
+    ///
+    /// # Events
+    /// Emits topic `("freeze", holder)` with data `amount`.
+    pub fn freeze_balance(env: Env, admin: Address, holder: Address, amount: i128) {
+        Self::require_admin(&env, &admin);
+        Self::check_amount(&env, amount);
+        let key = DataKey::FrozenBalance(holder.clone());
+        let frozen: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let balance = Self::balance(env.clone(), holder.clone());
+        let next = frozen
+            .checked_add(amount)
+            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+        if next > balance {
+            panic_err(&env, Error::InsufficientBalance);
+        }
+        Self::set_frozen(&env, &holder, next);
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("freeze"), holder), amount);
+    }
+
+    /// Release `amount` of a holder's frozen balance. Admin only.
+    ///
+    /// # Errors
+    /// - [`Error::InvalidAmount`] — `amount` ≤ 0.
+    /// - [`Error::InsufficientBalance`] — `amount` exceeds the frozen amount.
+    ///
+    /// # Events
+    /// Emits topic `("unfreeze", holder)` with data `amount`.
+    pub fn unfreeze_balance(env: Env, admin: Address, holder: Address, amount: i128) {
+        Self::require_admin(&env, &admin);
+        Self::check_amount(&env, amount);
+        let key = DataKey::FrozenBalance(holder.clone());
+        let frozen: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        if frozen < amount {
+            panic_err(&env, Error::InsufficientBalance);
+        }
+        Self::set_frozen(&env, &holder, frozen - amount);
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("unfreeze"), holder), amount);
+    }
+
+    /// Amount of `holder`'s balance currently frozen.
+    pub fn frozen_balance(env: Env, holder: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::FrozenBalance(holder))
+            .unwrap_or(0)
+    }
+
+    /// Balance available to transfer/burn (balance minus frozen amount).
+    pub fn transferable_balance(env: Env, holder: Address) -> i128 {
+        Self::balance(env.clone(), holder.clone()) - Self::frozen_balance(env, holder)
+    }
+
     // ---- internal helpers ----
 
     fn metadata(env: &Env) -> AssetMetadata {
@@ -1168,6 +1319,45 @@ impl AssetTokenContract {
         ComplianceClient::new(env, compliance).is_allowed(who)
     }
 
+    /// Reject an increase in `holder`'s holdings if the jurisdiction cap
+    /// configured in the compliance contract would be breached (issue #737).
+    ///
+    /// The compliance contract owns the *rules* (caps and each holder's
+    /// jurisdiction) while this contract owns the *balances*. Aggregate
+    /// holdings are derived read-only by walking compliance's allowlist and
+    /// summing this contract's local balances for holders in the same
+    /// jurisdiction, so no cross-contract state writes are needed. A
+    /// self-transfer or a transfer between two holders in the same
+    /// jurisdiction leaves the aggregate unchanged and is skipped by callers.
+    fn enforce_jurisdiction_cap(
+        env: &Env,
+        compliance: &Address,
+        holder: &Address,
+        increase: i128,
+        total_supply: i128,
+    ) {
+        if increase <= 0 {
+            return;
+        }
+        let client = ComplianceClient::new(env, compliance);
+        let Some(jurisdiction) = client.get_jurisdiction(holder) else {
+            return; // KYC gating rejects unknown holders separately.
+        };
+        let Some(cap_bps) = client.get_jurisdiction_cap(&jurisdiction) else {
+            return; // Uncapped jurisdiction.
+        };
+        let mut held = 0i128;
+        for other in client.get_allowlist().iter() {
+            if client.get_jurisdiction(&other) == Some(jurisdiction.clone()) {
+                held += Self::balance(env.clone(), other);
+            }
+        }
+        let limit = total_supply.saturating_mul(cap_bps as i128) / 10_000;
+        if held + increase > limit {
+            panic_err(env, Error::JurisdictionCapExceeded);
+        }
+    }
+
     fn check_amount(env: &Env, amount: i128) {
         if amount <= 0 {
             panic_err(env, Error::InvalidAmount);
@@ -1184,6 +1374,20 @@ impl AssetTokenContract {
         );
     }
 
+    fn set_frozen(env: &Env, id: &Address, amount: i128) {
+        let key = DataKey::FrozenBalance(id.clone());
+        if amount == 0 {
+            env.storage().persistent().remove(&key);
+            return;
+        }
+        env.storage().persistent().set(&key, &amount);
+        env.storage().persistent().extend_ttl(
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+    }
+
     fn bump(env: &Env) {
         env.storage()
             .instance()
@@ -1191,6 +1395,10 @@ impl AssetTokenContract {
     }
 }
 
+#[cfg(test)]
+mod test_frozen_balance;
+#[cfg(test)]
+mod test_jurisdiction_cap;
 #[cfg(test)]
 mod test_makeem_approve;
 
