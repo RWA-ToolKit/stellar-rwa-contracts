@@ -1305,6 +1305,28 @@ fn test_get_blocked_jurisdictions_round_trip() {
     assert!(client.is_jurisdiction_blocked(&kp));
 }
 
+/// Issue #681: blocking the same jurisdiction twice must not produce a
+/// duplicate entry in `get_blocked_jurisdictions`, and unblocking must remove
+/// it entirely. This pins the dedup behaviour and the resulting list contents.
+#[test]
+fn test_get_blocked_jurisdictions_dedups_and_unblocks() {
+    let (env, client, admin) = setup();
+    let us = String::from_str(&env, "US");
+
+    // Block the same jurisdiction twice — the second call must be idempotent.
+    client.block_jurisdiction(&admin, &us);
+    client.block_jurisdiction(&admin, &us);
+
+    let blocked = client.get_blocked_jurisdictions();
+    assert_eq!(blocked.len(), 1, "repeated blocks must not duplicate entries");
+    assert_eq!(blocked.get(0).unwrap(), us);
+
+    // Unblocking removes the entry from the returned list.
+    client.unblock_jurisdiction(&admin, &us);
+    assert_eq!(client.get_blocked_jurisdictions().len(), 0);
+    assert!(!client.is_jurisdiction_blocked(&us));
+}
+
 // ---- minimum holding period (issue #454) ----
 
 /// Happy path: an address whose holding period has fully elapsed passes.

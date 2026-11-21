@@ -424,6 +424,16 @@ fn test_get_distributions_for_asset() {
     );
 }
 
+// ---- issue #682: querying distributions for an asset that has never had one
+// created must return an empty Vec rather than panicking on a missing key. ----
+#[test]
+fn test_get_distributions_for_asset_zero_distributions() {
+    let ctx = setup();
+    let fresh_asset = Address::generate(&ctx.env);
+    let distributions = ctx.dividend.get_distributions_for_asset(&fresh_asset);
+    assert_eq!(distributions.len(), 0);
+}
+
 // ---- issue #166: results must be scoped to the requested asset token, not
 // derived from a global counter scan. ----
 #[test]

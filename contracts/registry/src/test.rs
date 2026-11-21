@@ -324,6 +324,24 @@ fn test_active_count_excludes_deactivated() {
 }
 
 #[test]
+fn test_asset_count_get_total_asset_count_and_active_count_agree() {
+    // asset_count() and get_total_asset_count() are two names for the same
+    // total; they must agree after a deactivation, while active_count()
+    // excludes the deactivated asset.
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let a = register(&env, &client, &issuer, "real_estate", 100);
+    register(&env, &client, &issuer, "invoice", 250);
+    register(&env, &client, &issuer, "commodity", 75);
+
+    client.deactivate_asset(&admin, &a);
+
+    assert_eq!(client.asset_count(), 3);
+    assert_eq!(client.get_total_asset_count(), 3);
+    assert_eq!(client.active_count(), 2);
+}
+
+#[test]
 fn test_active_count_matches_asset_count_after_deactivations() {
     // Stresses the asset_count()/active_count() invariant across a sequence
     // of deactivations, not just a single before/after snapshot.
