@@ -53,6 +53,14 @@ fn approve(env: &Env, compliance: &ComplianceContractClient, admin: &Address, wh
 }
 
 #[test]
+fn test_version() {
+    let env = Env::default();
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(&env, &token_id);
+    assert_eq!(token.version(), VERSION);
+}
+
+#[test]
 fn test_approve_then_transfer_from() {
     let s = setup(1_000);
     let bob = Address::generate(&s.env);
