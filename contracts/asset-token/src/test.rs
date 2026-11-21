@@ -645,6 +645,24 @@ fn test_update_valuation() {
     assert_eq!(s.token.get_metadata().valuation, 75_000_000);
 }
 
+/// Issue #684: `get_metadata` must read the same valuation storage that
+/// `update_valuation` writes, rather than a divergent key. A value changed via
+/// `update_valuation` (within the allowed 50% change from the initial
+/// 50_000_000) must be visible through `get_metadata`.
+#[test]
+fn test_get_metadata_reflects_update_valuation() {
+    let s = setup(1_000);
+    assert_eq!(s.token.get_metadata().valuation, 50_000_000);
+
+    s.token.update_valuation(&s.admin, &60_000_000);
+
+    let metadata = s.token.get_metadata();
+    assert_eq!(
+        metadata.valuation, 60_000_000,
+        "get_metadata must reflect the valuation set by update_valuation"
+    );
+}
+
 #[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_update_valuation_by_non_admin_reverts() {
