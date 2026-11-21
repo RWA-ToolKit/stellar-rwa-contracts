@@ -17,7 +17,7 @@ rust-version = "1.74"
 soroban-sdk = "26"
 # ed25519-dalek 2.2 is pinned: a newer major (2.3+) breaks the Soroban host's testutils.
 # Future upgrades require testing against the Soroban SDK version + host environment.
-ed25519-dalek = "=2.2"
+ed25519-dalek = "=3.0"
 
 [profile.release]
 opt-level = "z"
