@@ -10,12 +10,10 @@ the full convention; CI flags contract changes that do not update this file.
 ## [Unreleased]
 
 ### Changed
-- **registry**: deprecate `get_total_asset_count()` in favour of `asset_count()` — both read the same counter but `asset_count` returns `u64` without truncation (#766).
-- **registry**: rename numbered test files (`test_558_…`, `test_559_…`, `test_562_…`, `test_563_…`, `test_567_…`) to feature-named files so test coverage intent is visible at a glance without opening files (#768).
-- **asset-token**: document the `VERSION` bump convention in the constant's doc comment so contributors know when and how to increment it (#775, #776).
-
-### Added
-- `scripts/check_version_bump.sh`: CI script that fails when a `VERSION` constant is bumped without a matching entry in the `## [Unreleased]` section of `CHANGELOG.md` (#776).
+- **toolchain**: re-validated `rust-toolchain.toml` — already on `channel = "stable"` so it tracks the latest stable Rust automatically; added inline notes documenting this (#754).
+- **toolchain**: confirmed `rust-toolchain.toml` already uses `wasm32v1-none` (the current Soroban build target), replacing the older `wasm32-unknown-unknown`; added inline note (#759).
+- **fuzz**: bumped `arbitrary` from 1.3 → 1.4 and `libfuzzer-sys` from 0.4 → 0.4.7; all 5 fuzz targets verified to build (#755).
+- **deps**: re-evaluated `ed25519-dalek = "=2.2"` pin on 2026-11-20 — incompatibility with the Soroban host's curve25519-dalek version still present; kept pin, updated comment with today's date and reasoning (#753).
 
 ### Added
 - **registry**: define and test zero-sized `get_assets_by_type_page` requests as empty results (#557).
