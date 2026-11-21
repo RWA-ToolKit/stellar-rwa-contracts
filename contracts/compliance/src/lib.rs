@@ -522,6 +522,71 @@ impl ComplianceContract {
             .publish((symbol_short!("removed"), address), ());
     }
 
+    /// Suspend several addresses in one transaction (issue #729).
+    ///
+    /// Mirrors [`Self::suspend`] for every address: same admin authorization,
+    /// same `RecordNotFound` behaviour and one `("suspend", address)` event
+    /// per address. A failure reverts the whole invocation.
+    pub fn suspend_batch(env: Env, admin: Address, addresses: Vec<Address>) {
+        require_admin(&env, &admin);
+        for address in addresses.iter() {
+            let mut record = load_record(&env, &address);
+            record.status = ComplianceStatus::Suspended;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Record(address.clone()), &record);
+            bump_instance(&env);
+            env.events()
+                .publish((symbol_short!("suspend"), address), ());
+        }
+    }
+
+    /// Reinstate several suspended addresses in one transaction (issue #729).
+    ///
+    /// Mirrors [`Self::reinstate`] for every address: original KYC metadata is
+    /// preserved, a non-suspended address raises `NotSuspended`, and one
+    /// `("reinstat", address)` event is emitted per address.
+    pub fn reinstate_batch(env: Env, admin: Address, addresses: Vec<Address>) {
+        require_admin(&env, &admin);
+        for address in addresses.iter() {
+            let mut record = load_record(&env, &address);
+            if record.status != ComplianceStatus::Suspended {
+                panic_with_error(&env, Error::NotSuspended);
+            }
+            record.status = ComplianceStatus::Approved;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Record(address.clone()), &record);
+            bump_instance(&env);
+            env.events()
+                .publish((symbol_short!("reinstat"), address), ());
+        }
+    }
+
+    /// Remove several addresses in one transaction (issue #729).
+    ///
+    /// Mirrors [`Self::remove`] for every address: deletes each KYC record and
+    /// allowlist slot, and emits one `("removed", address)` event per address.
+    pub fn remove_batch(env: Env, admin: Address, addresses: Vec<Address>) {
+        require_admin(&env, &admin);
+        for address in addresses.iter() {
+            if !env
+                .storage()
+                .persistent()
+                .has(&DataKey::Record(address.clone()))
+            {
+                panic_with_error(&env, Error::RecordNotFound);
+            }
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Record(address.clone()));
+            remove_from_allowlist(&env, &address);
+            bump_instance(&env);
+            env.events()
+                .publish((symbol_short!("removed"), address), ());
+        }
+    }
+
     /// Core compliance check called by the asset-token contract on every
     /// transfer and mint.
     ///
