@@ -41,8 +41,15 @@ fn test_allowance_unprivileged_caller_can_read_without_auth() {
     token.approve(&admin, &spender, &250, &(env.ledger().sequence() + 100));
 
     // A view needs no require_auth, so the call records no authorization.
-    assert_eq!(token.allowance(&admin, &spender), 250);
-    assert!(env.auths().is_empty());
+    assert_eq!(
+        token.allowance(&admin, &spender),
+        250,
+        "scenario allowance unprivileged caller can read without auth: assertion failed"
+    );
+    assert!(
+        env.auths().is_empty(),
+        "scenario allowance unprivileged caller can read without auth: assertion failed"
+    );
 }
 
 /// A stranger (neither owner nor spender) reads the same value and cannot
@@ -52,9 +59,21 @@ fn test_allowance_unknown_pair_reads_zero_and_does_not_mutate() {
     let (env, token, admin) = setup();
     let spender = Address::generate(&env);
     let stranger = Address::generate(&env);
-    assert_eq!(token.allowance(&stranger, &spender), 0);
-    assert_eq!(token.allowance(&admin, &stranger), 0);
-    assert_eq!(token.allowance(&admin, &spender), 0);
+    assert_eq!(
+        token.allowance(&stranger, &spender),
+        0,
+        "scenario allowance unknown pair reads zero and does not mutate: assertion failed"
+    );
+    assert_eq!(
+        token.allowance(&admin, &stranger),
+        0,
+        "scenario allowance unknown pair reads zero and does not mutate: assertion failed"
+    );
+    assert_eq!(
+        token.allowance(&admin, &spender),
+        0,
+        "scenario allowance unknown pair reads zero and does not mutate: assertion failed"
+    );
 }
 
 /// Zero/minimal input: a never-approved pair, an explicit zero approval and a
@@ -64,21 +83,37 @@ fn test_allowance_unknown_pair_reads_zero_and_does_not_mutate() {
 fn test_allowance_zero_and_minimal_inputs_read_zero() {
     let (env, token, admin) = setup();
     let spender = Address::generate(&env);
-    assert_eq!(token.allowance(&admin, &spender), 0);
+    assert_eq!(
+        token.allowance(&admin, &spender),
+        0,
+        "scenario allowance zero and minimal inputs read zero: assertion failed"
+    );
 
     token.approve(&admin, &spender, &100, &(env.ledger().sequence() + 50));
-    assert_eq!(token.allowance(&admin, &spender), 100);
+    assert_eq!(
+        token.allowance(&admin, &spender),
+        100,
+        "scenario allowance zero and minimal inputs read zero: assertion failed"
+    );
 
     // amount == 0 clears the allowance regardless of expiration_ledger.
     token.approve(&admin, &spender, &0, &0);
-    assert_eq!(token.allowance(&admin, &spender), 0);
+    assert_eq!(
+        token.allowance(&admin, &spender),
+        0,
+        "scenario allowance zero and minimal inputs read zero: assertion failed"
+    );
 }
 
 /// Owner == spender is not special-cased: it reads as zero until approved.
 #[test]
 fn test_allowance_self_pair_reads_zero() {
     let (_env, token, admin) = setup();
-    assert_eq!(token.allowance(&admin, &admin), 0);
+    assert_eq!(
+        token.allowance(&admin, &admin),
+        0,
+        "scenario allowance self pair reads zero: assertion failed"
+    );
 }
 
 /// Expiry boundary: valid through `expiration_ledger` inclusive, zero after.
@@ -89,9 +124,17 @@ fn test_allowance_expiry_boundary_inclusive() {
     let exp = env.ledger().sequence() + 10;
     token.approve(&admin, &spender, &7, &exp);
     env.ledger().set_sequence_number(exp);
-    assert_eq!(token.allowance(&admin, &spender), 7);
+    assert_eq!(
+        token.allowance(&admin, &spender),
+        7,
+        "scenario allowance expiry boundary inclusive: assertion failed"
+    );
     env.ledger().set_sequence_number(exp + 1);
-    assert_eq!(token.allowance(&admin, &spender), 0);
+    assert_eq!(
+        token.allowance(&admin, &spender),
+        0,
+        "scenario allowance expiry boundary inclusive: assertion failed"
+    );
 }
 
 /// `allowance` makes no state change, so it must emit no event (matches its
@@ -104,10 +147,22 @@ fn test_allowance_emits_no_event_but_approve_does() {
 
     token.approve(&admin, &spender, &40, &(env.ledger().sequence() + 20));
     // `events().all()` reflects only the most recent invocation.
-    assert_eq!(env.events().all().events().len(), 1);
+    assert_eq!(
+        env.events().all().events().len(),
+        1,
+        "scenario allowance emits no event but approve does: assertion failed"
+    );
 
-    assert_eq!(token.allowance(&admin, &spender), 40);
-    assert_eq!(env.events().all().events().len(), 0);
+    assert_eq!(
+        token.allowance(&admin, &spender),
+        40,
+        "scenario allowance emits no event but approve does: assertion failed"
+    );
+    assert_eq!(
+        env.events().all().events().len(),
+        0,
+        "scenario allowance emits no event but approve does: assertion failed"
+    );
 }
 
 /// Resource baseline: `allowance` is a single temporary-storage read, so it
@@ -120,13 +175,21 @@ fn test_allowance_resource_cost_baseline() {
     token.approve(&admin, &spender, &100, &(env.ledger().sequence() + 100));
 
     env.cost_estimate().budget().reset_default();
-    assert_eq!(token.allowance(&admin, &spender), 100);
+    assert_eq!(
+        token.allowance(&admin, &spender),
+        100,
+        "scenario allowance resource cost baseline: assertion failed"
+    );
     let cpu_hit = env.cost_estimate().budget().cpu_instruction_cost();
     let mem_hit = env.cost_estimate().budget().memory_bytes_cost();
 
     let other = Address::generate(&env);
     env.cost_estimate().budget().reset_default();
-    assert_eq!(token.allowance(&admin, &other), 0);
+    assert_eq!(
+        token.allowance(&admin, &other),
+        0,
+        "scenario allowance resource cost baseline: assertion failed"
+    );
     let cpu_miss = env.cost_estimate().budget().cpu_instruction_cost();
 
     assert!(cpu_hit > 0 && cpu_hit < 5_000_000, "cpu_hit={cpu_hit}");

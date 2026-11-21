@@ -547,6 +547,56 @@ fn test_add_to_allowlist_batch_with_already_approved_address() {
 }
 
 #[test]
+fn test_batch_suspend_reinstate_remove() {
+    // Issue #729: each batch entry must behave exactly like its single-address
+    // counterpart, including status transitions and allowlist cleanup.
+    let (env, client, admin) = setup();
+    let us = String::from_str(&env, "US");
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+    let mut all: Vec<Address> = Vec::new(&env);
+    all.push_back(a.clone());
+    all.push_back(b.clone());
+    all.push_back(c.clone());
+    let mut entries: Vec<AllowlistEntry> = Vec::new(&env);
+    for address in all.iter() {
+        entries.push_back(AllowlistEntry {
+            address,
+            jurisdiction: us.clone(),
+            expires_at: 0,
+        });
+    }
+    client.add_to_allowlist_batch(&admin, &entries);
+
+    let mut first_two: Vec<Address> = Vec::new(&env);
+    first_two.push_back(a.clone());
+    first_two.push_back(b.clone());
+    client.suspend_batch(&admin, &first_two);
+    assert_eq!(client.status_of(&a), Some(ComplianceStatus::Suspended));
+    assert_eq!(client.status_of(&b), Some(ComplianceStatus::Suspended));
+    assert_eq!(client.status_of(&c), Some(ComplianceStatus::Approved));
+    assert_eq!(client.get_allowlist_count(), 3);
+    assert_eq!(env.events().all().len(), 2, "one suspend event per address");
+
+    client.reinstate_batch(&admin, &first_two);
+    assert!(client.is_allowed(&a));
+    assert!(client.is_allowed(&b));
+    assert_eq!(
+        client.get_allowlist_count(),
+        3,
+        "reinstatement must not duplicate allowlist slots"
+    );
+
+    client.remove_batch(&admin, &all);
+    assert!(client.get_record(&a).is_none());
+    assert!(client.get_record(&b).is_none());
+    assert!(client.get_record(&c).is_none());
+    assert_eq!(client.get_allowlist_count(), 0);
+    assert_eq!(env.events().all().len(), 3, "one removed event per address");
+}
+
+#[test]
 #[should_panic(expected = "Error(Contract, #4)")]
 fn test_add_to_allowlist_batch_partial_failure_reverts_whole_batch() {
     // Issue #338: a failure in one entry must not silently skip that entry

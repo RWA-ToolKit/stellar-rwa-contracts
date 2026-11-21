@@ -17,6 +17,11 @@ fn setup() -> (Env, ComplianceContractClient<'static>, Address) {
     let client = ComplianceContractClient::new(&env, &id);
     let admin = Address::generate(&env);
     client.initialize(&admin);
+    assert_eq!(
+        client.get_admin(),
+        admin.clone(),
+        "shared helper setup: initialize must store the expected admin"
+    );
     (env, client, admin)
 }
 
@@ -30,9 +35,16 @@ fn test_record_acquisition_for_suspended_holder_succeeds() {
     client.suspend(&admin, &holder);
     env.ledger().set_sequence_number(77);
     client.record_acquisition(&admin, &holder);
-    assert_eq!(client.get_first_acquired_ledger(&holder), Some(77));
+    assert_eq!(
+        client.get_first_acquired_ledger(&holder),
+        Some(77),
+        "scenario record acquisition for suspended holder succeeds: assertion failed"
+    );
     // The suspension is unaffected.
-    assert!(!client.is_allowed(&holder));
+    assert!(
+        !client.is_allowed(&holder),
+        "scenario record acquisition for suspended holder succeeds: assertion failed"
+    );
 }
 
 #[test]
@@ -42,8 +54,14 @@ fn test_record_acquisition_for_removed_holder_succeeds() {
     client.add_to_allowlist(&admin, &holder, &String::from_str(&env, "US"), &0);
     client.remove(&admin, &holder);
     client.record_acquisition(&admin, &holder);
-    assert!(client.get_first_acquired_ledger(&holder).is_some());
-    assert!(!client.is_allowed(&holder));
+    assert!(
+        client.get_first_acquired_ledger(&holder).is_some(),
+        "scenario record acquisition for removed holder succeeds: assertion failed"
+    );
+    assert!(
+        !client.is_allowed(&holder),
+        "scenario record acquisition for removed holder succeeds: assertion failed"
+    );
 }
 
 #[test]
@@ -51,7 +69,10 @@ fn test_record_acquisition_for_unknown_holder_succeeds() {
     let (env, client, admin) = setup();
     let holder = Address::generate(&env);
     client.record_acquisition(&admin, &holder);
-    assert!(client.get_first_acquired_ledger(&holder).is_some());
+    assert!(
+        client.get_first_acquired_ledger(&holder).is_some(),
+        "scenario record acquisition for unknown holder succeeds: assertion failed"
+    );
 }
 
 #[test]
@@ -64,7 +85,11 @@ fn test_record_acquisition_while_suspended_keeps_earliest_ledger() {
     client.suspend(&admin, &holder);
     env.ledger().set_sequence_number(500);
     client.record_acquisition(&admin, &holder);
-    assert_eq!(client.get_first_acquired_ledger(&holder), Some(10));
+    assert_eq!(
+        client.get_first_acquired_ledger(&holder),
+        Some(10),
+        "scenario record acquisition while suspended keeps earliest ledger: assertion failed"
+    );
 }
 
 // ---- issue #524: resource cost ----
@@ -90,8 +115,14 @@ fn test_record_acquisition_resource_cost_baseline() {
 
     assert!(cpu_first > 0, "CPU cost must be non-zero");
     assert!(mem_first > 0, "memory cost must be non-zero");
-    assert!(cpu_first < 10_000_000, "first call CPU {cpu_first} unexpectedly high");
-    assert!(mem_first < 4_000_000, "first call memory {mem_first} unexpectedly high");
+    assert!(
+        cpu_first < 10_000_000,
+        "first call CPU {cpu_first} unexpectedly high"
+    );
+    assert!(
+        mem_first < 4_000_000,
+        "first call memory {mem_first} unexpectedly high"
+    );
     assert!(
         cpu_repeat <= cpu_first,
         "repeat call CPU {cpu_repeat} exceeds first call {cpu_first}"
