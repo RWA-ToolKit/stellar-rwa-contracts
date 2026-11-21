@@ -16,6 +16,10 @@ Every privileged (admin- or self-authorized) function across all four
 contracts, the role it requires, and the error raised for the wrong caller
 is documented in the [Authority Matrix](docs/AUTHORITY_MATRIX.md).
 
+Browse the generated API documentation at
+[RWA ToolKit rustdocs](https://rwa-toolkit.github.io/stellar-rwa-contracts/)
+(published from `main` by `.github/workflows/docs.yml`).
+
 For responsible vulnerability disclosure, see the [Security Policy](SECURITY.md).
 
 ## How compliance gating works
