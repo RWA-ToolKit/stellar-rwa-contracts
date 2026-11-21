@@ -139,7 +139,7 @@ mod test_jhaydeeee_transfer_batch;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 #[contract]
 pub struct AssetTokenContract;
@@ -819,6 +819,78 @@ impl AssetTokenContract {
         Self::metadata(&env).total_supply
     }
 
+    /// Emergency recovery transfer to an address that compliance has not
+    /// approved (issue #733).
+    ///
+    /// This is a deliberately narrow escape hatch for incidents such as a
+    /// compromised holder key: the admin may move that holder's balance to a
+    /// treasury address without first permanently allowlisting the treasury.
+    /// It requires strict admin authentication, remains blocked while the
+    /// token is paused, and bypasses **only** the compliance `is_allowed`
+    /// checks — amount, balance and overflow validation still apply.
+    ///
+    /// # Security trade-off
+    /// This bypasses the core guarantee that no balance moves without the
+    /// recipient passing compliance. It exists because requiring a permanent
+    /// KYC allowlist entry for an emergency treasury can be undesirable. Use
+    /// only for recovery, and monitor the distinct `("recover", admin, from)`
+    /// event; ordinary transfers must keep using [`Self::transfer`].
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address. Must authorize the call.
+    /// - `from`: Holder whose balance is seized. Its signature is **not**
+    ///   required — this is the intentional exception for key compromise.
+    /// - `to`: Recovery destination; need not be compliance-approved.
+    /// - `amount`: Positive number of raw token units to move.
+    ///
+    /// # Errors
+    /// - [`Error::Paused`] — token is paused.
+    /// - [`Error::InvalidAmount`] — `amount` ≤ 0.
+    /// - [`Error::InsufficientBalance`] — `from` has less than `amount`.
+    /// - [`Error::Overflow`] — recipient balance would overflow.
+    ///
+    /// # Events
+    /// Emits topic `("recover", admin, from)` with data
+    /// `(to, amount, new_from_bal, new_to_bal)` — distinct from `transfer`
+    /// so recovery operations are trivially auditable.
+    pub fn admin_recover(
+        env: Env,
+        admin: Address,
+        from: Address,
+        to: Address,
+        amount: i128,
+    ) {
+        let meta = Self::require_admin(&env, &admin);
+        if meta.paused {
+            panic_err(&env, Error::Paused);
+        }
+        Self::check_amount(&env, amount);
+        let from_bal = Self::balance(env.clone(), from.clone());
+        if from_bal < amount {
+            panic_err(&env, Error::InsufficientBalance);
+        }
+        if from == to {
+            Self::bump(&env);
+            env.events().publish(
+                (symbol_short!("recover"), admin, from),
+                (to, amount, from_bal, from_bal),
+            );
+            return;
+        }
+        let to_bal = Self::balance(env.clone(), to.clone());
+        let new_from_bal = from_bal - amount;
+        let new_to_bal = to_bal
+            .checked_add(amount)
+            .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+        Self::set_balance(&env, &from, new_from_bal);
+        Self::set_balance(&env, &to, new_to_bal);
+        Self::bump(&env);
+        env.events().publish(
+            (symbol_short!("recover"), admin, from),
+            (to, amount, new_from_bal, new_to_bal),
+        );
+    }
+
     /// Pause every balance-changing operation.
     ///
     /// Callable by the admin or by the optional guardian (issue #1) if one
@@ -1196,3 +1268,5 @@ mod test_makeem_approve;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_admin_recover;

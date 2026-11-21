@@ -128,6 +128,42 @@ fn test_create_distribution_escrows_funds() {
 }
 
 #[test]
+fn test_cross_token_distribution_end_to_end() {
+    let ctx = setup();
+    // A second, distinct payout token (e.g. USDC) funded to the admin.
+    let usdc = ctx.env.register_stellar_asset_contract_v2(ctx.admin.clone());
+    let usdc_id = usdc.address();
+    token::StellarAssetClient::new(&ctx.env, &usdc_id).mint(&ctx.admin, &100_000);
+    let usdc_client = token::TokenClient::new(&ctx.env, &usdc_id);
+
+    let default_pay_before = pay_balance(&ctx, &ctx.admin);
+    let id = ctx.dividend.create_distribution_with_payout(
+        &ctx.admin,
+        &ctx.asset_id,
+        &Some(usdc_id.clone()),
+        &1000,
+        &eligible(&ctx),
+    );
+
+    // The selected payout token, not the asset token (nor the default SAC),
+    // is escrowed and recorded on the distribution.
+    assert_eq!(ctx.dividend.get_distribution(&id).payment_token, usdc_id);
+    assert_eq!(usdc_client.balance(&ctx.admin), 99_000);
+    assert_eq!(usdc_client.balance(&ctx.dividend.address), 1_000);
+    assert_eq!(pay_balance(&ctx, &ctx.admin), default_pay_before);
+
+    // Claims pay out in the cross token using the frozen RWA holder snapshot.
+    let h1_before = usdc_client.balance(&ctx.h1);
+    ctx.dividend.claim(&id, &ctx.h1);
+    assert_eq!(usdc_client.balance(&ctx.h1), h1_before + 300);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 200);
+    ctx.dividend.claim(&id, &ctx.h2);
+    ctx.dividend.claim(&id, &ctx.admin);
+    assert_eq!(usdc_client.balance(&ctx.dividend.address), 0);
+    assert!(ctx.dividend.get_distribution(&id).completed);
+}
+
+#[test]
 fn test_asset_admin_can_create_distribution() {
     let ctx = setup();
     let asset_admin = AssetTokenContractClient::new(&ctx.env, &ctx.asset_id)

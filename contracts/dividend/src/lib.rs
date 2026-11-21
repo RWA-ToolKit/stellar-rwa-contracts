@@ -159,7 +159,7 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
-pub const VERSION: u32 = 6;
+pub const VERSION: u32 = 7;
 
 #[contract]
 pub struct DividendContract;
@@ -271,6 +271,51 @@ impl DividendContract {
             total_amount,
             eligible,
             0,
+        )
+    }
+
+    /// Create a distribution with an optional payout (dividend) token.
+    ///
+    /// Backward-compatible wrapper for multi-asset / cross-token dividends
+    /// (issue #730). Existing callers keep using [`Self::create_distribution`],
+    /// which takes an explicit `payment_token`. This variant lets an issuer
+    /// fund a distribution in a token different from the asset token whose
+    /// holders are being snapshotted (e.g. pay USDC to holders of an RWA
+    /// token). Passing `None` defaults the payout token to `asset_token`,
+    /// preserving the single-token behaviour.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address. Must authorize the call.
+    /// - `asset_token`: Address of the asset-token contract whose holders are
+    ///   eligible. Its `total_supply()` is still used as a sanity check.
+    /// - `payout_token`: `Some(address)` of the SAC/SEP-41 token used to fund
+    ///   the distribution and pay holders; `None` means `asset_token`.
+    /// - `total_amount`: Total units of the payout token to escrow. Must be > 0.
+    /// - `eligible`: Frozen `(holder, balance)` snapshot sizing each share.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin (or the asset token's admin) and must
+    /// sign the transaction.
+    ///
+    /// # Events
+    /// Emits topic `("created", admin)` with data `(id, total_amount)`,
+    /// identical to [`Self::create_distribution`].
+    pub fn create_distribution_with_payout(
+        env: Env,
+        admin: Address,
+        asset_token: Address,
+        payout_token: Option<Address>,
+        total_amount: i128,
+        eligible: Vec<(Address, i128)>,
+    ) -> u64 {
+        let payment_token = payout_token.unwrap_or_else(|| asset_token.clone());
+        Self::create_distribution(
+            env,
+            admin,
+            asset_token,
+            payment_token,
+            total_amount,
+            eligible,
         )
     }
 

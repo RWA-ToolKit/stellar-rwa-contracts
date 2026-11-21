@@ -239,3 +239,21 @@ deliberate and pinned by tests in `contracts/asset-token/src/test.rs`.
 | Self-transfer (`from == to`) | **Allowed**, short-circuited to a true no-op (balances untouched, event still emitted) | Rejecting it forces callers to special-case an address match themselves; a no-op is safe and simpler, and avoids a double-apply bug in naive debit/credit code. | `test_self_transfer_no_inflation`, `test_self_transfer_exceeding_balance_fails`, `test_self_transfer_by_suspended_holder_fails` |
 | Burn by a suspended/non-compliant holder | **Rejected** with `SenderNotCompliant` (#7) | `burn` still mutates balance and total supply, so it is gated exactly like the `from` side of a `transfer`; suspension cannot be bypassed via self-burn. | `test_burn_blocked_when_holder_not_compliant`, `test_burn_blocked_when_holder_suspended` |
 | Mint to a non-compliant recipient | **Rejected** with `RecipientNotCompliant` (#8) | Minting is the only way new supply enters circulation; leaving it ungated would let tokens reach an address no `transfer` could ever reach. `mint_batch` applies the same check per recipient. | `test_mint_to_noncompliant_fails`, `test_mint_batch_reverts_entirely_on_noncompliant_recipient` |
+
+## Emergency recovery transfers (issue #733)
+
+`admin_recover(admin, from, to, amount)` is a narrowly scoped compliance
+exemption for incidents such as a compromised holder key. It requires strict
+admin authentication (`admin.require_auth()`), still rejects calls while the
+token is paused, and still validates amount/balance/overflow. It deliberately
+bypasses the compliance `is_allowed` checks for both parties so funds can be
+moved to a treasury that is not (and need not become) KYC-allowlisted.
+
+**Security trade-off:** this is the only balance-moving path that does not
+require compliance approval, and it does not require the holder's signature.
+It breaks the usual "no transfer without compliance" invariant by design, so
+it must be treated as a break-glass operation: restrict admin key access, use
+it only for genuine recovery, and audit the distinct `("recover", admin,
+from)` event (data: `(to, amount, new_from_bal, new_to_bal)`), which is never
+emitted by ordinary `transfer` calls. Routine operations must continue to use
+`transfer`, which keeps both compliance checks.

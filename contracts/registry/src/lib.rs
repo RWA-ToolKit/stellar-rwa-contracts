@@ -41,6 +41,10 @@ enum DataKey {
     /// acceptance via `accept_admin` (issue #4). Absent when there is no
     /// proposal in flight.
     PendingAdmin,
+    /// Emergency-stop flag for state-mutating operations (issue #731).
+    Paused,
+    /// Optional delegate allowed to pause but not unpause (issue #731).
+    Guardian,
     Counter,
     Ids,
     Asset(u64),
@@ -70,6 +74,8 @@ pub enum Error {
     NoPendingAdmin = 8,
     /// A token contract is already registered under a different asset id.
     DuplicateAsset = 9,
+    /// A state-mutating operation was attempted while paused (issue #731).
+    Paused = 10,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -210,6 +216,7 @@ impl RegistryContract {
         asset_type: String,
         valuation: i128,
     ) -> u64 {
+        Self::require_unpaused(&env);
         Self::assert_init(&env);
         issuer.require_auth();
         if valuation < 0 {
@@ -513,6 +520,7 @@ impl RegistryContract {
     /// Emits topic `("deactvate",)` with data `asset_id` (only when the asset
     /// was previously active).
     pub fn deactivate_asset(env: Env, admin: Address, asset_id: u64) {
+        Self::require_unpaused(&env);
         let mut entry: AssetEntry = env
             .storage()
             .persistent()
@@ -583,6 +591,7 @@ impl RegistryContract {
     /// Emits topic `("valuation", asset_id)` with data
     /// `(old_valuation, new_valuation)`.
     pub fn update_valuation(env: Env, admin: Address, asset_id: u64, new_valuation: i128) {
+        Self::require_unpaused(&env);
         Self::require_admin(&env, &admin);
         if new_valuation < 0 {
             panic_err(&env, Error::InvalidValuation);
@@ -740,6 +749,7 @@ impl RegistryContract {
     /// Emits topic `("reactvate",)` with data `asset_id` (only when the asset
     /// was previously inactive).
     pub fn reactivate_asset(env: Env, admin: Address, asset_id: u64) {
+        Self::require_unpaused(&env);
         let mut entry: AssetEntry = env
             .storage()
             .persistent()
@@ -990,6 +1000,57 @@ impl RegistryContract {
             id += 1;
         }
         out
+    }
+
+    /// Reject state-mutating calls while the registry is paused.
+    fn require_unpaused(env: &Env) {
+        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
+        if paused {
+            panic_err(env, Error::Paused);
+        }
+    }
+
+    /// Pause all state-mutating registry operations (issue #731).
+    ///
+    /// Callable by the admin or the optional guardian. Read-only views keep
+    /// working, so explorers and TVL readers are unaffected.
+    pub fn pause(env: Env, caller: Address) {
+        caller.require_auth();
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .unwrap_or_else(|| panic_err(&env, Error::NotInitialized));
+        let guardian: Option<Address> = env.storage().instance().get(&DataKey::Guardian);
+        if caller != admin && guardian.as_ref() != Some(&caller) {
+            panic_err(&env, Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::Paused, &true);
+        bump(&env);
+        env.events().publish((symbol_short!("pause"),), caller);
+    }
+
+    /// Resume state-mutating operations. Admin only; guardian cannot unpause.
+    pub fn unpause(env: Env, admin: Address) {
+        Self::require_admin(&env, &admin);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        bump(&env);
+        env.events().publish((symbol_short!("unpause"),), admin);
+    }
+
+    /// Set or clear the optional pause guardian. Admin only; usable while paused.
+    pub fn set_guardian(env: Env, admin: Address, guardian: Option<Address>) {
+        Self::require_admin(&env, &admin);
+        env.storage().instance().set(&DataKey::Guardian, &guardian);
+        bump(&env);
+        env.events().publish((symbol_short!("guardian"),), guardian);
+    }
+
+    /// Whether state-mutating operations are currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+    }
+
+    /// The current pause guardian, if one is configured.
+    pub fn get_guardian(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::Guardian)
     }
 
     /// Configured admin.
@@ -1259,6 +1320,8 @@ fn validate_asset_type(env: &Env, asset_type: &String) {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_pause;
 // Issue #768: renamed from numbered (test_558_…, etc.) to feature-named files.
 #[cfg(test)]
 mod test_assets_by_type_page_events;

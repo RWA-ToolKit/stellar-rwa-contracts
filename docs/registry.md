@@ -266,3 +266,13 @@ when the filter is not required.
 - TVL is a running total over active entries, updated incrementally on
   register, deactivate and reactivate, so it reflects the current state
   immediately without iterating the registry.
+
+## Emergency pause (issue #731)
+
+The registry has an emergency stop independent of the asset token. `pause`
+is callable by the admin or the optional `guardian` configured with
+`set_guardian`; `unpause` is admin-only. While paused, `register_asset`,
+`deactivate_asset`, `update_valuation` and `reactivate_asset` fail with
+`Error::Paused`. Read-only views (`get_asset`, pages, `total_value_locked`,
+counts) remain available, and admin/guardian configuration remains writable
+while paused so the incident can be resolved.

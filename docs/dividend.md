@@ -6,6 +6,19 @@ claims their share, paid from escrow held by this contract.
 
 - Testnet: `CAR4XY3CEBQWFOL27JEWFW34KXSIZA7RFKDQMEIV7ZU723RWY37I2SYX`
 
+## Multi-asset / cross-token dividends (issue #730)
+
+`create_distribution` already accepts an explicit `payment_token`, so an issuer
+can fund and pay a distribution in any SAC/SEP-41 token (e.g. USDC) while the
+holder snapshot still comes from a different RWA asset token. To make the
+default explicit and keep the single-token API backward compatible,
+`create_distribution_with_payout(admin, asset_token, payout_token, total_amount,
+eligible)` is also available: pass `Some(payout_token)` for a cross-token
+distribution, or `None` to default the payout token to `asset_token`. The chosen
+token is stored as `Distribution.payment_token`, is the token escrowed at
+creation, and is the token transferred on every `claim`. Cross-token payouts are
+covered end to end by `test_cross_token_distribution_end_to_end`.
+
 ## Proportional formula
 
 At claim time a holder can claim:
