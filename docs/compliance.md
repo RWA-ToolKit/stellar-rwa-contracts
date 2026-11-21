@@ -57,6 +57,17 @@ casing/whitespace variant of the same code resolve to the same jurisdiction.
 > lapse no matter how far the ledger advances. `0` is never a real expiry
 > ledger sequence, so there is no collision with genuinely-expired records.
 
+### `AllowlistEntry` ergonomics (batch KYC)
+
+`AllowlistEntry` (used by `add_to_allowlist_batch`) keeps all three fields
+required in the contract ABI — no breaking change. For Rust clients,
+`AllowlistEntry::new(address, jurisdiction)` supplies the documented default
+`expires_at = 0` (permanent approval); chain `.with_expires_at(ledger)` when an
+expiry is needed. Jurisdiction has no "unrestricted" sentinel: every approval
+carries a canonical two-letter code because `is_allowed` checks it against the
+blocked-jurisdiction list. Omitting it would silently weaken that policy, so it
+is intentionally not an `Option`.
+
 ## Functions
 
 ### `initialize(admin: Address)`

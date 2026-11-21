@@ -43,6 +43,25 @@ cargo test -p compliance
 > cargo update -p ed25519-dalek@3.0.0 --precise 2.2.0
 > ```
 
+### Debugging contract panics (release-with-logs profile)
+
+The standard `release` profile compiles panic diagnostics out. To see which
+value triggered a contract error, build with the `release-with-logs` profile:
+
+```bash
+stellar contract build --profile release-with-logs
+```
+
+In this profile (`debug-assertions = true` in `Cargo.toml`), `asset-token`'s
+`panic_err` helpers publish a `("panic_dbg", <offending value>)` diagnostic
+event with the error variant as data immediately before panicking. Examples of
+published values include `(amount, balance)` for `InsufficientBalance`, the
+failing address for compliance failures, and `(min, max, len)` for an invalid
+string. The event is `cfg(debug_assertions)`-gated, so ordinary release wasm
+size and cost are unchanged. Note that a panicking Soroban invocation may be
+rolled back by the host; treat these events as a local/debugging aid, not an
+indexed production signal.
+
 ## Fuzzing
 
 The fuzz targets live in `fuzz/fuzz_targets/` and are separate from the

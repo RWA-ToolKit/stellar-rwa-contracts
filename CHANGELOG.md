@@ -10,6 +10,7 @@ the full convention; CI flags contract changes that do not update this file.
 ## [Unreleased]
 
 ### Changed
+- **compliance**: added `AllowlistEntry::new` / `with_expires_at` Rust helpers with the documented `expires_at = 0` (permanent) default; no ABI or behavior change (#742).
 - **asset-token**: moved `panic_err` and `check_str` helpers into a dedicated `internal` module; no behavior change (#769).
 - **compliance**: split `lib.rs` (1491 lines) into `allowlist`, `jurisdiction`, `admin`, and `internal` submodules; no behavior change (#767).
 - **docs**: added inline illustrative usage examples to `transfer_batch`, `add_to_allowlist_batch`, `create_distribution`, and `register_asset` doc comments (#749).
@@ -43,6 +44,7 @@ the full convention; CI flags contract changes that do not update this file.
 - Asset-scoped dividend and registry operations now allow either the contract admin or the asset's admin to act.
 
 ### Fixed
+- **asset-token**: `panic_err` now publishes `("panic_dbg", <offending value>)` diagnostic events under the `release-with-logs` profile only; standard release wasm is unchanged (#740).
 - Registry asset-name validation now enforces the same 64-byte cap as the asset-token metadata checks and documents the UTF-8 byte-based rule.
 - `deploy.sh` no longer tries to friendbot on `mainnet` and avoids silently ignoring a checked-in `.env` file.
 
