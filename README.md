@@ -16,6 +16,10 @@ Every privileged (admin- or self-authorized) function across all four
 contracts, the role it requires, and the error raised for the wrong caller
 is documented in the [Authority Matrix](docs/AUTHORITY_MATRIX.md).
 
+For a system-level view of how the four contracts relate to each other —
+which contracts call which, and the direction of each cross-contract call —
+see the [Architecture](docs/ARCHITECTURE.md) doc.
+
 Browse the generated API documentation at
 [RWA ToolKit rustdocs](https://rwa-toolkit.github.io/stellar-rwa-contracts/)
 (published from `main` by `.github/workflows/docs.yml`).
@@ -32,6 +36,11 @@ transfer(from, to, amount)
   ├─ compliance.is_allowed(to)     ── cross-contract call ──►  compliance contract
   └─ move balances + emit event
 ```
+
+This snippet covers only `transfer`'s compliance check. See the
+[Architecture](docs/ARCHITECTURE.md) doc for the full picture, including the
+dividend contract's balance queries against `asset-token` and the registry's
+role as the discovery layer.
 
 ## Building
 

@@ -334,6 +334,50 @@ the whole invocation (including events), which is why batch operations such as
 `transfer_batch`, `mint_batch`, and `add_to_allowlist_batch` validate every
 entry and revert as a unit.
 
+## Resource cost tests
+
+Paginated and loop-heavy functions can pass every correctness test and still
+become unusable if they start consuming far more CPU or memory than the
+network allows. The registry contract guards against that with **resource cost
+tests**: tests that call a function and assert on the Soroban resource budget
+it consumed. Existing examples:
+
+- `contracts/registry/src/test_assets_by_type_page_resource_cost.rs`
+- `contracts/registry/src/test_ochedev6789_issuer_page_resource_cost.rs`
+
+The pattern is:
+
+1. **Reset the budget** so the measurement covers only the call under test:
+   ```rust
+   env.cost_estimate().budget().reset_default();
+   ```
+2. **Call the function** exactly as a client would (for example
+   `client.get_assets_by_type_page(&issuer, &asset_type, &start, &limit)`).
+3. **Read the observed costs**:
+   ```rust
+   let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+   let mem = env.cost_estimate().budget().memory_bytes_cost();
+   ```
+4. **Print them** (`std::println!` or the test logger) so a failing run shows
+   the actual numbers and reviewers can see how close the call is to the limit.
+5. **Assert against generous ceilings** — either a comfortable multiple of the
+   expected cost or the Soroban per-transaction hard limits. The goal is to
+   catch order-of-magnitude regressions (an accidental O(n²) scan, an unbounded
+   loop, a missing page limit), not to pin exact numbers. Tight assertions turn
+   every unrelated SDK or compiler bump into a failing test.
+
+Add a resource cost test when you:
+
+- introduce a new paginated function (anything taking a `start`/`limit` pair or
+  returning a page of results),
+- add or change a loop that iterates over stored entries, or
+- change the data layout or iteration order of an existing paginated function.
+
+Keep the test next to the contract's other tests, name it
+`test_<function>_resource_cost.rs`, and use a realistic worst case (a full
+page, or the largest batch the function accepts) so the ceiling reflects the
+most expensive legitimate call.
+
 ## Coding standards
 
 - No `todo!()`, no `unwrap()`/`expect()` in contract code — use typed
