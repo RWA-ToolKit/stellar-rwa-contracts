@@ -10,10 +10,11 @@ From a fresh clone to a fully deployed and exercised asset on testnet in
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   rustup target add wasm32v1-none
   ```
-- **Stellar CLI** (>= 22, includes Soroban):
+- **Stellar CLI** (>= 26, matching the `soroban-sdk = "26"` pin in
+  `Cargo.toml`; includes Soroban support):
   ```bash
   cargo install --locked stellar-cli
-  stellar --version   # expect >= 22
+  stellar --version   # expect >= 26
   ```
 
 > **Note:** this repo uses `wasm32v1-none` (not `wasm32-unknown-unknown`),
@@ -34,7 +35,7 @@ stellar network add testnet \
   --network-passphrase "Test SDF Network ; September 2015"
 
 # Generate and fund a keypair (Friendbot covers the fee)
-stellar keys generate --network testnet --fund rwa-admin
+stellar keys generate rwa-admin --network testnet --fund
 ```
 
 ### 2. Deploy all contracts
@@ -46,6 +47,10 @@ register asset.
 ```bash
 NETWORK=testnet IDENTITY=rwa-admin ./scripts/deploy.sh
 ```
+
+`deploy.sh` builds the contracts with `stellar contract build` (which targets
+`wasm32v1-none`) and deploys each one with `stellar contract deploy --wasm
+<path> --source rwa-admin --network testnet`.
 
 When it finishes it prints four contract ids. Copy them for the steps below,
 or paste them into `DEPLOYMENTS.md`.
@@ -80,6 +85,11 @@ stellar contract invoke \
   --expires_at 0
 ```
 
+> **Note:** the `--` separator is required — everything after it is passed to
+> the contract function, so `--admin`, `--address`, etc. are function
+> arguments, not CLI flags.
+```
+
 ### 4. Mint tokens to Alice
 
 ```bash
@@ -106,6 +116,11 @@ stellar contract invoke \
   --amount 1000
 ```
 
+> **Note:** `--source` takes a Stellar CLI identity name (or secret key), not
+> a public key. To sign as Alice, import her secret with
+> `stellar keys add alice --secret-key <alice-secret>` and use
+> `--source alice`.
+
 ### 6. Hand the asset-token admin role to Alice
 
 Admin changes are two-step: the current admin proposes a successor, and the
@@ -123,7 +138,7 @@ stellar contract invoke \
 
 stellar contract invoke \
   --id "$ASSET_ID" \
-  --source "$ALICE_ADDR" \
+  --source alice \
   --network testnet \
   -- accept_admin \
   --new_admin "$ALICE_ADDR"
@@ -134,11 +149,12 @@ Done! Asset deployed, minted, transferred, and admin handed over on testnet.
 ## Keeping the quickstart accurate
 
 A CI script (`scripts/check_quickstart.sh`) greps `QUICKSTART.md` for
-`stellar contract invoke` calls and verifies that every `--function-name`
-argument matches a function that exists in the corresponding contract's
-interface spec (under `target/interface-specs/`). The CI job
-`check-quickstart-params` runs this script on every pull request, so a
-drift between the docs and the actual contract signatures will fail CI
+`stellar contract invoke` calls and verifies that the function name passed
+after the `--` separator (e.g. `add_to_allowlist`, `mint`, `transfer`,
+`propose_admin`, `accept_admin`) matches a function that exists in the
+corresponding contract's interface spec (under `target/interface-specs/`).
+The CI job `check-quickstart-params` runs this script on every pull request,
+so a drift between the docs and the actual contract signatures will fail CI
 before it can be merged.
 
 ## Integrating from TypeScript
