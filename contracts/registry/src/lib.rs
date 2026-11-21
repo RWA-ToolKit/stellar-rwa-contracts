@@ -11,6 +11,7 @@ use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, String, Vec,
 };
+use rwa_common::validation::check_str as common_check_str;
 
 // NOTE: The `Ids` instance-storage key is retained in the enum only for
 // forward-compatibility reads of contracts already deployed; it is no longer
@@ -214,17 +215,10 @@ impl RegistryContract {
         if valuation < 0 {
             panic_err(&env, Error::InvalidValuation);
         }
-        // Require non-empty name and a recognised asset type (issue #48).
-        if name.len() == 0 {
-            panic_err(&env, Error::InvalidInput);
-        }
-        // Reject names longer than MAX_NAME_LEN bytes (issue #439).
-        // The asset-token contract enforces the same 64-byte cap; keeping
-        // them in sync prevents unbounded ledger entries that inflate the
-        // cost of every registry read and break UI card layout.
-        if name.len() > MAX_NAME_LEN {
-            panic_err(&env, Error::InvalidInput);
-        }
+        // Require non-empty name within MAX_NAME_LEN bytes (issues #48 / #439 / #765).
+        // Delegates to the shared rwa-common guard so the cap stays consistent
+        // with the asset-token contract automatically.
+        common_check_str(&env, &name, 1, MAX_NAME_LEN, Error::InvalidInput);
         validate_asset_type(&env, &asset_type);
         // Reject re-registering the same token contract under a new id
         // (issue #308): otherwise TVL and the explore page would double-count
@@ -789,6 +783,12 @@ impl RegistryContract {
     /// Equivalent to `asset_count`; provided under this name so callers that
     /// are building paginated UIs can use a uniform naming convention:
     /// `get_total_asset_count` / `get_assets_page` pair naturally together.
+    /// Total number of registered assets (active and inactive), as `u32`.
+    ///
+    /// **Deprecated** (#766): prefer `asset_count()` which returns the same
+    /// value as `u64` without truncation, and whose name matches the counter
+    /// it reads (`DataKey::Counter`).  This function is kept for backwards
+    /// compatibility and will be removed in a future version.
     pub fn get_total_asset_count(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -939,9 +939,8 @@ impl RegistryContract {
     /// Emits topic `("proposed", admin)` with data `new_admin`.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         Self::require_admin(&env, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::PendingAdmin, &new_admin);
+        // Shared admin-handover helper (issue #764).
+        rwa_common::admin::propose(&env, &DataKey::PendingAdmin, &new_admin);
         bump(&env);
         env.events()
             .publish((symbol_short!("proposed"), admin), new_admin);
@@ -964,10 +963,10 @@ impl RegistryContract {
     /// Emits topic `("cancelled", admin)` with data `()`.
     pub fn cancel_admin_proposal(env: Env, admin: Address) {
         Self::require_admin(&env, &admin);
-        if !env.storage().instance().has(&DataKey::PendingAdmin) {
+        // Shared admin-handover helper (issue #764).
+        if !rwa_common::admin::cancel(&env, &DataKey::PendingAdmin) {
             panic_err(&env, Error::NoPendingAdmin);
         }
-        env.storage().instance().remove(&DataKey::PendingAdmin);
         bump(&env);
         env.events()
             .publish((symbol_short!("cancelled"), admin), ());
@@ -997,25 +996,22 @@ impl RegistryContract {
     /// # Events
     /// Emits topic `("set_admin", old_admin)` with data `new_admin`.
     pub fn accept_admin(env: Env, new_admin: Address) {
-        new_admin.require_auth();
-        let pending: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingAdmin)
-            .unwrap_or_else(|| panic_err(&env, Error::NoPendingAdmin));
-        if pending != new_admin {
-            panic_err(&env, Error::Unauthorized);
+        // Shared admin-handover helper (issue #764).
+        let result = rwa_common::admin::accept(
+            &env,
+            &DataKey::Admin,
+            &DataKey::PendingAdmin,
+            &new_admin,
+        );
+        match result {
+            None => panic_err(&env, Error::NoPendingAdmin),
+            Some(Err(())) => panic_err(&env, Error::Unauthorized),
+            Some(Ok((old_admin, _))) => {
+                bump(&env);
+                env.events()
+                    .publish((symbol_short!("set_admin"), old_admin), new_admin);
+            }
         }
-        let old_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .unwrap_or_else(|| panic_err(&env, Error::NotInitialized));
-        env.storage().instance().set(&DataKey::Admin, &new_admin);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-        bump(&env);
-        env.events()
-            .publish((symbol_short!("set_admin"), old_admin), new_admin);
     }
 
     /// Returns the address currently proposed as the next admin, if any.
@@ -1034,7 +1030,7 @@ impl RegistryContract {
     /// # Events
     /// None.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
-        env.storage().instance().get(&DataKey::PendingAdmin)
+        rwa_common::admin::get_pending(&env, &DataKey::PendingAdmin)
     }
 
     // ---- internal helpers ----
@@ -1180,5 +1176,22 @@ fn validate_asset_type(env: &Env, asset_type: &String) {
 
 #[cfg(test)]
 mod test;
+// Issue #768: renamed from numbered (test_558_…, etc.) to feature-named files.
 #[cfg(test)]
-mod test_563_reactivate_asset_events;
+mod test_assets_by_type_page_events;
+#[cfg(test)]
+mod test_assets_by_type_page_resource_cost;
+#[cfg(test)]
+mod test_reactivate_asset_zero_input;
+#[cfg(test)]
+mod test_reactivate_asset_events;
+#[cfg(test)]
+mod test_assets_page_zero_empty;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_deactivated;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_events;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_resource_cost;
+#[cfg(test)]
+mod test_ochedev6789_issuer_page_zero_empty;

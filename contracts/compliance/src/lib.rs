@@ -572,7 +572,7 @@ impl ComplianceContract {
                 .publish((symbol_short!("expired"), address), record.expires_at);
             return false;
         }
-        if Self::is_jurisdiction_blocked(env.clone(), record.jurisdiction) {
+        if env.storage().persistent().get(&DataKey::Blocked(record.jurisdiction)).unwrap_or(false) {
             return false;
         }
         // Minimum holding period check (issue #454).
