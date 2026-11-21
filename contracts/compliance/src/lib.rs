@@ -117,6 +117,9 @@ enum DataKey {
     /// Never updated once set so that the clock always starts from the
     /// earliest acquisition, not from a later top-up.
     FirstAcquiredLedger(Address),
+    /// Maximum holding, in basis points of total supply, permitted for one
+    /// jurisdiction (issue #737). Absent means uncapped.
+    JurisdictionCap(String),
 }
 
 /// Max addresses per allowlist page (issue #177). Bounds the size of any single
@@ -149,6 +152,8 @@ pub enum Error {
     /// `set_min_holding_period` was called with `min_ledgers` overflowing when
     /// added to a realistic ledger sequence; treated as an invalid input.
     InvalidHoldingPeriod = 9,
+    /// `set_jurisdiction_cap` called with a value above 10_000 bps.
+    InvalidCap = 10,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280; // ~5s ledgers
@@ -896,6 +901,65 @@ impl ComplianceContract {
         bump_instance(&env);
         env.events()
             .publish((symbol_short!("unblkjur"),), jurisdiction);
+    }
+
+    /// Set a graduated holding cap for a jurisdiction (issue #737).
+    ///
+    /// `max_bps` is the maximum share of an asset's total supply that holders
+    /// in this jurisdiction may collectively hold, in basis points
+    /// (`10_000` = 100%). `0` forbids holding any supply; passing `None`
+    /// removes a previously configured cap. The asset token consults this
+    /// value when checking a transfer or mint that increases the jurisdiction's
+    /// aggregate holdings; binary `block_jurisdiction` remains independent.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
+    /// # Errors
+    /// - [`Error::Unauthorized`] — `admin` is not the stored admin.
+    /// - [`Error::InvalidJurisdiction`] — not a two-letter alpha code.
+    /// - [`Error::InvalidCap`] — `max_bps` > 10_000.
+    ///
+    /// # Events
+    /// Emits topic `("jurcap", jurisdiction)` with data `max_bps`
+    /// (`None` when cleared).
+    pub fn set_jurisdiction_cap(
+        env: Env,
+        admin: Address,
+        jurisdiction: String,
+        max_bps: Option<u32>,
+    ) {
+        require_admin(&env, &admin);
+        let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
+        let key = DataKey::JurisdictionCap(jurisdiction.clone());
+        if let Some(bps) = max_bps {
+            if bps > 10_000 {
+                panic_with_error(&env, Error::InvalidCap);
+            }
+            env.storage().persistent().set(&key, &bps);
+        } else {
+            env.storage().persistent().remove(&key);
+        }
+        bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("jurcap"), jurisdiction), max_bps);
+    }
+
+    /// Returns the configured cap in basis points, or `None` if uncapped.
+    pub fn get_jurisdiction_cap(env: Env, jurisdiction: String) -> Option<u32> {
+        let jurisdiction = normalize_jurisdiction(&env, &jurisdiction);
+        env.storage()
+            .persistent()
+            .get(&DataKey::JurisdictionCap(jurisdiction))
+    }
+
+    /// Returns the canonical jurisdiction of an approved address, if known.
+    ///
+    /// Used by the asset token to classify holders when enforcing a
+    /// jurisdiction cap; exposes only the jurisdiction, never the full KYC
+    /// record.
+    pub fn get_jurisdiction(env: Env, address: Address) -> Option<String> {
+        Self::get_record(env, address).map(|record| record.jurisdiction)
     }
 
     /// Returns `true` if the given jurisdiction is currently blocked.
