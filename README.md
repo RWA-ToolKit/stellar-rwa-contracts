@@ -33,6 +33,29 @@ transfer(from, to, amount)
   └─ move balances + emit event
 ```
 
+## Deployment Order
+
+The contracts reference each other through cross-contract calls, so they must be
+deployed and initialized in dependency order. Initializing a contract before the
+contract it depends on exists will fail with a confusing cross-contract call error.
+
+1. **Deploy and initialize `compliance`** — it has no dependencies on the other
+   contracts.
+2. **Deploy and initialize `registry`** — it has no dependencies on the other
+   contracts.
+3. **Deploy and initialize `asset-token`**, passing the `compliance` contract
+   address (via `initialize` / `set_compliance`). `asset-token` calls
+   `compliance.is_allowed(...)` on every transfer, so the compliance contract must
+   already exist and be initialized.
+4. **Deploy and initialize `dividend`**, passing the `asset-token` address. The
+   dividend contract reads token balances and holder snapshots from `asset-token`,
+   so the asset token must already exist and be initialized.
+
+For full deployment scripts and per-network addresses, see
+[DEPLOYMENTS.md](DEPLOYMENTS.md). For the meaning of the errors raised when a
+dependency is missing or misconfigured, see
+[docs/ERROR_CODES.md](docs/ERROR_CODES.md).
+
 ## Building
 
 ```sh
