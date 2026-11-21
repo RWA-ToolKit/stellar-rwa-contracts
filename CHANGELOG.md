@@ -9,6 +9,14 @@ the full convention; CI flags contract changes that do not update this file.
 
 ## [Unreleased]
 
+### Changed
+- **registry**: deprecate `get_total_asset_count()` in favour of `asset_count()` — both read the same counter but `asset_count` returns `u64` without truncation (#766).
+- **registry**: rename numbered test files (`test_558_…`, `test_559_…`, `test_562_…`, `test_563_…`, `test_567_…`) to feature-named files so test coverage intent is visible at a glance without opening files (#768).
+- **asset-token**: document the `VERSION` bump convention in the constant's doc comment so contributors know when and how to increment it (#775, #776).
+
+### Added
+- `scripts/check_version_bump.sh`: CI script that fails when a `VERSION` constant is bumped without a matching entry in the `## [Unreleased]` section of `CHANGELOG.md` (#776).
+
 ### Added
 - **registry**: define and test zero-sized `get_assets_by_type_page` requests as empty results (#557).
 - **admin handover**: all four contracts now test that only the proposed successor can accept, cancellation clears the pending address, and a new proposal replaces the previous nominee; added an end-to-end CLI walkthrough.

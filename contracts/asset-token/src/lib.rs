@@ -136,6 +136,11 @@ mod test_jhaydeeee_transfer_batch;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
+///
+/// **Convention (#775):** bump this constant whenever a public function
+/// signature, event schema, or storage layout changes in a way that affects
+/// integrators.  Every bump must be accompanied by a `CHANGELOG.md` entry
+/// under `## [Unreleased]` that describes the change and references the PR.
 pub const VERSION: u32 = 1;
 
 #[contract]
