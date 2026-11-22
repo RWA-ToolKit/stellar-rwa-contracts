@@ -1378,3 +1378,5 @@ mod test_makeem_approve;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_batch_size_bench;
