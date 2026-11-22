@@ -1380,6 +1380,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "cancelled"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "completed"
                     },
                     "val": {
@@ -1468,6 +1476,14 @@
                     },
                     "val": {
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "cancelled"
+                    },
+                    "val": {
+                      "bool": false
                     }
                   },
                   {

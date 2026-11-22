@@ -11,7 +11,10 @@
 //! state-changing call) is immediately caught.
 
 use super::*;
-use soroban_sdk::{testutils::{Address as _, Events}, Address, Env, String};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Env, String,
+};
 
 fn setup() -> (Env, RegistryContractClient<'static>, Address) {
     let env = Env::default();
@@ -57,14 +60,11 @@ fn get_assets_by_type_page_emits_no_events_on_hit() {
     let _ = env.events().all();
 
     // Now perform the read — must not produce any new events.
-    let results = client.get_assets_by_type_page(
-        &String::from_str(&env, "real_estate"),
-        &0u32,
-        &10u32,
-    );
+    let results =
+        client.get_assets_by_type_page(&String::from_str(&env, "real_estate"), &0u32, &10u32);
     assert_eq!(results.len(), 2, "expected two real_estate assets");
     assert_eq!(
-        env.events().all().len(),
+        env.events().all().events().len(),
         0,
         "get_assets_by_type_page must not emit events (it is a read-only query)"
     );
@@ -78,14 +78,11 @@ fn get_assets_by_type_page_emits_no_events_on_empty_result() {
 
     let _ = env.events().all();
 
-    let results = client.get_assets_by_type_page(
-        &String::from_str(&env, "commodity"),
-        &0u32,
-        &10u32,
-    );
+    let results =
+        client.get_assets_by_type_page(&String::from_str(&env, "commodity"), &0u32, &10u32);
     assert_eq!(results.len(), 0, "no commodity assets registered");
     assert_eq!(
-        env.events().all().len(),
+        env.events().all().events().len(),
         0,
         "get_assets_by_type_page must not emit events even when the result is empty"
     );
@@ -106,7 +103,7 @@ fn get_assets_by_type_page_emits_no_events_across_multiple_pages() {
     let p0 = client.get_assets_by_type_page(&String::from_str(&env, "bond"), &0u32, &3u32);
     assert_eq!(p0.len(), 3);
     assert_eq!(
-        env.events().all().len(),
+        env.events().all().events().len(),
         0,
         "page 0 must emit no events"
     );
@@ -114,7 +111,7 @@ fn get_assets_by_type_page_emits_no_events_across_multiple_pages() {
     let p1 = client.get_assets_by_type_page(&String::from_str(&env, "bond"), &1u32, &3u32);
     assert_eq!(p1.len(), 2);
     assert_eq!(
-        env.events().all().len(),
+        env.events().all().events().len(),
         0,
         "page 1 must emit no events"
     );
@@ -137,7 +134,7 @@ fn get_assets_by_type_page_emits_no_events_out_of_range_page() {
     );
     assert_eq!(results.len(), 0);
     assert_eq!(
-        env.events().all().len(),
+        env.events().all().events().len(),
         0,
         "out-of-range page must emit no events"
     );

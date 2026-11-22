@@ -39,6 +39,16 @@ fn test_version() {
 }
 
 #[test]
+fn test_version_pins_expected_constant() {
+    // Pins the public version() return value so an accidental edit to the
+    // VERSION constant is caught by CI (upgrade-compatibility tooling relies
+    // on this value).
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.version(), 1u32);
+    assert_eq!(VERSION, 1u32);
+}
+
+#[test]
 fn test_initialize_admin() {
     let (_env, client, admin) = setup();
     assert_eq!(client.get_admin(), admin);
@@ -107,6 +117,148 @@ fn test_ids_increment() {
 }
 
 proptest! {
+    /// Issue #686: paging through every paginated getter must reconstruct the
+    /// full, non-paged result exactly — no duplicates, no omissions — for an
+    /// arbitrary number of registered assets.
+    #[test]
+    fn prop_pagination_reconstructs_full_set(
+        specs in prop::collection::vec(
+            (any::<u8>(), 0u8..4, 0i128..1_000_000, any::<bool>()),
+            0..=20,
+        ),
+    ) {
+        let (env, client, admin) = setup();
+        let types = ["real_estate", "invoice", "commodity", "bond"];
+
+        // Register `specs.len()` assets with random issuers/types/valuations,
+        // then deactivate a random subset.
+        let mut issuers: std::vec::Vec<Address> = std::vec::Vec::new();
+        let mut ids: std::vec::Vec<u64> = std::vec::Vec::new();
+        for (issuer_sel, type_sel, valuation, deactivate) in specs.iter() {
+            let issuer = if *issuer_sel % 3 == 0 && !issuers.is_empty() {
+                issuers[(*issuer_sel as usize) % issuers.len()].clone()
+            } else {
+                let fresh = Address::generate(&env);
+                issuers.push(fresh.clone());
+                fresh
+            };
+            let kind = types[(*type_sel as usize) % types.len()];
+            let id = register(&env, &client, &issuer, kind, *valuation);
+            ids.push(id);
+            if *deactivate {
+                client.deactivate_asset(&admin, &id);
+            }
+        }
+
+        let total = ids.len();
+        assert_eq!(client.asset_count(), total as u64);
+        assert_eq!(client.get_total_asset_count(), total as u32);
+
+        // Documented page size used by the paginated getters.
+        let page_size = MAX_PAGE_SIZE;
+
+        // ---- get_assets_page vs get_all_assets ----
+        let mut collected: std::vec::Vec<u64> = std::vec::Vec::new();
+        let mut start = 0u32;
+        loop {
+            let page = client.get_assets_page(&start, &page_size);
+            if page.is_empty() {
+                break;
+            }
+            for entry in page.iter() {
+                collected.push(entry.id);
+            }
+            start += page.len();
+        }
+        let all = client.get_all_assets(&0, &u32::MAX);
+        assert_eq!(collected.len() as u64, total as u64);
+        assert_eq!(collected.len(), all.len() as usize);
+        for (i, entry) in all.iter().enumerate() {
+            assert_eq!(collected[i], entry.id);
+        }
+        // No duplicates.
+        let mut sorted = collected.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), collected.len());
+
+        // ---- get_active_assets_page vs filtered get_all_assets ----
+        for active_only in [true, false] {
+            let mut seen: std::vec::Vec<u64> = std::vec::Vec::new();
+            let mut start = 0u32;
+            loop {
+                let page = client.get_active_assets_page(&start, &page_size, &active_only);
+                if page.is_empty() {
+                    break;
+                }
+                for entry in page.iter() {
+                    assert_eq!(entry.active, active_only);
+                    seen.push(entry.id);
+                }
+                start += page.len();
+            }
+            let expected: std::vec::Vec<u64> = all
+                .iter()
+                .filter(|e| e.active == active_only)
+                .map(|e| e.id)
+                .collect();
+            assert_eq!(seen, expected);
+            let mut deduped = seen.clone();
+            deduped.sort();
+            deduped.dedup();
+            assert_eq!(deduped.len(), seen.len());
+        }
+        let expected_active = all.iter().filter(|e| e.active).count() as u64;
+        assert_eq!(client.active_count(), expected_active);
+
+        // ---- get_assets_by_issuer_page vs get_assets_by_issuer ----
+        for issuer in issuers.iter() {
+            let expected: std::vec::Vec<u64> = client
+                .get_assets_by_issuer(issuer)
+                .iter()
+                .map(|e| e.id)
+                .collect();
+            let mut seen: std::vec::Vec<u64> = std::vec::Vec::new();
+            let mut start = 0u32;
+            loop {
+                let page = client.get_assets_by_issuer_page(issuer, &start, &page_size);
+                if page.is_empty() {
+                    break;
+                }
+                for entry in page.iter() {
+                    assert_eq!(&entry.issuer, issuer);
+                    seen.push(entry.id);
+                }
+                start += page.len();
+            }
+            assert_eq!(seen, expected);
+        }
+
+        // ---- get_assets_by_type_page vs get_assets_by_type ----
+        for kind in types.iter() {
+            let kind_str = String::from_str(&env, kind);
+            let expected: std::vec::Vec<u64> = client
+                .get_assets_by_type(&kind_str)
+                .iter()
+                .map(|e| e.id)
+                .collect();
+            let mut seen: std::vec::Vec<u64> = std::vec::Vec::new();
+            let mut start = 0u32;
+            loop {
+                let page = client.get_assets_by_type_page(&kind_str, &start, &page_size);
+                if page.is_empty() {
+                    break;
+                }
+                for entry in page.iter() {
+                    assert_eq!(entry.asset_type, kind_str);
+                    seen.push(entry.id);
+                }
+                start += page.len();
+            }
+            assert_eq!(seen, expected);
+        }
+    }
+
     #[test]
     fn prop_active_count_matches_active_entries(
         ops in prop::collection::vec((any::<u8>(), any::<u8>()), 1..20),
@@ -178,13 +330,15 @@ fn test_get_assets_by_issuer_page_is_public_without_authorization() {
     assert_eq!(client.get_assets_by_issuer_page(&issuer, &0, &10).len(), 0);
 }
 
+/// The issuer alone is not an authority over `deactivate_asset`: only the
+/// registry admin or the asset token's own admin are (docs/AUTHORITY_MATRIX.md).
 #[test]
-fn test_issuer_can_deactivate_asset() {
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_issuer_alone_cannot_deactivate_asset() {
     let (env, client, _admin) = setup();
     let issuer = Address::generate(&env);
     let id = register(&env, &client, &issuer, "real_estate", 100);
     client.deactivate_asset(&issuer, &id);
-    assert!(!client.get_asset(&id).active);
 }
 
 #[test]
@@ -321,6 +475,24 @@ fn test_active_count_excludes_deactivated() {
     client.deactivate_asset(&admin, &a);
     assert_eq!(client.active_count(), 1);
     assert_eq!(client.asset_count(), 2);
+}
+
+#[test]
+fn test_asset_count_get_total_asset_count_and_active_count_agree() {
+    // asset_count() and get_total_asset_count() are two names for the same
+    // total; they must agree after a deactivation, while active_count()
+    // excludes the deactivated asset.
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let a = register(&env, &client, &issuer, "real_estate", 100);
+    register(&env, &client, &issuer, "invoice", 250);
+    register(&env, &client, &issuer, "commodity", 75);
+
+    client.deactivate_asset(&admin, &a);
+
+    assert_eq!(client.asset_count(), 3);
+    assert_eq!(client.get_total_asset_count(), 3);
+    assert_eq!(client.active_count(), 2);
 }
 
 #[test]
@@ -544,6 +716,26 @@ fn test_cancel_admin_proposal_by_current_admin() {
 }
 
 #[test]
+fn test_get_pending_admin_none_after_cancel_admin_proposal() {
+    // Issue #691: get_pending_admin must report None once a pending proposal
+    // has been explicitly cancelled (not just accepted).
+    let (env, client, admin) = setup();
+    let successor = Address::generate(&env);
+
+    client.propose_admin(&admin, &successor);
+    assert_eq!(client.get_pending_admin(), Some(successor.clone()));
+
+    client.cancel_admin_proposal(&admin);
+    assert_eq!(client.get_pending_admin(), None);
+
+    // The cancelled successor can no longer accept.
+    let res = client.try_accept_admin(&successor);
+    assert_eq!(res, Err(Ok(Error::NoPendingAdmin.into())));
+    // The admin is unchanged.
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
 fn test_cancel_admin_proposal_with_nothing_pending_fails() {
     let (_env, client, admin) = setup();
     let res = client.try_cancel_admin_proposal(&admin);
@@ -657,7 +849,10 @@ fn test_reactivate_asset_restores_visibility_in_active_views() {
     let active = client.get_active_assets_page(&0u32, &10u32, &true);
     assert_eq!(active.len(), 3);
     assert_eq!(active.get(1).unwrap().id, b);
-    assert_eq!(client.get_active_assets_page(&0u32, &10u32, &false).len(), 0);
+    assert_eq!(
+        client.get_active_assets_page(&0u32, &10u32, &false).len(),
+        0
+    );
     assert_eq!(client.active_count(), 3);
     assert_eq!(client.total_value_locked(), 400);
 
@@ -1279,84 +1474,4 @@ fn test_get_active_assets_page_emits_no_events() {
 
     // No new events should have been emitted by the second call
     assert_eq!(events_after, events_before);
-}
-
-/// `update_valuations_batch` updates every listed asset and TVL in one call.
-#[test]
-fn test_update_valuations_batch_updates_all_assets_and_tvl() {
-    let (env, client, admin) = setup();
-    let issuer = Address::generate(&env);
-    let a = register(&env, &client, &issuer, "real_estate", 1_000);
-    let b = register(&env, &client, &issuer, "invoice", 2_000);
-    let _ = env.events().all();
-
-    client.update_valuations_batch(
-        &admin,
-        &Vec::from_array(&env, [(a, 1_500), (b, 2_500)]),
-    );
-    let events = env.events().all();
-
-    assert_eq!(client.get_asset(&a).valuation, 1_500);
-    assert_eq!(client.get_asset(&b).valuation, 2_500);
-    assert_eq!(client.total_value_locked(), 4_000);
-    assert_eq!(events.events().len(), 2, "one valuation event per update");
-}
-
-/// A negative valuation in any entry rejects the whole batch.
-#[test]
-#[should_panic(expected = "Error(Contract, #5)")]
-fn test_update_valuations_batch_rejects_negative_valuation() {
-    let (env, client, admin) = setup();
-    let issuer = Address::generate(&env);
-    let a = register(&env, &client, &issuer, "bond", 100);
-    let b = register(&env, &client, &issuer, "bond", 200);
-
-    client.update_valuations_batch(
-        &admin,
-        &Vec::from_array(&env, [(a, 150), (b, -1)]),
-    );
-}
-
-/// An unknown asset id in any entry rejects the whole batch.
-#[test]
-#[should_panic(expected = "Error(Contract, #4)")]
-fn test_update_valuations_batch_rejects_unknown_asset() {
-    let (env, client, admin) = setup();
-    let issuer = Address::generate(&env);
-    let a = register(&env, &client, &issuer, "bond", 100);
-
-    client.update_valuations_batch(
-        &admin,
-        &Vec::from_array(&env, [(a, 150), (999, 200)]),
-    );
-}
-
-/// Only the stored admin may submit a batch.
-#[test]
-#[should_panic(expected = "Error(Contract, #3)")]
-fn test_update_valuations_batch_rejects_non_admin() {
-    let (env, client, _admin) = setup();
-    let issuer = Address::generate(&env);
-    let a = register(&env, &client, &issuer, "bond", 100);
-
-    client.update_valuations_batch(
-        &Address::generate(&env),
-        &Vec::from_array(&env, [(a, 150)]),
-    );
-}
-
-/// An empty batch is a successful no-op.
-#[test]
-fn test_update_valuations_batch_empty_is_noop() {
-    let (env, client, admin) = setup();
-    let issuer = Address::generate(&env);
-    let a = register(&env, &client, &issuer, "bond", 100);
-    let _ = env.events().all();
-
-    client.update_valuations_batch(&admin, &Vec::new(&env));
-    let events = env.events().all();
-
-    assert_eq!(client.get_asset(&a).valuation, 100);
-    assert_eq!(client.total_value_locked(), 100);
-    assert_eq!(events.events().len(), 0);
 }

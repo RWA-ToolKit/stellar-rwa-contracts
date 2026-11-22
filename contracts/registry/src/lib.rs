@@ -6,12 +6,12 @@
 //! monotonically increasing id and tracks issuer, type, valuation and active
 //! status. It also reports total value locked (TVL) across active assets.
 
-use asset_token::AssetMetadata;
+use rwa_common::validation::check_str as common_check_str;
+use rwa_common::AssetMetadata;
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, String, Vec,
 };
-use rwa_common::validation::check_str as common_check_str;
 
 // NOTE: The `Ids` instance-storage key is retained in the enum only for
 // forward-compatibility reads of contracts already deployed; it is no longer
@@ -98,7 +98,13 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 /// regardless of the requested `limit` (issue #310). Callers that need more
 /// must page through with successive calls using the returned count to
 /// compute the next `start_id`.
-pub const MAX_PAGE_SIZE: u32 = 100;
+/// 50, not 100 (#716): a call is limited to 100 footprint ledger entries in
+/// total, and that includes the contract instance, the contract code and any
+/// index entry as well as the assets returned. A page of 100 assets therefore
+/// fails with `Budget, ExceededLimit` ("total footprint ledger entries: 101 >
+/// 100") and could never be served; 50 leaves room for the fixed entries and
+/// for a caller that reads a little more in the same transaction.
+pub const MAX_PAGE_SIZE: u32 = 50;
 
 /// Maximum byte length for an asset name (issue #439).
 ///
@@ -352,12 +358,19 @@ impl RegistryContract {
         entry
     }
 
-    /// Returns all assets registered by a given issuer.
+    /// **Deprecated (#722): use [`Self::get_assets_by_issuer_page`].**
     ///
-    /// Backed by a per-issuer index, so cost scales with that issuer's asset
-    /// count, not the whole registry.  Includes both active and deactivated
-    /// assets; use the `active` field on each [`AssetEntry`] to filter if
-    /// needed.
+    /// Returns the issuer's *first* [`MAX_PAGE_SIZE`] assets, not all of them:
+    /// it has always been capped by the same page limit as the paginated
+    /// getter, because returning an unbounded list would exceed the per-call
+    /// footprint limit for a large issuer. An issuer with more assets than one
+    /// page gets a silently truncated list here. It is kept, with that cap, so
+    /// existing integrations keep working; it is equivalent to
+    /// `get_assets_by_issuer_page(issuer, 0, MAX_PAGE_SIZE)` and will be
+    /// removed in a future major version.
+    ///
+    /// Includes both active and deactivated assets; use the `active` field on
+    /// each [`AssetEntry`] to filter if needed.
     ///
     /// # Parameters
     /// - `issuer`: Issuer address to query.
@@ -476,8 +489,10 @@ impl RegistryContract {
     ///
     /// # Parameters
     /// - `start_id`: First asset id to include (minimum 1).
-    /// - `limit`: Maximum number of assets to return; clamped to
-    ///   [`MAX_PAGE_SIZE`].
+    /// - `limit`: Maximum number of assets to return. Silently clamped to
+    ///   [`MAX_PAGE_SIZE`] (50), never rejected: a larger value returns, and
+    ///   costs, one page of 50. Cost is pinned by
+    ///   `test_all_assets_resource_cost` (#716).
     ///
     /// # Authority
     /// None — anyone may call.
@@ -1039,12 +1054,8 @@ impl RegistryContract {
     /// Emits topic `("set_admin", old_admin)` with data `new_admin`.
     pub fn accept_admin(env: Env, new_admin: Address) {
         // Shared admin-handover helper (issue #764).
-        let result = rwa_common::admin::accept(
-            &env,
-            &DataKey::Admin,
-            &DataKey::PendingAdmin,
-            &new_admin,
-        );
+        let result =
+            rwa_common::admin::accept(&env, &DataKey::Admin, &DataKey::PendingAdmin, &new_admin);
         match result {
             None => panic_err(&env, Error::NoPendingAdmin),
             Some(Err(())) => panic_err(&env, Error::Unauthorized),
@@ -1164,9 +1175,12 @@ impl RegistryContract {
         if *admin == stored {
             return;
         }
-        let asset_admin = AssetClient::new(env, asset_token).get_metadata().admin;
-        if *admin == asset_admin {
-            return;
+        // try_: a token that is not an asset-token contract (or traps) must
+        // still fail as Unauthorized, as documented, not as a host error.
+        if let Ok(Ok(metadata)) = AssetClient::new(env, asset_token).try_get_metadata() {
+            if *admin == metadata.admin {
+                return;
+            }
         }
         panic_err(env, Error::Unauthorized);
     }
@@ -1260,20 +1274,20 @@ fn apply_valuation(env: &Env, asset_id: u64, new_valuation: i128) {
 }
 
 #[cfg(test)]
-mod test_oracle_valuation;
-#[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_oracle_valuation;
 // Issue #768: renamed from numbered (test_558_…, etc.) to feature-named files.
+#[cfg(test)]
+mod test_all_assets_resource_cost;
 #[cfg(test)]
 mod test_assets_by_type_page_events;
 #[cfg(test)]
 mod test_assets_by_type_page_resource_cost;
 #[cfg(test)]
-mod test_reactivate_asset_zero_input;
-#[cfg(test)]
-mod test_reactivate_asset_events;
-#[cfg(test)]
 mod test_assets_page_zero_empty;
+#[cfg(test)]
+mod test_issuer_unpaginated_cap;
 #[cfg(test)]
 mod test_ochedev6789_issuer_page_deactivated;
 #[cfg(test)]
@@ -1282,3 +1296,7 @@ mod test_ochedev6789_issuer_page_events;
 mod test_ochedev6789_issuer_page_resource_cost;
 #[cfg(test)]
 mod test_ochedev6789_issuer_page_zero_empty;
+#[cfg(test)]
+mod test_reactivate_asset_events;
+#[cfg(test)]
+mod test_reactivate_asset_zero_input;

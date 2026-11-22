@@ -40,11 +40,15 @@ pub enum ComplianceStatus {
     Approved,
     /// Deprecated legacy ABI value. Kept only for backwards compatibility;
     /// the contract never writes this status and no public workflow produces it.
-    #[deprecated(note = "Pending is retained for ABI compatibility only; current workflows never set it.")]
+    #[deprecated(
+        note = "Pending is retained for ABI compatibility only; current workflows never set it."
+    )]
     Pending,
     /// Deprecated legacy ABI value. Kept only for backwards compatibility;
     /// the contract never writes this status and no public workflow produces it.
-    #[deprecated(note = "Rejected is retained for ABI compatibility only; current workflows never set it.")]
+    #[deprecated(
+        note = "Rejected is retained for ABI compatibility only; current workflows never set it."
+    )]
     Rejected,
     Suspended,
 }
@@ -587,7 +591,12 @@ impl ComplianceContract {
                 .publish((symbol_short!("expired"), address), record.expires_at);
             return false;
         }
-        if env.storage().persistent().get(&DataKey::Blocked(record.jurisdiction)).unwrap_or(false) {
+        if env
+            .storage()
+            .persistent()
+            .get(&DataKey::Blocked(record.jurisdiction))
+            .unwrap_or(false)
+        {
             return false;
         }
         // Minimum holding period check (issue #454).
@@ -968,6 +977,15 @@ impl ComplianceContract {
     /// Used by the asset token to classify holders when enforcing a
     /// jurisdiction cap; exposes only the jurisdiction, never the full KYC
     /// record.
+    /// Everything `asset-token::transfer` asks compliance, in one call (#721):
+    /// `(is_allowed(from), is_allowed(to), same_jurisdiction)`.
+    pub fn check_transfer(env: Env, from: Address, to: Address) -> (bool, bool, bool) {
+        let from_ok = Self::is_allowed(env.clone(), from.clone());
+        let to_ok = Self::is_allowed(env.clone(), to.clone());
+        let same = Self::get_jurisdiction(env.clone(), from) == Self::get_jurisdiction(env, to);
+        (from_ok, to_ok, same)
+    }
+
     pub fn get_jurisdiction(env: Env, address: Address) -> Option<String> {
         Self::get_record(env, address).map(|record| record.jurisdiction)
     }
@@ -1313,12 +1331,7 @@ impl ComplianceContract {
     ///
     /// # Events
     /// Emits topic `("minhld", holder)` with data `min_ledgers`.
-    pub fn set_min_holding_period(
-        env: Env,
-        admin: Address,
-        holder: Address,
-        min_ledgers: u64,
-    ) {
+    pub fn set_min_holding_period(env: Env, admin: Address, holder: Address, min_ledgers: u64) {
         require_admin(&env, &admin);
         let key = DataKey::MinHoldingPeriod(holder.clone());
         if min_ledgers == 0 {
@@ -1410,8 +1423,9 @@ impl ComplianceContract {
             .persistent()
             .get(&DataKey::FirstAcquiredLedger(holder))
     }
-
 }
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_check_transfer;

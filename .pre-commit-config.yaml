@@ -1,0 +1,18 @@
+# Optional, for contributors who use the pre-commit framework (#711).
+# Equivalent to scripts/git-hooks/pre-commit; see CONTRIBUTING.md.
+#   pip install pre-commit && pre-commit install
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
+        language: system
+        files: \.rs$
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --exclude rwa-fuzz --all-targets --quiet -- -D warnings
+        language: system
+        files: \.rs$|Cargo\.(toml|lock)$
+        pass_filenames: false

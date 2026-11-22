@@ -10,7 +10,9 @@ use crate::Error;
 #[cfg(debug_assertions)]
 fn diagnostic(env: &Env, error: Error, value: Option<Val>) {
     match value {
-        Some(value) => env.events().publish((symbol_short!("panic_dbg"), value), error),
+        Some(value) => env
+            .events()
+            .publish((symbol_short!("panic_dbg"), value), error),
         None => env.events().publish((symbol_short!("panic_dbg"),), error),
     }
 }

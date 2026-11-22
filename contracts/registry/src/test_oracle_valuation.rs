@@ -1,6 +1,6 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::{testutils::Address as _, testutils::Events as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 fn setup() -> (Env, RegistryContractClient<'static>, Address, Address) {
     let env = Env::default();
@@ -43,11 +43,11 @@ fn test_oracle_cannot_call_admin_only_functions() {
     let id = register(&client, &env, &Address::generate(&env));
 
     let result = client.try_set_oracle(&oracle, &None);
-    assert_eq!(result, Err(Err(Error::Unauthorized)));
+    assert_eq!(result, Err(Ok(Error::Unauthorized.into())));
     let result = client.try_deactivate_asset(&oracle, &id);
-    assert_eq!(result, Err(Err(Error::Unauthorized)));
+    assert_eq!(result, Err(Ok(Error::Unauthorized.into())));
     let result = client.try_update_valuation(&oracle, &id, &99_999);
-    assert_eq!(result, Err(Err(Error::Unauthorized)));
+    assert_eq!(result, Err(Ok(Error::Unauthorized.into())));
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn test_non_oracle_cannot_update_valuation() {
     let stranger = Address::generate(&env);
 
     let result = client.try_update_valuation_from_oracle(&stranger, &id, &42);
-    assert_eq!(result, Err(Err(Error::Unauthorized)));
+    assert_eq!(result, Err(Ok(Error::Unauthorized.into())));
 }
 
 #[test]
@@ -77,5 +77,5 @@ fn test_admin_can_clear_oracle() {
     assert_eq!(client.get_oracle(), None);
     let id = register(&client, &env, &Address::generate(&env));
     let result = client.try_update_valuation_from_oracle(&oracle, &id, &42);
-    assert_eq!(result, Err(Err(Error::NoOracle)));
+    assert_eq!(result, Err(Ok(Error::NoOracle.into())));
 }

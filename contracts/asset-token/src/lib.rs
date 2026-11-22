@@ -42,36 +42,16 @@ mod test_rdj_allowance;
 #[contractclient(name = "ComplianceClient")]
 pub trait ComplianceInterface {
     fn is_allowed(env: Env, address: Address) -> bool;
+    fn check_transfer(env: Env, from: Address, to: Address) -> (bool, bool, bool);
     fn get_allowlist(env: Env) -> Vec<Address>;
     fn get_jurisdiction(env: Env, address: Address) -> Option<String>;
     fn get_jurisdiction_cap(env: Env, jurisdiction: String) -> Option<u32>;
 }
 
-/// On-chain metadata describing the tokenized asset.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AssetMetadata {
-    pub name: String,
-    pub symbol: String,
-    /// e.g. "real_estate", "invoice", "commodity".
-    pub asset_type: String,
-    pub total_supply: i128,
-    pub decimals: u32,
-    pub admin: Address,
-    pub compliance_contract: Address,
-    pub asset_description: String,
-    /// Asset value in USD cents.
-    pub valuation: i128,
-    pub paused: bool,
-    /// Optional emergency-pause delegate (issue #1). May call `pause` but
-    /// not `unpause`, `mint`, `mint_batch`, or any other admin action.
-    /// Absent (`None`) by default.
-    pub guardian: Option<Address>,
-    /// Address nominated by the current admin via `propose_admin`, pending
-    /// acceptance via `accept_admin` (issue #4). Absent when there is no
-    /// proposal in flight.
-    pub pending_admin: Option<Address>,
-}
+/// On-chain metadata describing the tokenized asset. Defined in `rwa-common`
+/// so `dividend` and `registry` can decode it without linking this contract
+/// (which duplicated its exported symbols and broke their Wasm builds).
+pub use rwa_common::AssetMetadata;
 
 #[contracttype]
 #[derive(Clone)]
@@ -346,10 +326,12 @@ impl AssetTokenContract {
         if meta.paused {
             panic_err(&env, Error::Paused);
         }
-        if !Self::compliant(&env, &meta.compliance_contract, &from) {
+        let (from_ok, to_ok, same_jurisdiction) =
+            ComplianceClient::new(&env, &meta.compliance_contract).check_transfer(&from, &to);
+        if !from_ok {
             panic_err(&env, Error::SenderNotCompliant);
         }
-        if !Self::compliant(&env, &meta.compliance_contract, &to) {
+        if !to_ok {
             panic_err(&env, Error::RecipientNotCompliant);
         }
         let from_bal = Self::balance(env.clone(), from.clone());
@@ -365,8 +347,7 @@ impl AssetTokenContract {
         // aggregate holdings. Intra-jurisdiction transfers (and self-transfers)
         // leave that aggregate unchanged, so they are exempt.
         if from != to {
-            let compliance_client = ComplianceClient::new(&env, &meta.compliance_contract);
-            if compliance_client.get_jurisdiction(&from) != compliance_client.get_jurisdiction(&to) {
+            if !same_jurisdiction {
                 Self::enforce_jurisdiction_cap(
                     &env,
                     &meta.compliance_contract,
@@ -474,8 +455,8 @@ impl AssetTokenContract {
         if !Self::compliant(&env, &meta.compliance_contract, &from) {
             panic_err(&env, Error::SenderNotCompliant);
         }
-        let from_jurisdiction = ComplianceClient::new(&env, &meta.compliance_contract)
-            .get_jurisdiction(&from);
+        let from_jurisdiction =
+            ComplianceClient::new(&env, &meta.compliance_contract).get_jurisdiction(&from);
         for (to, amount) in transfers.iter() {
             Self::check_amount(&env, amount);
             if !Self::compliant(&env, &meta.compliance_contract, &to) {
@@ -571,13 +552,7 @@ impl AssetTokenContract {
             .total_supply
             .checked_add(amount)
             .unwrap_or_else(|| panic_err(&env, Error::Overflow));
-        Self::enforce_jurisdiction_cap(
-            &env,
-            &meta.compliance_contract,
-            &to,
-            amount,
-            new_supply,
-        );
+        Self::enforce_jurisdiction_cap(&env, &meta.compliance_contract, &to, amount, new_supply);
         let to_bal = Self::balance(env.clone(), to.clone());
         let new_to_bal = to_bal
             .checked_add(amount)
@@ -1430,3 +1405,5 @@ mod test_makeem_approve;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_compliance_call_cost;

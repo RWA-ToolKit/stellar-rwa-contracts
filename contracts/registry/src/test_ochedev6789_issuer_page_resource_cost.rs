@@ -37,6 +37,9 @@
 //! for the same number of entries.
 #![cfg(test)]
 
+extern crate std;
+use std::println;
+
 use super::*;
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
@@ -89,10 +92,19 @@ fn test_issuer_page_resource_cost_empty_issuer() {
 
     println!("[baseline #554] get_assets_by_issuer_page (empty issuer): cpu={cpu} instructions, mem={mem} bytes");
 
-    assert!(cpu > 0, "CPU cost must be non-zero (budget API sanity check)");
+    assert!(
+        cpu > 0,
+        "CPU cost must be non-zero (budget API sanity check)"
+    );
     assert!(mem > 0, "memory cost must be non-zero");
-    assert!(cpu < CPU_LIMIT, "CPU cost {cpu} exceeds {CPU_LIMIT} instruction limit");
-    assert!(mem < MEM_LIMIT, "memory cost {mem} exceeds {MEM_LIMIT} byte limit");
+    assert!(
+        cpu < CPU_LIMIT,
+        "CPU cost {cpu} exceeds {CPU_LIMIT} instruction limit"
+    );
+    assert!(
+        mem < MEM_LIMIT,
+        "memory cost {mem} exceeds {MEM_LIMIT} byte limit"
+    );
 }
 
 /// Baseline: single asset on page 0 with page_size=1.
