@@ -6,6 +6,53 @@
 //! then claims `total_amount * balance / total_supply`, paid from the escrow
 //! this contract holds. Each holder can claim a given distribution once.
 //!
+//! ## Storage layout
+//!
+//! Instance storage (bumped together via [`bump`]):
+//! - `Admin` — the current admin address.
+//! - `PendingAdmin` — address nominated by `propose_admin`, awaiting
+//!   `accept_admin`; absent when no handover is in flight.
+//! - `Counter` — id of the most recently created distribution.
+//!
+//! Persistent storage (per-distribution entries are TTL-bumped on access):
+//! - `Dist(u64)` — the [`Distribution`] record (amounts, tokens, flags,
+//!   `deadline`, `created_at`).
+//! - `Claimed(u64, Address)` — set once a holder has claimed a distribution.
+//! - `Snapshot(u64)` — the frozen `(holder, balance)` list captured at
+//!   creation; cleared when the distribution reaches a terminal state.
+//! - `Supply(u64)` — sum of the snapshot balances, the denominator used to
+//!   size each holder's share; cleared alongside `Snapshot`.
+//! - `AssetIds(Address)` — per-asset index of distribution ids, so lookups
+//!   scale with the asset's distributions rather than the global counter.
+//!
+//! ## Lifecycle
+//!
+//! A distribution moves through the following state machine:
+//!
+//! 1. **Create** — `create_distribution` / `create_distribution_deadline` /
+//!    `create_distribution_with_payout` escrow `total_amount` of the payment
+//!    token, freeze the `Snapshot` and `Supply`, and store a `Dist` with
+//!    `completed = false`, `cancelled = false`.
+//! 2. **Claim** — holders call `claim` (at most once each) up to and
+//!    including `deadline`; each claim moves `distributed` toward
+//!    `total_amount`. When `distributed >= total_amount` the distribution is
+//!    marked `completed` and its `Snapshot`/`Supply` are cleared.
+//! 3. **Terminal states** — a distribution that is not fully claimed can be
+//!    closed by one of:
+//!    - `reclaim_unclaimed` (admin only, requires `deadline != 0` and
+//!      `current_ledger > deadline`) — sweeps the remainder to the admin;
+//!    - `cancel_distribution` (admin only, requires `distributed == 0`) —
+//!      returns the full escrow to the admin and sets `cancelled = true`;
+//!    - `withdraw_unclaimed` (admin only, after a minimum age) — sends any
+//!      remaining escrow to a chosen recipient.
+//!
+//!    All three set `completed = true` and clear `Snapshot`/`Supply`, so no
+//!    further claims are possible. Funds already paid to holders are never
+//!    affected.
+//!
+//! See `docs/dividend.md` for the external overview; the sections below cover
+//! the in-source policy details.
+//!
 //! Balances are frozen in a snapshot at distribution creation time; each holder's
 //! entitlement is sized against this snapshot rather than live balances, preventing
 //! post-creation transfers from inflating or diluting any holder's claim.
