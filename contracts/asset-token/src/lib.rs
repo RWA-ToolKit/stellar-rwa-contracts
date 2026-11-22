@@ -430,6 +430,18 @@ impl AssetTokenContract {
         }
         let from_jurisdiction =
             ComplianceClient::new(&env, &meta.compliance_contract).get_jurisdiction(&from);
+        // The sender's balance and frozen amount are read once and carried in
+        // locals, and the balance is written once after the loop (#719).
+        // Reading and rewriting them for every recipient cost a storage read
+        // and write per entry for a value only this loop changes. Any panic
+        // mid-batch still reverts everything: Soroban invocations are atomic.
+        let mut from_bal = Self::balance(env.clone(), from.clone());
+        let frozen: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::FrozenBalance(from.clone()))
+            .unwrap_or(0);
+        let mut from_changed = false;
         for (to, amount) in transfers.iter() {
             Self::check_amount(&env, amount);
             if !Self::compliant(&env, &meta.compliance_contract, &to) {
@@ -445,12 +457,6 @@ impl AssetTokenContract {
                     meta.total_supply,
                 );
             }
-            let from_bal = Self::balance(env.clone(), from.clone());
-            let frozen: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::FrozenBalance(from.clone()))
-                .unwrap_or(0);
             if from_bal - frozen < amount {
                 panic_err(&env, Error::InsufficientBalance);
             }
@@ -466,16 +472,19 @@ impl AssetTokenContract {
                 continue;
             }
             let to_bal = Self::balance(env.clone(), to.clone());
-            let new_from_bal = from_bal - amount;
-            Self::set_balance(&env, &from, new_from_bal);
+            from_bal -= amount;
+            from_changed = true;
             let new_to_bal = to_bal
                 .checked_add(amount)
                 .unwrap_or_else(|| panic_err(&env, Error::Overflow));
             Self::set_balance(&env, &to, new_to_bal);
             env.events().publish(
                 (symbol_short!("transfer"), from.clone(), to),
-                (amount, new_from_bal, new_to_bal),
+                (amount, from_bal, new_to_bal),
             );
+        }
+        if from_changed {
+            Self::set_balance(&env, &from, from_bal);
         }
         Self::bump(&env);
     }
@@ -1379,4 +1388,4 @@ mod test_makeem_approve;
 #[cfg(test)]
 mod test;
 #[cfg(test)]
-mod test_batch_size_bench;
+mod test_resource_budgets;

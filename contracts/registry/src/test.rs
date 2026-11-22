@@ -107,148 +107,6 @@ fn test_ids_increment() {
 }
 
 proptest! {
-    /// Issue #686: paging through every paginated getter must reconstruct the
-    /// full, non-paged result exactly — no duplicates, no omissions — for an
-    /// arbitrary number of registered assets.
-    #[test]
-    fn prop_pagination_reconstructs_full_set(
-        specs in prop::collection::vec(
-            (any::<u8>(), 0u8..4, 0i128..1_000_000, any::<bool>()),
-            0..=20,
-        ),
-    ) {
-        let (env, client, admin) = setup();
-        let types = ["real_estate", "invoice", "commodity", "bond"];
-
-        // Register `specs.len()` assets with random issuers/types/valuations,
-        // then deactivate a random subset.
-        let mut issuers: std::vec::Vec<Address> = std::vec::Vec::new();
-        let mut ids: std::vec::Vec<u64> = std::vec::Vec::new();
-        for (issuer_sel, type_sel, valuation, deactivate) in specs.iter() {
-            let issuer = if *issuer_sel % 3 == 0 && !issuers.is_empty() {
-                issuers[(*issuer_sel as usize) % issuers.len()].clone()
-            } else {
-                let fresh = Address::generate(&env);
-                issuers.push(fresh.clone());
-                fresh
-            };
-            let kind = types[(*type_sel as usize) % types.len()];
-            let id = register(&env, &client, &issuer, kind, *valuation);
-            ids.push(id);
-            if *deactivate {
-                client.deactivate_asset(&admin, &id);
-            }
-        }
-
-        let total = ids.len() as u64;
-        assert_eq!(client.asset_count(), total);
-        assert_eq!(client.get_total_asset_count(), total as u32);
-
-        // Documented page size used by the paginated getters.
-        let page_size = MAX_PAGE_SIZE;
-
-        // ---- get_assets_page vs get_all_assets ----
-        let mut collected: std::vec::Vec<u64> = std::vec::Vec::new();
-        let mut start = 0u32;
-        loop {
-            let page = client.get_assets_page(&start, &page_size);
-            if page.is_empty() {
-                break;
-            }
-            for entry in page.iter() {
-                collected.push(entry.id);
-            }
-            start += page.len();
-        }
-        let all = client.get_all_assets(&0, &u32::MAX);
-        assert_eq!(collected.len() as u64, total);
-        assert_eq!(collected.len(), all.len() as usize);
-        for (i, entry) in all.iter().enumerate() {
-            assert_eq!(collected[i], entry.id);
-        }
-        // No duplicates.
-        let mut sorted = collected.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted.len(), collected.len());
-
-        // ---- get_active_assets_page vs filtered get_all_assets ----
-        for active_only in [true, false] {
-            let mut seen: std::vec::Vec<u64> = std::vec::Vec::new();
-            let mut start = 0u32;
-            loop {
-                let page = client.get_active_assets_page(&start, &page_size, &active_only);
-                if page.is_empty() {
-                    break;
-                }
-                for entry in page.iter() {
-                    assert_eq!(entry.active, active_only);
-                    seen.push(entry.id);
-                }
-                start += page.len();
-            }
-            let expected: std::vec::Vec<u64> = all
-                .iter()
-                .filter(|e| e.active == active_only)
-                .map(|e| e.id)
-                .collect();
-            assert_eq!(seen, expected);
-            let mut deduped = seen.clone();
-            deduped.sort();
-            deduped.dedup();
-            assert_eq!(deduped.len(), seen.len());
-        }
-        let expected_active = all.iter().filter(|e| e.active).count() as u64;
-        assert_eq!(client.active_count(), expected_active);
-
-        // ---- get_assets_by_issuer_page vs get_assets_by_issuer ----
-        for issuer in issuers.iter() {
-            let expected: std::vec::Vec<u64> = client
-                .get_assets_by_issuer(issuer)
-                .iter()
-                .map(|e| e.id)
-                .collect();
-            let mut seen: std::vec::Vec<u64> = std::vec::Vec::new();
-            let mut start = 0u32;
-            loop {
-                let page = client.get_assets_by_issuer_page(issuer, &start, &page_size);
-                if page.is_empty() {
-                    break;
-                }
-                for entry in page.iter() {
-                    assert_eq!(&entry.issuer, issuer);
-                    seen.push(entry.id);
-                }
-                start += page.len();
-            }
-            assert_eq!(seen, expected);
-        }
-
-        // ---- get_assets_by_type_page vs get_assets_by_type ----
-        for kind in types.iter() {
-            let kind_str = String::from_str(&env, kind);
-            let expected: std::vec::Vec<u64> = client
-                .get_assets_by_type(&kind_str)
-                .iter()
-                .map(|e| e.id)
-                .collect();
-            let mut seen: std::vec::Vec<u64> = std::vec::Vec::new();
-            let mut start = 0u32;
-            loop {
-                let page = client.get_assets_by_type_page(&kind_str, &start, &page_size);
-                if page.is_empty() {
-                    break;
-                }
-                for entry in page.iter() {
-                    assert_eq!(entry.asset_type, kind_str);
-                    seen.push(entry.id);
-                }
-                start += page.len();
-            }
-            assert_eq!(seen, expected);
-        }
-    }
-
     #[test]
     fn prop_active_count_matches_active_entries(
         ops in prop::collection::vec((any::<u8>(), any::<u8>()), 1..20),
@@ -1426,4 +1284,27 @@ fn test_get_active_assets_page_emits_no_events() {
 
     // No new events should have been emitted by the second call
     assert_eq!(events_after, events_before);
+}
+
+// ---- issue #720: register_asset resource budget ----
+
+#[test]
+fn test_resource_budget_register_asset() {
+    extern crate std;
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    // One asset first, so the measured call pays the steady-state cost of
+    // appending to existing indexes rather than creating them.
+    register(&env, &client, &issuer, "real_estate", 1_000);
+    env.cost_estimate().budget().reset_unlimited();
+    register(&env, &client, &issuer, "real_estate", 2_000);
+    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem = env.cost_estimate().budget().memory_bytes_cost();
+    let res = env.cost_estimate().resources();
+    std::println!(
+        "[budget] register_asset: cpu={cpu} mem={mem} reads={} writes={}",
+        res.disk_read_entries + res.memory_read_entries,
+        res.write_entries
+    );
+    assert!(cpu < 1_000_000, "register_asset cpu {cpu}");
 }

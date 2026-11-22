@@ -1,7 +1,6 @@
 # Soroban Contracts
 
 [![CI](https://github.com/RWA-ToolKit/stellar-rwa-contracts/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RWA-ToolKit/stellar-rwa-contracts/actions/workflows/ci.yml)
-[![Codecov](https://codecov.io/gh/RWA-ToolKit/stellar-rwa-contracts/branch/main/graph/badge.svg)](https://codecov.io/gh/RWA-ToolKit/stellar-rwa-contracts)
 [![License: MIT](https://img.shields.io/github/license/RWA-ToolKit/stellar-rwa-contracts)](LICENSE)
 [![soroban-sdk 26](https://img.shields.io/badge/soroban--sdk-26-blue)](https://docs.rs/soroban-sdk/26)
 [![Docs](https://img.shields.io/badge/docs-AUTHORITY__MATRIX-informational)](docs/AUTHORITY_MATRIX.md)
@@ -23,10 +22,6 @@ Every privileged (admin- or self-authorized) function across all four
 contracts, the role it requires, and the error raised for the wrong caller
 is documented in the [Authority Matrix](docs/AUTHORITY_MATRIX.md).
 
-For a system-level view of how the four contracts relate to each other —
-which contracts call which, and the direction of each cross-contract call —
-see the [Architecture](docs/ARCHITECTURE.md) doc.
-
 Browse the generated API documentation at
 [RWA ToolKit rustdocs](https://rwa-toolkit.github.io/stellar-rwa-contracts/)
 (published from `main` by `.github/workflows/docs.yml`).
@@ -43,11 +38,6 @@ transfer(from, to, amount)
   ├─ compliance.is_allowed(to)     ── cross-contract call ──►  compliance contract
   └─ move balances + emit event
 ```
-
-This snippet covers only `transfer`'s compliance check. See the
-[Architecture](docs/ARCHITECTURE.md) doc for the full picture, including the
-dividend contract's balance queries against `asset-token` and the registry's
-role as the discovery layer.
 
 ## Building
 
@@ -110,18 +100,6 @@ cargo test
 ```
 
 Runs the full test suite with no network access.
-
-## Coverage
-
-CI reports workspace coverage with `cargo-llvm-cov` and uploads an LCOV report to
-Codecov for pull requests. No minimum coverage threshold is enforced.
-
-Maintainers must configure this repository in Codecov and install or authorize
-the Codecov GitHub App for pull request reporting. Add the repository's upload
-token as the GitHub Actions secret `CODECOV_TOKEN` for same-repository pull
-requests. Codecov supports tokenless uploads for pull requests from forks to
-public repositories. Until Codecov is configured, uploads are non-blocking and
-the badge may show an unknown coverage value.
 
 ## Contributing
 

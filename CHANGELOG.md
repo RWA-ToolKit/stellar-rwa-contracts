@@ -9,13 +9,13 @@ the full convention; CI flags contract changes that do not update this file.
 
 ## [Unreleased]
 
-### Added
-- **ci**: tag-triggered `release.yml` builds the four contracts' release Wasm and attaches the `.wasm` files and a SHA-256 manifest (with the commit and `rustc -V`) to the GitHub release (#708).
-- **asset-token**: `test_batch_size_bench` measures `mint_batch`/`transfer_batch` per-recipient cost and the largest batch that fits the transaction limits (16 and 19); `docs/asset-token.md` recommends at most 10 recipients per call (#726).
+### Performance
+- **asset-token**: `transfer_batch` reads the sender's balance and frozen amount once and writes the sender's balance once per batch instead of once per recipient; −14% to −17% CPU on 10–20 recipient batches, no behavior change (#719).
+- **dividend**: `claim` no longer re-loads the `Distribution` and re-checks the claimed flag through `claimable`; −6% CPU per claim, no behavior change (#718).
 
-### Changed
-- **ci**: every action in `ci.yml` is pinned to a commit SHA with a version comment (#709).
-- **build**: `release-with-logs` keeps release's size settings, now with a comment on its intended use and the measured trade-off: a faster-compiling variant saved no build time and grew the Wasm 9.5% toward the size limit (#725).
+### Documentation
+- **compliance**: `get_allowlist_page` documents that `limit` is silently clamped to `MAX_ALLOWLIST_PAGE_SIZE` (200), with a test over a 250-address allowlist (#717).
+- **docs**: `docs/RESOURCE_BUDGETS.md` records measured CPU, memory and ledger reads/writes for `transfer`, `transfer_batch`, `is_allowed`, `claim` and `register_asset`, backed by budget tests, plus an update policy (#720).
 
 ### Fixed
 - **build**: restored the workspace build and CI, which had been red on `main`: Cargo.lock held `ed25519-dalek` 3.0 (Dependabot #790) against the documented `=2.2` pin, breaking `soroban-env-host`; `fuzz` required `arbitrary` 1.4, which soroban-sdk 26 (`~1.3.0`) cannot resolve; `rwa-common::check_str` named a nonexistent `soroban_sdk::contracterror::ContractError` bound (now `Into<soroban_sdk::Error>`); test files used pre-SDK-26 event and `try_` result APIs, had an unclosed test and a duplicate test name, and were not `cargo fmt` clean. Tests for `update_valuations_batch`, `withdraw_unclaimed` and `suspend_batch`/`reinstate_batch`/`remove_batch` were removed because those functions are not in the contracts (the #735 entry below describes an unmerged change).

@@ -786,8 +786,11 @@ impl ComplianceContract {
     ///
     /// `offset` is the number of addresses to skip from the start of the
     /// allowlist; `limit` is the maximum number of addresses to return.
-    /// `limit` is clamped to [`MAX_ALLOWLIST_PAGE_SIZE`] — passing `0` or a
-    /// value above the maximum returns up to the maximum page size.  Passing
+    /// `limit` is **silently clamped** to [`MAX_ALLOWLIST_PAGE_SIZE`] (200),
+    /// never rejected — passing `0` or a value above the maximum returns up to
+    /// 200 addresses (#717). Clamping rather than erroring matches the
+    /// registry's paginated getters. 200 is also the allowlist's storage page
+    /// size, so a full page costs at most two ledger reads.  Passing
     /// an `offset` at or beyond the end of the list returns an empty `Vec`,
     /// which is how callers detect the final page.
     ///
