@@ -2411,3 +2411,54 @@ fn test_jurisdiction_cap_above_10000_rejected() {
     let (env, client, admin) = setup();
     client.set_jurisdiction_cap(&admin, &String::from_str(&env, "US"), &Some(10_001));
 }
+
+// ---- issue #717: get_allowlist_page cap ----
+
+/// With more than `MAX_ALLOWLIST_PAGE_SIZE` addresses allowlisted, an
+/// oversized or zero `limit` returns exactly the cap (silent clamp, never an
+/// error), and paging on from the cap returns the remainder.
+#[test]
+fn test_get_allowlist_page_clamps_to_200_with_a_larger_allowlist() {
+    let (env, client, admin) = setup();
+    env.cost_estimate().budget().reset_unlimited();
+    let us = String::from_str(&env, "US");
+    let total = MAX_ALLOWLIST_PAGE_SIZE + 50;
+    for _ in 0..total {
+        client.add_to_allowlist(&admin, &Address::generate(&env), &us, &0);
+    }
+    assert_eq!(MAX_ALLOWLIST_PAGE_SIZE, 200);
+    assert_eq!(
+        client.get_allowlist_page(&0, &u32::MAX).len(),
+        MAX_ALLOWLIST_PAGE_SIZE
+    );
+    assert_eq!(
+        client.get_allowlist_page(&0, &0).len(),
+        MAX_ALLOWLIST_PAGE_SIZE
+    );
+    assert_eq!(
+        client
+            .get_allowlist_page(&MAX_ALLOWLIST_PAGE_SIZE, &u32::MAX)
+            .len(),
+        50
+    );
+}
+
+// ---- issue #720: is_allowed resource budget ----
+
+#[test]
+fn test_resource_budget_is_allowed() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    client.add_to_allowlist(&admin, &user, &String::from_str(&env, "US"), &0);
+    env.cost_estimate().budget().reset_unlimited();
+    assert!(client.is_allowed(&user));
+    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem = env.cost_estimate().budget().memory_bytes_cost();
+    let res = env.cost_estimate().resources();
+    println!(
+        "[budget] is_allowed: cpu={cpu} mem={mem} reads={} writes={}",
+        res.disk_read_entries + res.memory_read_entries,
+        res.write_entries
+    );
+    assert!(cpu < 300_000, "is_allowed cpu {cpu}");
+}
