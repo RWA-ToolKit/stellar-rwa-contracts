@@ -11,6 +11,7 @@ the full convention; CI flags contract changes that do not update this file.
 
 ### Fixed
 - **build**: restored the workspace build and CI, which had been red on `main`: Cargo.lock held `ed25519-dalek` 3.0 (Dependabot #790) against the documented `=2.2` pin, breaking `soroban-env-host`; `fuzz` required `arbitrary` 1.4, which soroban-sdk 26 (`~1.3.0`) cannot resolve; `rwa-common::check_str` named a nonexistent `soroban_sdk::contracterror::ContractError` bound (now `Into<soroban_sdk::Error>`); test files used pre-SDK-26 event and `try_` result APIs, had an unclosed test and a duplicate test name, and were not `cargo fmt` clean. Tests for `update_valuations_batch`, `withdraw_unclaimed` and `suspend_batch`/`reinstate_batch`/`remove_batch` were removed because those functions are not in the contracts (the #735 entry below describes an unmerged change).
+- **build**: `dividend` and `registry` link as Wasm again: `AssetMetadata` moved to `rwa-common` (re-exported by `asset-token`, same XDR) so they no longer link asset-token's exported functions (duplicate symbols); CI's Wasm build excludes the std-only `rwa-fuzz` crate.
 - **registry**: `deactivate_asset`/`reactivate_asset` called by a non-admin now fail with `Error::Unauthorized` as documented when the asset's token is not an asset-token contract, instead of a host storage error.
 
 ### Changed
