@@ -142,7 +142,7 @@ proptest! {
 
         let total = ids.len() as u64;
         assert_eq!(client.asset_count(), total);
-        assert_eq!(client.get_total_asset_count(), total);
+        assert_eq!(client.get_total_asset_count(), total as u32);
 
         // Documented page size used by the paginated getters.
         let page_size = MAX_PAGE_SIZE;
