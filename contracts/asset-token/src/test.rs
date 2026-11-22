@@ -53,6 +53,14 @@ fn approve(env: &Env, compliance: &ComplianceContractClient, admin: &Address, wh
 }
 
 #[test]
+fn test_version() {
+    let env = Env::default();
+    let token_id = env.register(AssetTokenContract, ());
+    let token = AssetTokenContractClient::new(&env, &token_id);
+    assert_eq!(token.version(), VERSION);
+}
+
+#[test]
 fn test_approve_then_transfer_from() {
     let s = setup(1_000);
     let bob = Address::generate(&s.env);
@@ -248,6 +256,81 @@ fn test_negative_amount_rejected() {
     let bob = Address::generate(&s.env);
     approve(&s.env, &s.compliance, &s.admin, &bob);
     s.token.transfer(&s.admin, &bob, &-1);
+}
+
+// ---- negative-amount rejection across every balance-affecting function ----
+//
+// `transfer`, `mint`, `burn`, `approve`, and `transfer_from` must all reject a
+// negative `amount` with `Error::InvalidAmount` and leave state untouched.
+// Asymmetric validation across similar functions is a common bug source, so
+// each entry point gets its own explicit test.
+
+#[test]
+fn test_transfer_negative_amount_rejected() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    let res = s.token.try_transfer(&s.admin, &bob, &-1);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.balance(&bob), 0);
+    assert_eq!(s.token.total_supply(), 1_000);
+}
+
+#[test]
+fn test_mint_negative_amount_rejected() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    let res = s.token.try_mint(&s.admin, &bob, &-1);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+    assert_eq!(s.token.balance(&bob), 0);
+    assert_eq!(s.token.total_supply(), 1_000);
+}
+
+#[test]
+fn test_burn_negative_amount_rejected() {
+    let s = setup(1_000);
+
+    let res = s.token.try_burn(&s.admin, &-1);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.total_supply(), 1_000);
+}
+
+#[test]
+fn test_approve_negative_amount_rejected() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    let expiration = s.env.ledger().sequence() + 1_000;
+    let res = s.token.try_approve(&s.admin, &bob, &-1, &expiration);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+    assert_eq!(s.token.allowance(&s.admin, &bob), 0);
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.balance(&bob), 0);
+}
+
+#[test]
+fn test_transfer_from_negative_amount_rejected() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    let carol = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    approve(&s.env, &s.compliance, &s.admin, &carol);
+
+    let expiration = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&s.admin, &bob, &300, &expiration);
+
+    let res = s.token.try_transfer_from(&bob, &s.admin, &carol, &-1);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+    // Neither balances nor the allowance may move.
+    assert_eq!(s.token.allowance(&s.admin, &bob), 300);
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.balance(&carol), 0);
 }
 
 #[test]
@@ -643,6 +726,24 @@ fn test_update_valuation() {
     // not synchronized by this call.
     s.token.update_valuation(&s.admin, &75_000_000);
     assert_eq!(s.token.get_metadata().valuation, 75_000_000);
+}
+
+/// Issue #684: `get_metadata` must read the same valuation storage that
+/// `update_valuation` writes, rather than a divergent key. A value changed via
+/// `update_valuation` (within the allowed 50% change from the initial
+/// 50_000_000) must be visible through `get_metadata`.
+#[test]
+fn test_get_metadata_reflects_update_valuation() {
+    let s = setup(1_000);
+    assert_eq!(s.token.get_metadata().valuation, 50_000_000);
+
+    s.token.update_valuation(&s.admin, &60_000_000);
+
+    let metadata = s.token.get_metadata();
+    assert_eq!(
+        metadata.valuation, 60_000_000,
+        "get_metadata must reflect the valuation set by update_valuation"
+    );
 }
 
 #[test]
@@ -1297,6 +1398,24 @@ fn test_cancel_admin_proposal_by_current_admin() {
 }
 
 #[test]
+fn test_get_pending_admin_none_after_cancel_admin_proposal() {
+    let s = setup(1_000);
+    let successor = Address::generate(&s.env);
+
+    s.token.propose_admin(&s.admin, &successor);
+    assert_eq!(s.token.get_pending_admin(), Some(successor.clone()));
+
+    s.token.cancel_admin_proposal(&s.admin);
+    assert_eq!(s.token.get_pending_admin(), None);
+
+    // The cancelled successor can no longer accept.
+    let res = s.token.try_accept_admin(&successor);
+    assert_eq!(res, Err(Ok(Error::NoPendingAdmin.into())));
+    // The admin is unchanged.
+    assert_eq!(s.token.get_metadata().admin, s.admin);
+}
+
+#[test]
 fn test_cancel_admin_proposal_with_nothing_pending_fails() {
     let s = setup(1_000);
     let res = s.token.try_cancel_admin_proposal(&s.admin);
@@ -1510,7 +1629,6 @@ proptest! {
         burn_amount in 0i128..1_000_000i128,
     ) {
         let s = setup(1_000_000);
-        let initial_supply = s.token.total_supply();
 
         let bob = Address::generate(&s.env);
         approve(&s.env, &s.compliance, &s.admin, &bob);
@@ -1519,7 +1637,6 @@ proptest! {
             s.token.mint(&s.admin, &bob, &amount);
         }
 
-        let supply_after_mints = s.token.total_supply();
         let bob_balance = s.token.balance(&bob);
 
         if burn_amount <= s.token.balance(&s.admin) {

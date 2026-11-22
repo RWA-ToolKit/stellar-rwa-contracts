@@ -178,13 +178,15 @@ fn test_get_assets_by_issuer_page_is_public_without_authorization() {
     assert_eq!(client.get_assets_by_issuer_page(&issuer, &0, &10).len(), 0);
 }
 
+/// The issuer alone is not an authority over `deactivate_asset`: only the
+/// registry admin or the asset token's own admin are (docs/AUTHORITY_MATRIX.md).
 #[test]
-fn test_issuer_can_deactivate_asset() {
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_issuer_alone_cannot_deactivate_asset() {
     let (env, client, _admin) = setup();
     let issuer = Address::generate(&env);
     let id = register(&env, &client, &issuer, "real_estate", 100);
     client.deactivate_asset(&issuer, &id);
-    assert!(!client.get_asset(&id).active);
 }
 
 #[test]
@@ -657,7 +659,10 @@ fn test_reactivate_asset_restores_visibility_in_active_views() {
     let active = client.get_active_assets_page(&0u32, &10u32, &true);
     assert_eq!(active.len(), 3);
     assert_eq!(active.get(1).unwrap().id, b);
-    assert_eq!(client.get_active_assets_page(&0u32, &10u32, &false).len(), 0);
+    assert_eq!(
+        client.get_active_assets_page(&0u32, &10u32, &false).len(),
+        0
+    );
     assert_eq!(client.active_count(), 3);
     assert_eq!(client.total_value_locked(), 400);
 
@@ -1281,82 +1286,25 @@ fn test_get_active_assets_page_emits_no_events() {
     assert_eq!(events_after, events_before);
 }
 
-/// `update_valuations_batch` updates every listed asset and TVL in one call.
+// ---- issue #720: register_asset resource budget ----
+
 #[test]
-fn test_update_valuations_batch_updates_all_assets_and_tvl() {
-    let (env, client, admin) = setup();
-    let issuer = Address::generate(&env);
-    let a = register(&env, &client, &issuer, "real_estate", 1_000);
-    let b = register(&env, &client, &issuer, "invoice", 2_000);
-    let _ = env.events().all();
-
-    client.update_valuations_batch(
-        &admin,
-        &Vec::from_array(&env, [(a, 1_500), (b, 2_500)]),
-    );
-    let events = env.events().all();
-
-    assert_eq!(client.get_asset(&a).valuation, 1_500);
-    assert_eq!(client.get_asset(&b).valuation, 2_500);
-    assert_eq!(client.total_value_locked(), 4_000);
-    assert_eq!(events.events().len(), 2, "one valuation event per update");
-}
-
-/// A negative valuation in any entry rejects the whole batch.
-#[test]
-#[should_panic(expected = "Error(Contract, #5)")]
-fn test_update_valuations_batch_rejects_negative_valuation() {
-    let (env, client, admin) = setup();
-    let issuer = Address::generate(&env);
-    let a = register(&env, &client, &issuer, "bond", 100);
-    let b = register(&env, &client, &issuer, "bond", 200);
-
-    client.update_valuations_batch(
-        &admin,
-        &Vec::from_array(&env, [(a, 150), (b, -1)]),
-    );
-}
-
-/// An unknown asset id in any entry rejects the whole batch.
-#[test]
-#[should_panic(expected = "Error(Contract, #4)")]
-fn test_update_valuations_batch_rejects_unknown_asset() {
-    let (env, client, admin) = setup();
-    let issuer = Address::generate(&env);
-    let a = register(&env, &client, &issuer, "bond", 100);
-
-    client.update_valuations_batch(
-        &admin,
-        &Vec::from_array(&env, [(a, 150), (999, 200)]),
-    );
-}
-
-/// Only the stored admin may submit a batch.
-#[test]
-#[should_panic(expected = "Error(Contract, #3)")]
-fn test_update_valuations_batch_rejects_non_admin() {
+fn test_resource_budget_register_asset() {
+    extern crate std;
     let (env, client, _admin) = setup();
     let issuer = Address::generate(&env);
-    let a = register(&env, &client, &issuer, "bond", 100);
-
-    client.update_valuations_batch(
-        &Address::generate(&env),
-        &Vec::from_array(&env, [(a, 150)]),
+    // One asset first, so the measured call pays the steady-state cost of
+    // appending to existing indexes rather than creating them.
+    register(&env, &client, &issuer, "real_estate", 1_000);
+    env.cost_estimate().budget().reset_unlimited();
+    register(&env, &client, &issuer, "real_estate", 2_000);
+    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem = env.cost_estimate().budget().memory_bytes_cost();
+    let res = env.cost_estimate().resources();
+    std::println!(
+        "[budget] register_asset: cpu={cpu} mem={mem} reads={} writes={}",
+        res.disk_read_entries + res.memory_read_entries,
+        res.write_entries
     );
-}
-
-/// An empty batch is a successful no-op.
-#[test]
-fn test_update_valuations_batch_empty_is_noop() {
-    let (env, client, admin) = setup();
-    let issuer = Address::generate(&env);
-    let a = register(&env, &client, &issuer, "bond", 100);
-    let _ = env.events().all();
-
-    client.update_valuations_batch(&admin, &Vec::new(&env));
-    let events = env.events().all();
-
-    assert_eq!(client.get_asset(&a).valuation, 100);
-    assert_eq!(client.total_value_locked(), 100);
-    assert_eq!(events.events().len(), 0);
+    assert!(cpu < 1_000_000, "register_asset cpu {cpu}");
 }

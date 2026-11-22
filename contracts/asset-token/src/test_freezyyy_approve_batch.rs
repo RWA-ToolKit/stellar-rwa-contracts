@@ -116,7 +116,7 @@ fn test_transfer_batch_rejected_when_paused_with_deliberate_error() {
     let res = s.token.try_transfer_batch(&s.admin, &batch);
     assert_eq!(
         res,
-        Err(Ok(Error::Paused)),
+        Err(Ok(Error::Paused.into())),
         "scenario transfer batch rejected when paused with deliberate error: assertion failed"
     );
     assert_eq!(
@@ -142,7 +142,7 @@ fn test_transfer_batch_paused_empty_batch_and_unpause_restores() {
     let empty: Vec<(Address, i128)> = Vec::new(&s.env);
     assert_eq!(
         s.token.try_transfer_batch(&s.admin, &empty),
-        Err(Ok(Error::Paused))
+        Err(Ok(Error::Paused.into()))
     );
 
     s.token.unpause(&s.admin);
@@ -179,7 +179,7 @@ fn batch_cost(n: u32) -> (u64, u64) {
 
 #[test]
 fn test_transfer_batch_resource_cost_baseline_and_linear_scaling() {
-    let (cpu1, mem1) = batch_cost(1);
+    let (cpu1, _) = batch_cost(1);
     let (cpu10, mem10) = batch_cost(10);
 
     // Baseline ceilings (well under the 100M-instruction network limit).

@@ -7,7 +7,6 @@ struct Setup {
     env: Env,
     token: AssetTokenContractClient<'static>,
     compliance: ComplianceContractClient<'static>,
-    compliance_id: Address,
     admin: Address,
 }
 
@@ -18,12 +17,7 @@ fn setup(supply: i128) -> Setup {
     let compliance = ComplianceContractClient::new(&env, &compliance_id);
     let admin = Address::generate(&env);
     compliance.initialize(&admin);
-    compliance.add_to_allowlist(
-        &admin,
-        &admin,
-        &String::from_str(&env, "US"),
-        &0,
-    );
+    compliance.add_to_allowlist(&admin, &admin, &String::from_str(&env, "US"), &0);
     let token_id = env.register(AssetTokenContract, ());
     let token = AssetTokenContractClient::new(&env, &token_id);
     token.initialize(
@@ -41,18 +35,13 @@ fn setup(supply: i128) -> Setup {
         env,
         token,
         compliance,
-        compliance_id,
         admin,
     }
 }
 
 fn approve(s: &Setup, who: &Address) {
-    s.compliance.add_to_allowlist(
-        &s.admin,
-        who,
-        &String::from_str(&s.env, "GB"),
-        &0,
-    );
+    s.compliance
+        .add_to_allowlist(&s.admin, who, &String::from_str(&s.env, "GB"), &0);
 }
 
 #[test]
@@ -75,7 +64,7 @@ fn test_partial_freeze_allows_available_transfer_but_rejects_frozen_portion() {
     assert_eq!(s.token.frozen_balance(&s.admin), 400);
 
     let result = s.token.try_transfer(&s.admin, &bob, &1);
-    assert_eq!(result, Err(Err(Error::InsufficientBalance)));
+    assert_eq!(result, Err(Ok(Error::InsufficientBalance.into())));
 }
 
 #[test]
@@ -100,12 +89,12 @@ fn test_freeze_cannot_exceed_balance_and_unfreeze_cannot_exceed_frozen() {
     let s = setup(100);
     assert_eq!(
         s.token.try_freeze_balance(&s.admin, &s.admin, &101),
-        Err(Err(Error::InsufficientBalance))
+        Err(Ok(Error::InsufficientBalance.into()))
     );
     s.token.freeze_balance(&s.admin, &s.admin, &50);
     assert_eq!(
         s.token.try_unfreeze_balance(&s.admin, &s.admin, &51),
-        Err(Err(Error::InsufficientBalance))
+        Err(Ok(Error::InsufficientBalance.into()))
     );
 }
 
@@ -115,7 +104,7 @@ fn test_only_admin_can_freeze() {
     let stranger = Address::generate(&s.env);
     assert_eq!(
         s.token.try_freeze_balance(&stranger, &s.admin, &10),
-        Err(Err(Error::Unauthorized))
+        Err(Ok(Error::Unauthorized.into()))
     );
     assert_eq!(s.token.frozen_balance(&s.admin), 0);
 }

@@ -9,6 +9,15 @@ the full convention; CI flags contract changes that do not update this file.
 
 ## [Unreleased]
 
+### Fixed
+- **build**: restored the workspace build and CI, which had been red on `main`: Cargo.lock held `ed25519-dalek` 3.0 (Dependabot #790) against the documented `=2.2` pin, breaking `soroban-env-host`; `fuzz` required `arbitrary` 1.4, which soroban-sdk 26 (`~1.3.0`) cannot resolve; `rwa-common::check_str` named a nonexistent `soroban_sdk::contracterror::ContractError` bound (now `Into<soroban_sdk::Error>`); test files used pre-SDK-26 event and `try_` result APIs, had an unclosed test and a duplicate test name, and were not `cargo fmt` clean. Tests for `update_valuations_batch`, `withdraw_unclaimed` and `suspend_batch`/`reinstate_batch`/`remove_batch` were removed because those functions are not in the contracts (the #735 entry below describes an unmerged change).
+- **build**: `dividend` and `registry` link as Wasm again: `AssetMetadata` moved to `rwa-common` (re-exported by `asset-token`, same XDR) so they no longer link asset-token's exported functions (duplicate symbols); CI's Wasm build excludes the std-only `rwa-fuzz` crate.
+- **registry**: `deactivate_asset`/`reactivate_asset` called by a non-admin now fail with `Error::Unauthorized` as documented when the asset's token is not an asset-token contract, instead of a host storage error.
+
+### Changed
+- **registry**: `MAX_PAGE_SIZE` lowered from 100 to 50 (#716). A page of 100 exceeded Soroban's 100-entry footprint limit (instance and code count too), so a full page could never be served. `get_all_assets` and the paginated getters still clamp silently; a resource-cost test pins that an oversized `limit` costs one capped page.
+- **ci**: Dependabot ignores the pinned `ed25519-dalek` and `arbitrary` (#710); new `authority-matrix` job checks `docs/AUTHORITY_MATRIX.md` table formatting (#714); README badges for CI, license, SDK and good first issues (#715).
+
 ### Changed
 - **compliance**: added `AllowlistEntry::new` / `with_expires_at` Rust helpers with the documented `expires_at = 0` (permanent) default; no ABI or behavior change (#742).
 - **asset-token**: moved `panic_err` and `check_str` helpers into a dedicated `internal` module; no behavior change (#769).

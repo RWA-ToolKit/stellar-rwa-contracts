@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Optional local pre-commit hook (#711): the same fmt and clippy checks CI
+# runs, at commit time instead of after a push.
+#
+#   git config core.hooksPath scripts/git-hooks     # enable
+#   git config --unset core.hooksPath               # disable
+#   git commit --no-verify                          # skip once
+#
+# Skipped when no Rust file is staged, so doc-only commits stay instant.
+set -euo pipefail
+
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$|Cargo\.(toml|lock)$'; then
+  exit 0
+fi
+
+echo "pre-commit: cargo fmt --check"
+if ! cargo fmt --all -- --check; then
+  echo "pre-commit: run 'cargo fmt --all' and stage the result." >&2
+  exit 1
+fi
+
+echo "pre-commit: cargo clippy"
+cargo clippy --workspace --exclude rwa-fuzz --all-targets --quiet -- -D warnings

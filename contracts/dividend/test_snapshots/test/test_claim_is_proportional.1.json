@@ -1350,6 +1350,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "cancelled"
+                    },
+                    "val": {
+                      "bool": false
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "completed"
                     },
                     "val": {

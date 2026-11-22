@@ -43,7 +43,7 @@
 #[cfg(test)]
 extern crate std;
 
-use asset_token::AssetMetadata;
+use rwa_common::AssetMetadata;
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, Map, Vec,
@@ -116,12 +116,26 @@ enum DataKey {
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` was called on a contract that already has an admin set.
     AlreadyInitialized = 1,
+    /// An operation requiring the stored admin was attempted before
+    /// `initialize` was called.
     NotInitialized = 2,
+    /// The caller is not the stored admin (or, where permitted, the asset
+    /// token's admin), or `accept_admin` was called by an address that does
+    /// not match the pending proposal.
     Unauthorized = 3,
+    /// No distribution exists with the requested id.
     DistributionNotFound = 4,
+    /// An amount or snapshot entry is invalid: `total_amount <= 0`, the
+    /// `eligible` list is empty, an entry's balance is negative, or
+    /// `cancel_distribution` was called after at least one claim.
     InvalidAmount = 5,
+    /// There is nothing left to pay or recover: the holder's share is zero,
+    /// the distribution is already completed/cancelled, or the remaining
+    /// escrow is zero.
     NothingToClaim = 6,
+    /// The holder has already claimed this distribution.
     AlreadyClaimed = 7,
     /// `asset_token` has zero total supply; no holder can ever claim (issue #49).
     ZeroSupply = 8,
@@ -139,13 +153,14 @@ pub enum Error {
     NoPendingAdmin = 12,
     /// A claim was attempted after the distribution's `deadline` (issue #2).
     DeadlinePassed = 13,
-    /// A recovery operation was called before the deadline (issue #2).
+    /// `reclaim_unclaimed` was called while the current ledger is still at or
+    /// before the distribution's `deadline` (issue #2).
     DeadlineNotReached = 14,
     /// `reclaim_unclaimed` was called on a distribution with no deadline set
     /// (`deadline == 0`), so deadline-based reclaim is not permitted.
     NoDeadline = 15,
     /// An admin withdrawal was attempted before the distribution reached its
-    /// required minimum age.
+    /// required minimum age in ledgers.
     DistributionTooYoung = 16,
     /// A distribution was created with a non-zero `deadline` already behind the
     /// current ledger, so it would be reclaimable immediately with no claim
@@ -537,6 +552,16 @@ impl DividendContract {
         if Self::has_claimed(env.clone(), distribution_id, holder.clone()) {
             return 0;
         }
+        Self::share_of(&env, &dist, distribution_id, &holder)
+    }
+
+    /// The holder's proportional share of an already-loaded distribution,
+    /// ignoring whether it was claimed. Shared by `claimable` and `claim` so
+    /// `claim` does not load the `Distribution` and check the claimed flag a
+    /// second time through `claimable` (#718).
+    fn share_of(env: &Env, dist: &Distribution, distribution_id: u64, holder: &Address) -> i128 {
+        let env = env.clone();
+        let holder = holder.clone();
         let supply = Self::load_supply(&env, distribution_id);
         if supply <= 0 {
             return 0;
@@ -611,7 +636,8 @@ impl DividendContract {
         if Self::has_claimed(env.clone(), distribution_id, holder.clone()) {
             panic_err(&env, Error::AlreadyClaimed);
         }
-        let amount = Self::claimable(env.clone(), distribution_id, holder.clone());
+        // `dist` is already loaded and the claimed flag already checked above.
+        let amount = Self::share_of(&env, &dist, distribution_id, &holder);
         if amount <= 0 {
             panic_err(&env, Error::NothingToClaim);
         }
@@ -1116,3 +1142,5 @@ fn panic_err(env: &Env, error: Error) -> ! {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_claim_storage_layout;

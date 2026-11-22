@@ -4,8 +4,10 @@
 #
 # Checks performed:
 #   1. Every script path mentioned in QUICKSTART.md exists in the repo.
-#   2. The wasm target used in build commands matches rust-toolchain.toml.
-#   3. The CLI tool used is "stellar" (not "soroban-cli").
+#   2. The wasm target used in build commands matches rust-toolchain.toml
+#      (wasm32v1-none for Soroban SDK 26).
+#   3. The CLI tool used is "stellar" (not "soroban-cli"/"soroban contract"),
+#      and the documented minimum stellar-cli version is >= 26.
 #   4. The admin handover flow (propose_admin -> accept_admin) is documented
 #      and both functions exist on the asset-token contract.
 #
@@ -36,14 +38,34 @@ done < <(grep -oP 'scripts/[a-zA-Z0-9_\-]+\.sh' "$DOC" | sort -u)
 
 # 2. Verify the wasm target mentioned in QUICKSTART.md matches rust-toolchain.toml.
 TOOLCHAIN_TARGET="$(grep 'targets' "$TOOLCHAIN" | grep -oP 'wasm[^\s"]+' | head -1)"
+if [ -z "$TOOLCHAIN_TARGET" ]; then
+  red "FAIL: could not determine wasm target from $TOOLCHAIN."
+  ERRORS=$((ERRORS + 1))
+elif ! grep -q "$TOOLCHAIN_TARGET" "$DOC"; then
+  red "FAIL: $DOC does not reference the wasm target '$TOOLCHAIN_TARGET' from rust-toolchain.toml."
+  ERRORS=$((ERRORS + 1))
+fi
 if grep -q 'wasm32-unknown-unknown' "$DOC"; then
   red "FAIL: $DOC references 'wasm32-unknown-unknown' but rust-toolchain.toml uses '$TOOLCHAIN_TARGET'."
   ERRORS=$((ERRORS + 1))
 fi
 
-# 3. Detect use of soroban-cli instead of stellar CLI.
+# 3. Detect use of soroban-cli instead of stellar CLI, and verify the
+#    documented minimum stellar-cli version is >= 26 (Soroban SDK 26).
 if grep -q 'soroban-cli\|soroban contract\b' "$DOC"; then
-  red "FAIL: $DOC references 'soroban-cli' or 'soroban contract'; use the 'stellar' CLI (>= 22) instead."
+  red "FAIL: $DOC references 'soroban-cli' or 'soroban contract'; use the 'stellar' CLI (>= 26) instead."
+  ERRORS=$((ERRORS + 1))
+fi
+if ! grep -q 'stellar' "$DOC"; then
+  red "FAIL: $DOC does not reference the 'stellar' CLI."
+  ERRORS=$((ERRORS + 1))
+fi
+MIN_CLI_VERSION="$(grep -oP 'stellar(?:-cli)?[^\n]*?\b(\d{2,})\b' "$DOC" | grep -oP '\b\d{2,}\b' | sort -n | head -1 || true)"
+if [ -z "$MIN_CLI_VERSION" ]; then
+  red "FAIL: $DOC does not state a minimum stellar-cli version (expected >= 26)."
+  ERRORS=$((ERRORS + 1))
+elif [ "$MIN_CLI_VERSION" -lt 26 ]; then
+  red "FAIL: $DOC states minimum stellar-cli version $MIN_CLI_VERSION; Soroban SDK 26 requires >= 26."
   ERRORS=$((ERRORS + 1))
 fi
 
