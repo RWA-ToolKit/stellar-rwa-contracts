@@ -1034,6 +1034,16 @@ impl ComplianceContract {
     /// Only absent or already-empty pages are skipped to keep cost
     /// proportional to live pages, not historical page count (issue #306).
     ///
+    /// # Choosing `max_records` (#727)
+    /// **Use 10–20.** Each examined record is a ledger read, and each pruned
+    /// one deletes two entries (`Record`, `AllowlistPageOf`). A transaction
+    /// may write at most 50 entries, so when every examined record has
+    /// expired (the worst case) the largest `max_records` that fits is **23**
+    /// (`test_prune_expired_cost`). Cost is about 160–170k CPU per record. `0`
+    /// (unbounded) fails outright once more than ~23 expired records are on
+    /// the list, so only use it on a list known to be small. Call repeatedly
+    /// until the return value is `0`. See docs/compliance.md.
+    ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
     /// - `max_records`: Maximum number of allowlist entries to inspect.
@@ -1408,3 +1418,5 @@ impl ComplianceContract {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_prune_expired_cost;

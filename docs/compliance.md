@@ -443,3 +443,30 @@ Read-only checks such as `is_allowed` and the allowlist getters keep working,
 so existing approvals remain usable. Admin role management and guardian
 changes stay available while paused, matching the asset-token pattern, so an
 incident can always be resolved.
+
+## Pruning expired records: choosing `max_records`
+
+`prune_expired(admin, max_records)` removes expired allowlist records in
+bounded passes. **Use `max_records` between 10 and 20**, and call it again
+until it returns `0`.
+
+Measured 2026-11-22 (`test_prune_expired_cost`, soroban-sdk 26.1.0, real
+transaction limits), with every examined record expired:
+
+| `max_records` | CPU | per record |
+|---:|---:|---:|
+| 1 | 534,178 | 534,178 |
+| 5 | 1,041,688 | 208,337 |
+| 10 | 1,708,818 | 170,881 |
+| 15 | 2,420,651 | 161,376 |
+| 20 | 3,166,078 | 158,303 |
+| 25+ | exceeds limits | |
+
+The largest value that fits in this worst case is **23**. CPU is not the
+limit: each pruned record deletes two ledger entries, and a transaction can
+write at most 50. When few records have expired, more fit, because records
+that are kept are only read. 20 is safe either way.
+
+`max_records = 0` means "no bound". It fails once more than about 23 expired
+records are on the list. Avoid it in automation; it is only safe on an
+allowlist known to be small.
