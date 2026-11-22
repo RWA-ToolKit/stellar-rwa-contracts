@@ -1110,3 +1110,5 @@ fn panic_err(env: &Env, error: Error) -> ! {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_claim_storage_layout;
