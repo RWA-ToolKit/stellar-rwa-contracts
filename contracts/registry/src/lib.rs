@@ -61,12 +61,25 @@ enum DataKey {
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` was called on a contract that has already been
+    /// initialized.
     AlreadyInitialized = 1,
+    /// An operation requiring the admin (or a stored value) was attempted
+    /// before `initialize` was called.
     NotInitialized = 2,
+    /// The caller is not authorized for this operation: the supplied admin
+    /// does not match the stored admin (or the asset's admin), or the
+    /// supplied oracle does not match the configured oracle.
     Unauthorized = 3,
+    /// No asset exists with the requested registry id.
     AssetNotFound = 4,
+    /// A valuation was supplied that is negative.
     InvalidValuation = 5,
+    /// An arithmetic operation on the total valuation would overflow or
+    /// underflow `i128`.
     Overflow = 6,
+    /// An input failed validation: the asset name is empty or too long, or
+    /// the asset type is not one of the allowed values.
     InvalidInput = 7,
     /// `accept_admin` or `cancel_admin_proposal` called with no pending
     /// admin proposal on file (issue #4).
