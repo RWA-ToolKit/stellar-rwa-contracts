@@ -1285,3 +1285,26 @@ fn test_get_active_assets_page_emits_no_events() {
     // No new events should have been emitted by the second call
     assert_eq!(events_after, events_before);
 }
+
+// ---- issue #720: register_asset resource budget ----
+
+#[test]
+fn test_resource_budget_register_asset() {
+    extern crate std;
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    // One asset first, so the measured call pays the steady-state cost of
+    // appending to existing indexes rather than creating them.
+    register(&env, &client, &issuer, "real_estate", 1_000);
+    env.cost_estimate().budget().reset_unlimited();
+    register(&env, &client, &issuer, "real_estate", 2_000);
+    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem = env.cost_estimate().budget().memory_bytes_cost();
+    let res = env.cost_estimate().resources();
+    std::println!(
+        "[budget] register_asset: cpu={cpu} mem={mem} reads={} writes={}",
+        res.disk_read_entries + res.memory_read_entries,
+        res.write_entries
+    );
+    assert!(cpu < 1_000_000, "register_asset cpu {cpu}");
+}
