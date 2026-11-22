@@ -1,5 +1,11 @@
 # Soroban Contracts
 
+[![CI](https://github.com/RWA-ToolKit/stellar-rwa-contracts/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RWA-ToolKit/stellar-rwa-contracts/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/RWA-ToolKit/stellar-rwa-contracts)](LICENSE)
+[![soroban-sdk 26](https://img.shields.io/badge/soroban--sdk-26-blue)](https://docs.rs/soroban-sdk/26)
+[![Docs](https://img.shields.io/badge/docs-AUTHORITY__MATRIX-informational)](docs/AUTHORITY_MATRIX.md)
+[![Good first issues](https://img.shields.io/github/issues/RWA-ToolKit/stellar-rwa-contracts/good%20first%20issue?label=good%20first%20issues&color=7057ff)](https://github.com/RWA-ToolKit/stellar-rwa-contracts/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+
 A collection of Soroban smart contracts for tokenized real-world assets, including an
 asset token, compliance rules, dividend distribution, and a registry.
 
