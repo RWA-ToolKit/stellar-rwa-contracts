@@ -1,6 +1,6 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::{testutils::Address as _, testutils::Events as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 fn setup() -> (Env, RegistryContractClient<'static>, Address, Address) {
     let env = Env::default();

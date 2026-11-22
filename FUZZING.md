@@ -76,6 +76,16 @@ Available `<target>` names:
 
 Minimum recommended CI runtime: **10 minutes per target** (`-max_total_time=600`).
 
+### CI smoke tests (issue #706)
+
+The CI workflow builds and runs every deterministic fuzz binary registered in
+`fuzz/Cargo.toml`: `compliance_batch_allowlist`, `compliance_expiry`,
+`compliance_jurisdiction_race`, `compliance_is_allowed`, and
+`asset_token_transfer_batch`. Each run is capped at 120 seconds so a stuck
+harness fails CI rather than running indefinitely. These short deterministic
+runs check that the harnesses compile and execute; they are not a replacement
+for longer fuzzing campaigns.
+
 ### Asset-token transfer_batch target (issue #493)
 
 Models `AssetToken::transfer_batch` (`contracts/asset-token/src/lib.rs`) over an

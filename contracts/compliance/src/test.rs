@@ -27,6 +27,15 @@ fn test_version() {
     assert_eq!(client.version(), VERSION);
 }
 
+/// Issue #680: pin the exact version constant so an accidental edit to
+/// `VERSION` in lib.rs is caught by CI rather than silently shipped.
+#[test]
+fn test_version_returns_expected_constant() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.version(), 1u32);
+    assert_eq!(client.version(), VERSION);
+}
+
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")]
 fn test_double_initialize_fails() {
@@ -571,6 +580,82 @@ fn test_add_to_allowlist_batch_partial_failure_reverts_whole_batch() {
     });
 
     client.add_to_allowlist_batch(&admin, &entries);
+}
+
+/// Issue #685: a batch containing the exact same address twice with
+/// conflicting KYC data must resolve deterministically as last-write-wins:
+/// the call succeeds, the address occupies exactly one allowlist slot, and
+/// the stored record reflects the *last* entry in the batch.
+#[test]
+fn test_add_to_allowlist_batch_duplicate_address_last_write_wins() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    let ke = String::from_str(&env, "KE");
+
+    let mut entries: Vec<AllowlistEntry> = Vec::new(&env);
+    entries.push_back(AllowlistEntry {
+        address: user.clone(),
+        jurisdiction: us.clone(),
+        expires_at: 1000,
+    });
+    // Same address again, with conflicting jurisdiction and expiry.
+    entries.push_back(AllowlistEntry {
+        address: user.clone(),
+        jurisdiction: ke.clone(),
+        expires_at: 2000,
+    });
+
+    client.add_to_allowlist_batch(&admin, &entries);
+
+    // The duplicate must not create a second allowlist slot.
+    assert_eq!(client.get_allowlist_count(), 1);
+    assert_eq!(client.get_allowlist().len(), 1);
+    assert_eq!(client.get_allowlist().get(0).unwrap(), user);
+
+    // Last-write-wins: the second entry's data is what is stored.
+    let rec = client.get_record(&user).unwrap();
+    assert_eq!(rec.address, user);
+    assert_eq!(rec.status, ComplianceStatus::Approved);
+    assert_eq!(rec.jurisdiction, ke);
+    assert_eq!(rec.expires_at, 2000);
+    assert!(client.is_allowed(&user));
+}
+
+/// Issue #685: when duplicate entries in one batch conflict such that one of
+/// them is invalid (past expiry), the whole batch must revert — no partial
+/// commit of the valid entry, and no allowlist slot created.
+#[test]
+fn test_add_to_allowlist_batch_duplicate_address_with_invalid_entry_reverts() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    env.ledger().with_mut(|l| l.sequence_number = 500);
+
+    let mut entries: Vec<AllowlistEntry> = Vec::new(&env);
+    // First entry is valid (no expiry).
+    entries.push_back(AllowlistEntry {
+        address: user.clone(),
+        jurisdiction: us.clone(),
+        expires_at: 0,
+    });
+    // Second entry for the same address has an expiry already in the past.
+    entries.push_back(AllowlistEntry {
+        address: user.clone(),
+        jurisdiction: us.clone(),
+        expires_at: 100,
+    });
+
+    assert_eq!(
+        client.try_add_to_allowlist_batch(&admin, &entries),
+        Err(Ok(Error::InvalidExpiry.into()))
+    );
+
+    // Nothing from the batch may have been committed.
+    assert_eq!(client.get_allowlist_count(), 0);
+    assert_eq!(client.get_allowlist().len(), 0);
+    assert!(client.get_record(&user).is_none());
+    assert!(!client.is_allowed(&user));
 }
 
 #[test]
@@ -1253,6 +1338,28 @@ fn test_get_blocked_jurisdictions_round_trip() {
     assert_eq!(after_unblock.get(0).unwrap(), kp);
     assert!(!client.is_jurisdiction_blocked(&ir));
     assert!(client.is_jurisdiction_blocked(&kp));
+}
+
+/// Issue #681: blocking the same jurisdiction twice must not produce a
+/// duplicate entry in `get_blocked_jurisdictions`, and unblocking must remove
+/// it entirely. This pins the dedup behaviour and the resulting list contents.
+#[test]
+fn test_get_blocked_jurisdictions_dedups_and_unblocks() {
+    let (env, client, admin) = setup();
+    let us = String::from_str(&env, "US");
+
+    // Block the same jurisdiction twice — the second call must be idempotent.
+    client.block_jurisdiction(&admin, &us);
+    client.block_jurisdiction(&admin, &us);
+
+    let blocked = client.get_blocked_jurisdictions();
+    assert_eq!(blocked.len(), 1, "repeated blocks must not duplicate entries");
+    assert_eq!(blocked.get(0).unwrap(), us);
+
+    // Unblocking removes the entry from the returned list.
+    client.unblock_jurisdiction(&admin, &us);
+    assert_eq!(client.get_blocked_jurisdictions().len(), 0);
+    assert!(!client.is_jurisdiction_blocked(&us));
 }
 
 // ---- minimum holding period (issue #454) ----
@@ -2377,6 +2484,96 @@ fn test_clear_holding_period_unaffected_by_suspended_state() {
         None,
         "holding period must be cleared even while the holder is suspended"
     );
+}
+
+// ---- Issue #689: jurisdiction case-sensitivity of block/is_blocked ----
+
+/// `block_jurisdiction` and `is_jurisdiction_blocked` normalise their input
+/// (uppercase) before touching storage, so a block recorded as "US" must be
+/// observed for "us" and "Us" too.  Callers are therefore *not* required to
+/// pre-normalise jurisdiction codes.
+#[test]
+fn test_block_jurisdiction_is_case_insensitive() {
+    let (env, client, admin) = setup();
+    let us = String::from_str(&env, "US");
+    let us_lower = String::from_str(&env, "us");
+    let us_mixed = String::from_str(&env, "Us");
+    let ir = String::from_str(&env, "IR");
+
+    client.block_jurisdiction(&admin, &us);
+
+    assert!(client.is_jurisdiction_blocked(&us));
+    assert!(client.is_jurisdiction_blocked(&us_lower));
+    assert!(client.is_jurisdiction_blocked(&us_mixed));
+    // An unrelated jurisdiction is unaffected.
+    assert!(!client.is_jurisdiction_blocked(&ir));
+}
+
+/// Blocking with a lowercase code must be visible through the uppercase
+/// query (and vice versa) — the write path normalises too.
+#[test]
+fn test_block_jurisdiction_lowercase_write_is_normalized() {
+    let (env, client, admin) = setup();
+    let us = String::from_str(&env, "US");
+    let us_lower = String::from_str(&env, "us");
+
+    client.block_jurisdiction(&admin, &us_lower);
+
+    assert!(client.is_jurisdiction_blocked(&us));
+    assert!(client.is_jurisdiction_blocked(&us_lower));
+    // The stored set holds the normalised code, not the raw input.
+    let blocked = client.get_blocked_jurisdictions();
+    assert_eq!(blocked.len(), 1);
+    assert_eq!(blocked.get(0).unwrap(), us);
+}
+
+/// Unblocking "US" must also clear the block for "us" / "Us".
+#[test]
+fn test_unblock_jurisdiction_is_case_insensitive() {
+    let (env, client, admin) = setup();
+    let us = String::from_str(&env, "US");
+    let us_lower = String::from_str(&env, "us");
+    let us_mixed = String::from_str(&env, "Us");
+
+    client.block_jurisdiction(&admin, &us);
+    assert!(client.is_jurisdiction_blocked(&us_lower));
+
+    client.unblock_jurisdiction(&admin, &us_lower);
+
+    assert!(!client.is_jurisdiction_blocked(&us));
+    assert!(!client.is_jurisdiction_blocked(&us_lower));
+    assert!(!client.is_jurisdiction_blocked(&us_mixed));
+    assert_eq!(client.get_blocked_jurisdictions().len(), 0);
+}
+
+/// A holder whose record stores "US" must be denied once "us" is blocked.
+#[test]
+fn test_block_jurisdiction_lowercase_denies_uppercase_holder() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    assert!(client.is_allowed(&user));
+
+    client.block_jurisdiction(&admin, &String::from_str(&env, "us"));
+    assert!(!client.is_allowed(&user));
+}
+
+// ---- Issue #691: get_pending_admin after cancel_admin_proposal ----
+
+/// `get_pending_admin` must return `None` once a pending proposal is
+/// explicitly cancelled (as opposed to accepted).
+#[test]
+fn test_get_pending_admin_none_after_cancel() {
+    let (env, client, admin) = setup();
+    let successor = Address::generate(&env);
+
+    assert_eq!(client.get_pending_admin(), None);
+    client.propose_admin(&admin, &successor);
+    assert_eq!(client.get_pending_admin(), Some(successor.clone()));
+
+    client.cancel_admin_proposal(&admin);
+    assert_eq!(client.get_pending_admin(), None);
 }
 
 #[test]

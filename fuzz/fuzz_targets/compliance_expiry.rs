@@ -19,6 +19,8 @@ use soroban_sdk::{
     Address, Env, String,
 };
 
+const MAX_TEST_LEDGER: u32 = 100_000;
+
 #[derive(Debug, Arbitrary)]
 struct FuzzInput {
     /// Ledger sequence at which the approval is created.
@@ -44,8 +46,8 @@ fn main() {
 }
 
 fn fuzz_one(input: &FuzzInput) {
-    // Clamp creation_ledger to a safe range to avoid overflow in arithmetic.
-    let creation = input.creation_ledger.min(u32::MAX - 1_000_000);
+    // Keep host storage TTL arithmetic within a realistic ledger range.
+    let creation = input.creation_ledger.min(MAX_TEST_LEDGER);
 
     let env = Env::default();
     env.mock_all_auths();
@@ -64,7 +66,7 @@ fn fuzz_one(input: &FuzzInput) {
         client.add_to_allowlist(&admin, &user, &us, &0);
 
         for &offset in &input.check_offsets {
-            let check_at = creation.saturating_add(offset);
+            let check_at = creation.saturating_add(offset.min(MAX_TEST_LEDGER));
             env.ledger().with_mut(|l| l.sequence_number = check_at);
             assert!(
                 client.is_allowed(&user),
@@ -86,7 +88,7 @@ fn fuzz_one(input: &FuzzInput) {
             client.add_to_allowlist(&admin, &user, &us, &expires_at);
 
             for &offset in &input.check_offsets {
-                let check_at = creation.saturating_add(offset);
+                let check_at = creation.saturating_add(offset.min(MAX_TEST_LEDGER));
                 env.ledger().with_mut(|l| l.sequence_number = check_at);
                 let allowed = client.is_allowed(&user);
                 if check_at < expires_at {
