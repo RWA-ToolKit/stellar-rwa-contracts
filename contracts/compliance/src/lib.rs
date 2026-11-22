@@ -804,7 +804,7 @@ impl ComplianceContract {
         let mut skipped: u32 = 0;
         let (current_page, _) = allowlist_meta(&env);
         for page_idx in 0..=current_page {
-            if result.len() as u32 >= limit {
+            if result.len() >= limit {
                 break;
             }
             let page: Option<Vec<Address>> = env
@@ -820,7 +820,7 @@ impl ComplianceContract {
                     skipped += 1;
                     continue;
                 }
-                if result.len() as u32 >= limit {
+                if result.len() >= limit {
                     break;
                 }
                 result.push_back(a);

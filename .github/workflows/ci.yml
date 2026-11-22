@@ -108,8 +108,10 @@ jobs:
             target
           key: ${{ runner.os }}-clippy-${{ hashFiles('**/Cargo.lock') }}
 
+      # Existing Soroban event topics and ABI-only status variants are retained
+      # for compatibility; allow their deprecation warnings until they migrate.
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings -A deprecated
 
   build-wasm:
     runs-on: ubuntu-latest
