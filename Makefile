@@ -10,9 +10,9 @@ build:
 test:
 	cargo test
 
-# Run Clippy across the workspace; allow deprecated APIs retained for ABI compatibility.
+# Allow legacy API deprecations and fixed contract ABI argument counts.
 clippy:
-	cargo clippy --workspace --all-targets -- -D warnings -A deprecated
+	cargo clippy --workspace --all-targets -- -D warnings -A deprecated -A clippy::too_many_arguments
 
 # Check whether contract changes since BASE_REF have a CHANGELOG entry.
 changelog-check:
