@@ -6,53 +6,6 @@
 //! then claims `total_amount * balance / total_supply`, paid from the escrow
 //! this contract holds. Each holder can claim a given distribution once.
 //!
-//! ## Storage layout
-//!
-//! Instance storage (bumped together via [`bump`]):
-//! - `Admin` — the current admin address.
-//! - `PendingAdmin` — address nominated by `propose_admin`, awaiting
-//!   `accept_admin`; absent when no handover is in flight.
-//! - `Counter` — id of the most recently created distribution.
-//!
-//! Persistent storage (per-distribution entries are TTL-bumped on access):
-//! - `Dist(u64)` — the [`Distribution`] record (amounts, tokens, flags,
-//!   `deadline`, `created_at`).
-//! - `Claimed(u64, Address)` — set once a holder has claimed a distribution.
-//! - `Snapshot(u64)` — the frozen `(holder, balance)` list captured at
-//!   creation; cleared when the distribution reaches a terminal state.
-//! - `Supply(u64)` — sum of the snapshot balances, the denominator used to
-//!   size each holder's share; cleared alongside `Snapshot`.
-//! - `AssetIds(Address)` — per-asset index of distribution ids, so lookups
-//!   scale with the asset's distributions rather than the global counter.
-//!
-//! ## Lifecycle
-//!
-//! A distribution moves through the following state machine:
-//!
-//! 1. **Create** — `create_distribution` / `create_distribution_deadline` /
-//!    `create_distribution_with_payout` escrow `total_amount` of the payment
-//!    token, freeze the `Snapshot` and `Supply`, and store a `Dist` with
-//!    `completed = false`, `cancelled = false`.
-//! 2. **Claim** — holders call `claim` (at most once each) up to and
-//!    including `deadline`; each claim moves `distributed` toward
-//!    `total_amount`. When `distributed >= total_amount` the distribution is
-//!    marked `completed` and its `Snapshot`/`Supply` are cleared.
-//! 3. **Terminal states** — a distribution that is not fully claimed can be
-//!    closed by one of:
-//!    - `reclaim_unclaimed` (admin only, requires `deadline != 0` and
-//!      `current_ledger > deadline`) — sweeps the remainder to the admin;
-//!    - `cancel_distribution` (admin only, requires `distributed == 0`) —
-//!      returns the full escrow to the admin and sets `cancelled = true`;
-//!    - `withdraw_unclaimed` (admin only, after a minimum age) — sends any
-//!      remaining escrow to a chosen recipient.
-//!
-//!    All three set `completed = true` and clear `Snapshot`/`Supply`, so no
-//!    further claims are possible. Funds already paid to holders are never
-//!    affected.
-//!
-//! See `docs/dividend.md` for the external overview; the sections below cover
-//! the in-source policy details.
-//!
 //! Balances are frozen in a snapshot at distribution creation time; each holder's
 //! entitlement is sized against this snapshot rather than live balances, preventing
 //! post-creation transfers from inflating or diluting any holder's claim.
@@ -102,7 +55,6 @@ use soroban_sdk::{
 pub trait AssetInterface {
     fn total_supply(env: Env) -> i128;
     fn get_metadata(env: Env) -> AssetMetadata;
-    fn balance_at(env: Env, snapshot_id: u32, holder: Address) -> i128;
 }
 
 /// Minimal payment-token interface used to move escrowed funds.
@@ -367,53 +319,6 @@ impl DividendContract {
         )
     }
 
-    /// Create a distribution sized on an asset-token snapshot (#728).
-    ///
-    /// Same as [`Self::create_distribution_deadline`], except each holder's
-    /// balance is read from the asset token's `balance_at(snapshot_id, …)`
-    /// instead of being supplied by the caller. Eligibility is then fixed at
-    /// the ledger the snapshot was taken, on-chain and verifiable: a holder
-    /// who sells after the snapshot is still paid on what they held, and a
-    /// buyer after it is not. Holders with a zero balance at the snapshot are
-    /// left out. As with the list form, the denominator is the sum of the
-    /// listed holders' balances.
-    ///
-    /// # Parameters
-    /// - `snapshot_id`: from `asset-token::snapshot`.
-    /// - `holders`: addresses to include; duplicates are rejected.
-    ///
-    /// # Errors
-    /// As [`Self::create_distribution_deadline`], plus the asset token's
-    /// `SnapshotNotFound` for an unknown `snapshot_id`.
-    pub fn create_distribution_snapshot(
-        env: Env,
-        admin: Address,
-        asset_token: Address,
-        payment_token: Address,
-        total_amount: i128,
-        snapshot_id: u32,
-        holders: Vec<Address>,
-        deadline: u32,
-    ) -> u64 {
-        let asset = AssetClient::new(&env, &asset_token);
-        let mut eligible: Vec<(Address, i128)> = Vec::new(&env);
-        for holder in holders.iter() {
-            let balance = asset.balance_at(&snapshot_id, &holder);
-            if balance > 0 {
-                eligible.push_back((holder, balance));
-            }
-        }
-        Self::create_distribution_deadline(
-            env,
-            admin,
-            asset_token,
-            payment_token,
-            total_amount,
-            eligible,
-            deadline,
-        )
-    }
-
     /// Create and fund a distribution with an optional claim deadline.
     ///
     /// Pulls `total_amount` of `payment_token` from the admin into this
@@ -499,7 +404,7 @@ impl DividendContract {
             panic_err(&env, Error::ZeroSupply);
         }
         // Reject distributions with empty eligible set (issue #365).
-        if eligible.is_empty() {
+        if eligible.len() == 0 {
             panic_err(&env, Error::InvalidAmount);
         }
         // Validate the eligible list and total its balances *before* pulling any
@@ -964,16 +869,6 @@ impl DividendContract {
 
     /// Returns `true` if `holder` has already claimed `distribution_id`.
     ///
-    /// # Behavior for unknown distributions (issue #687)
-    ///
-    /// If no distribution with `distribution_id` exists, this function
-    /// **panics with [`Error::DistributionNotFound`]** rather than returning
-    /// `false`. Returning `false` for an unknown id would be indistinguishable
-    /// from "the distribution exists but this holder has not claimed yet",
-    /// which callers could easily misread. Callers that only want to probe
-    /// claim status should first ensure the id exists (e.g. via
-    /// [`Self::get_distribution`]) or handle the error explicitly.
-    ///
     /// # Parameters
     /// - `distribution_id`: Id of the distribution to query.
     /// - `holder`: Address of the holder to check.
@@ -982,15 +877,11 @@ impl DividendContract {
     /// None — anyone may call.
     ///
     /// # Errors
-    /// - [`Error::DistributionNotFound`] — no distribution with
-    ///   `distribution_id` exists.
+    /// None.
     ///
     /// # Events
     /// None.
     pub fn has_claimed(env: Env, distribution_id: u64, holder: Address) -> bool {
-        // Reject unknown ids up front (issue #687): silently returning `false`
-        // would be misread as "not claimed yet" instead of "doesn't exist".
-        Self::load(&env, distribution_id);
         env.storage()
             .persistent()
             .get(&DataKey::Claimed(distribution_id, holder))
@@ -1220,4 +1111,4 @@ fn panic_err(env: &Env, error: Error) -> ! {
 #[cfg(test)]
 mod test;
 #[cfg(test)]
-mod test_snapshot_distribution;
+mod test_claim_storage_layout;

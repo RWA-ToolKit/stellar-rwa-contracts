@@ -804,7 +804,7 @@ impl ComplianceContract {
         let mut skipped: u32 = 0;
         let (current_page, _) = allowlist_meta(&env);
         for page_idx in 0..=current_page {
-            if result.len() >= limit {
+            if result.len() as u32 >= limit {
                 break;
             }
             let page: Option<Vec<Address>> = env
@@ -820,7 +820,7 @@ impl ComplianceContract {
                     skipped += 1;
                     continue;
                 }
-                if result.len() >= limit {
+                if result.len() as u32 >= limit {
                     break;
                 }
                 result.push_back(a);
@@ -835,11 +835,6 @@ impl ComplianceContract {
     /// will fail [`Self::is_allowed`], even if the record itself is
     /// `Approved` and unexpired.  Idempotent: blocking an already-blocked
     /// jurisdiction does not emit a second event.
-    ///
-    /// Jurisdiction codes are case-insensitive: the incoming code is
-    /// normalized to uppercase (whitespace stripped) on this write path, and
-    /// [`Self::is_jurisdiction_blocked`] normalizes on its read path too, so
-    /// blocking `"US"` also blocks a holder whose record stores `"us"`.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
@@ -882,10 +877,6 @@ impl ComplianceContract {
     /// Removes the jurisdiction from the blocked set and from the ordered
     /// blocked-jurisdiction list.  Idempotent: calling on a jurisdiction that
     /// is not blocked succeeds silently.
-    ///
-    /// Jurisdiction codes are case-insensitive: the incoming code is
-    /// normalized to uppercase (whitespace stripped) before the lookup, so
-    /// unblocking `"us"` removes a block that was created with `"US"`.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
@@ -976,17 +967,23 @@ impl ComplianceContract {
     /// Used by the asset token to classify holders when enforcing a
     /// jurisdiction cap; exposes only the jurisdiction, never the full KYC
     /// record.
+    /// Everything `asset-token::transfer` asks compliance, in one call (#721):
+    /// `(is_allowed(from), is_allowed(to), same_jurisdiction)`.
+    pub fn check_transfer(env: Env, from: Address, to: Address) -> (bool, bool, bool) {
+        let from_ok = Self::is_allowed(env.clone(), from.clone());
+        let to_ok = Self::is_allowed(env.clone(), to.clone());
+        let same = Self::get_jurisdiction(env.clone(), from) == Self::get_jurisdiction(env, to);
+        (from_ok, to_ok, same)
+    }
+
     pub fn get_jurisdiction(env: Env, address: Address) -> Option<String> {
         Self::get_record(env, address).map(|record| record.jurisdiction)
     }
 
     /// Returns `true` if the given jurisdiction is currently blocked.
     ///
-    /// Jurisdiction codes are case-insensitive: the `jurisdiction` is
-    /// normalized to uppercase (whitespace stripped) before the lookup, so
-    /// `"us"` and `"US"` are treated identically. This mirrors the write
-    /// path in [`Self::block_jurisdiction`], which stores only the
-    /// normalized uppercase form.
+    /// The `jurisdiction` is normalized before the lookup, so `"us"` and
+    /// `"US"` are treated identically.
     ///
     /// # Parameters
     /// - `jurisdiction`: Two-letter ISO country code to query.
@@ -1045,16 +1042,6 @@ impl ComplianceContract {
     ///
     /// Only absent or already-empty pages are skipped to keep cost
     /// proportional to live pages, not historical page count (issue #306).
-    ///
-    /// # Choosing `max_records` (#727)
-    /// **Use 10–20.** Each examined record is a ledger read, and each pruned
-    /// one deletes two entries (`Record`, `AllowlistPageOf`). A transaction
-    /// may write at most 50 entries, so when every examined record has
-    /// expired (the worst case) the largest `max_records` that fits is **23**
-    /// (`test_prune_expired_cost`). Cost is about 160–170k CPU per record. `0`
-    /// (unbounded) fails outright once more than ~23 expired records are on
-    /// the list, so only use it on a list known to be small. Call repeatedly
-    /// until the return value is `0`. See docs/compliance.md.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
@@ -1431,4 +1418,4 @@ impl ComplianceContract {
 #[cfg(test)]
 mod test;
 #[cfg(test)]
-mod test_prune_expired_cost;
+mod test_check_transfer;
