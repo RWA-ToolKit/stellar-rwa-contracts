@@ -537,6 +537,16 @@ impl DividendContract {
         if Self::has_claimed(env.clone(), distribution_id, holder.clone()) {
             return 0;
         }
+        Self::share_of(&env, &dist, distribution_id, &holder)
+    }
+
+    /// The holder's proportional share of an already-loaded distribution,
+    /// ignoring whether it was claimed. Shared by `claimable` and `claim` so
+    /// `claim` does not load the `Distribution` and check the claimed flag a
+    /// second time through `claimable` (#718).
+    fn share_of(env: &Env, dist: &Distribution, distribution_id: u64, holder: &Address) -> i128 {
+        let env = env.clone();
+        let holder = holder.clone();
         let supply = Self::load_supply(&env, distribution_id);
         if supply <= 0 {
             return 0;
@@ -611,7 +621,8 @@ impl DividendContract {
         if Self::has_claimed(env.clone(), distribution_id, holder.clone()) {
             panic_err(&env, Error::AlreadyClaimed);
         }
-        let amount = Self::claimable(env.clone(), distribution_id, holder.clone());
+        // `dist` is already loaded and the claimed flag already checked above.
+        let amount = Self::share_of(&env, &dist, distribution_id, &holder);
         if amount <= 0 {
             panic_err(&env, Error::NothingToClaim);
         }

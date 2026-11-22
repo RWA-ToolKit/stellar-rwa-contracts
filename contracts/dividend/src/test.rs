@@ -1357,3 +1357,33 @@ fn test_uneven_distribution_leaves_dust() {
     assert_eq!(pay_balance(&ctx, &div_addr), dust);
     assert!(!d.completed); // distributed (1000) < total_amount (1001)
 }
+
+// ---- issue #718 / #720: claim resource budget ----
+
+/// Resource cost of the common path: one holder claiming. Printed for
+/// docs/RESOURCE_BUDGETS.md and bounded so a regression fails CI.
+///
+/// `cargo test -p dividend resource_budget -- --nocapture`
+#[test]
+fn test_resource_budget_claim() {
+    extern crate std;
+    let ctx = setup();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    ctx.env.cost_estimate().budget().reset_unlimited();
+    ctx.dividend.claim(&id, &ctx.h1);
+    let cpu = ctx.env.cost_estimate().budget().cpu_instruction_cost();
+    let mem = ctx.env.cost_estimate().budget().memory_bytes_cost();
+    let res = ctx.env.cost_estimate().resources();
+    std::println!(
+        "[budget] claim: cpu={cpu} mem={mem} reads={} writes={}",
+        res.disk_read_entries + res.memory_read_entries,
+        res.write_entries
+    );
+    assert!(cpu < 1_500_000, "claim cpu {cpu}");
+}
