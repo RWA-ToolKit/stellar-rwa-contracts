@@ -9,6 +9,15 @@ the full convention; CI flags contract changes that do not update this file.
 
 ## [Unreleased]
 
+### Added
+- **asset-token**: `snapshot` (admin), `balance_at`, `total_supply_at` and `current_snapshot_id`: point-in-time balances recorded lazily on first change after a snapshot; new `Error::SnapshotNotFound` (#16) (#728).
+- **dividend**: `create_distribution_snapshot` sizes a distribution on an asset-token snapshot instead of a caller-supplied list; documented in docs/dividend.md (#728).
+- **ci**: allowed-to-fail `sdk-next.yml` tests the workspace against the newest 26.x, the newest stable and the newest pre-release soroban-sdk weekly (#713).
+- **contributing**: optional pre-commit hook (`scripts/git-hooks/pre-commit`, `.pre-commit-config.yaml`) running `cargo fmt --check` and clippy (#711).
+
+### Documentation
+- **compliance**: `prune_expired` documents a recommended `max_records` of 10–20: when every record has expired, 23 is the most that fits the 50-entry write limit, and `0` fails beyond ~23 expired records (#727).
+
 ### Fixed
 - **build**: restored the workspace build and CI, which had been red on `main`: Cargo.lock held `ed25519-dalek` 3.0 (Dependabot #790) against the documented `=2.2` pin, breaking `soroban-env-host`; `fuzz` required `arbitrary` 1.4, which soroban-sdk 26 (`~1.3.0`) cannot resolve; `rwa-common::check_str` named a nonexistent `soroban_sdk::contracterror::ContractError` bound (now `Into<soroban_sdk::Error>`); test files used pre-SDK-26 event and `try_` result APIs, had an unclosed test and a duplicate test name, and were not `cargo fmt` clean. Tests for `update_valuations_batch`, `withdraw_unclaimed` and `suspend_batch`/`reinstate_batch`/`remove_batch` were removed because those functions are not in the contracts (the #735 entry below describes an unmerged change).
 - **build**: `dividend` and `registry` link as Wasm again: `AssetMetadata` moved to `rwa-common` (re-exported by `asset-token`, same XDR) so they no longer link asset-token's exported functions (duplicate symbols); CI's Wasm build excludes the std-only `rwa-fuzz` crate.

@@ -79,6 +79,7 @@ any caller — no auth gate, no privileged check:
 | `transfer` | Self (the `from` address) | `require_auth` failure (host-level auth error) if `from` did not authorize; separately reverts with `Error::SenderNotCompliant` (#7) / `Error::RecipientNotCompliant` (#8) / `Error::Paused` (#6) / `Error::InsufficientBalance` (#4) on business-rule failure |
 | `transfer_batch` | Self (the `from` address) | `require_auth` failure if `from` did not authorize; separately reverts with `Error::SenderNotCompliant` (#7) / `Error::RecipientNotCompliant` (#8) / `Error::Paused` (#6) / `Error::InvalidAmount` / `Error::InsufficientBalance` (#4) on business-rule failure |
 | `mint` | Admin | `Error::Unauthorized` (#3) |
+| `snapshot` | Admin | `Error::Unauthorized` (#3) |
 | `mint_batch` | Admin | `Error::Unauthorized` (#3) |
 | `burn` | Self (the `from` address) | `require_auth` failure if `from` did not authorize |
 | `pause` | Admin | `Error::Unauthorized` (#3) |
@@ -95,6 +96,7 @@ any caller — no auth gate, no privileged check:
 |---|---|---|
 | `initialize` | None (bootstrap) — but only succeeds once | Second call panics `Error::AlreadyInitialized` (#1) |
 | `create_distribution` | Admin | `Error::Unauthorized` (#3) |
+| `create_distribution_snapshot` | Admin (or the asset token's admin, as `create_distribution`) | `Error::Unauthorized` (#3); the asset token's `SnapshotNotFound` (#16) for an unknown snapshot |
 | `claim` | Self (the `holder` address) | `require_auth` failure if `holder` did not authorize; separately reverts with `Error::AlreadyClaimed` (#7) / `Error::NothingToClaim` (#6) on business-rule failure |
 | `withdraw_unclaimed` | Admin | `Error::Unauthorized` (#3); `Error::DistributionTooYoung` (#16) before the requested minimum age; `Error::DeadlineNotReached` (#14) before a configured claim deadline; `Error::NothingToClaim` (#6) if no withdrawable balance remains |
 | `propose_admin` | Admin | `Error::Unauthorized` (#3) |
