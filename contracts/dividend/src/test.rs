@@ -4,7 +4,7 @@ use asset_token::{AssetTokenContract, AssetTokenContractClient};
 use compliance::{ComplianceContract, ComplianceContractClient};
 use proptest::prelude::*;
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, Events, Ledger},
+    testutils::{Address as _, AuthorizedFunction, Ledger},
     token, Address, Env, String, Symbol, Vec,
 };
 

@@ -140,8 +140,9 @@ proptest! {
             }
         }
 
-        assert_eq!(client.asset_count(), ids.len() as u64);
-        assert_eq!(client.get_total_asset_count(), ids.len() as u32);
+        let total = ids.len();
+        assert_eq!(client.asset_count(), total as u64);
+        assert_eq!(client.get_total_asset_count(), total as u32);
 
         // Documented page size used by the paginated getters.
         let page_size = MAX_PAGE_SIZE;
@@ -160,7 +161,7 @@ proptest! {
             start += page.len();
         }
         let all = client.get_all_assets(&0, &u32::MAX);
-        assert_eq!(collected.len() as u64, total);
+        assert_eq!(collected.len() as u64, total as u64);
         assert_eq!(collected.len(), all.len() as usize);
         for (i, entry) in all.iter().enumerate() {
             assert_eq!(collected[i], entry.id);
