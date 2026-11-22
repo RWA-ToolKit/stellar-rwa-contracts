@@ -142,11 +142,21 @@ pub const MAX_ALLOWLIST_PAGE_SIZE: u32 = 200;
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` was called on a contract that already has an admin set.
     AlreadyInitialized = 1,
+    /// An operation requiring the stored admin was attempted before
+    /// `initialize` was called.
     NotInitialized = 2,
+    /// The referenced address has no KYC record (e.g. `suspend`, `reinstate`
+    /// or `remove` on an address that was never approved).
     RecordNotFound = 3,
+    /// An `expires_at` value is non-zero and already in the past
+    /// (`expires_at <= current_ledger`).
     InvalidExpiry = 4,
+    /// The caller is not the stored admin, or did not authorize the call.
     Unauthorized = 5,
+    /// A jurisdiction string is not a valid two-letter ISO-3166-1 alpha-2
+    /// code after normalization.
     InvalidJurisdiction = 6,
     /// `accept_admin` or `cancel_admin_proposal` called with no pending
     /// admin proposal on file (issue #4).
@@ -970,6 +980,15 @@ impl ComplianceContract {
     /// Used by the asset token to classify holders when enforcing a
     /// jurisdiction cap; exposes only the jurisdiction, never the full KYC
     /// record.
+    /// Everything `asset-token::transfer` asks compliance, in one call (#721):
+    /// `(is_allowed(from), is_allowed(to), same_jurisdiction)`.
+    pub fn check_transfer(env: Env, from: Address, to: Address) -> (bool, bool, bool) {
+        let from_ok = Self::is_allowed(env.clone(), from.clone());
+        let to_ok = Self::is_allowed(env.clone(), to.clone());
+        let same = Self::get_jurisdiction(env.clone(), from) == Self::get_jurisdiction(env, to);
+        (from_ok, to_ok, same)
+    }
+
     pub fn get_jurisdiction(env: Env, address: Address) -> Option<String> {
         Self::get_record(env, address).map(|record| record.jurisdiction)
     }
@@ -1411,3 +1430,5 @@ impl ComplianceContract {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_check_transfer;

@@ -1,4 +1,6 @@
-.PHONY: build test coverage fmt fmt-check clean deploy interface-specs update-interface-specs check-interface-specs
+.PHONY: build test coverage fmt fmt-check clippy changelog-check check clean deploy interface-specs update-interface-specs check-interface-specs
+
+BASE_REF ?= upstream/main
 
 # Build all contracts to wasm.
 build:
@@ -7,6 +9,21 @@ build:
 # Run the full workspace test suite.
 test:
 	cargo test
+
+# Allow legacy API deprecations and fixed contract ABI argument counts.
+clippy:
+	cargo clippy --workspace --all-targets -- -D warnings -A deprecated -A clippy::too_many_arguments
+
+# Check whether contract changes since BASE_REF have a CHANGELOG entry.
+changelog-check:
+	./scripts/check_changelog.sh "$(BASE_REF)"
+
+# Run the core local checks used before opening a pull request.
+check:
+	$(MAKE) fmt-check
+	$(MAKE) clippy
+	$(MAKE) test
+	$(MAKE) changelog-check BASE_REF="$(BASE_REF)"
 
 # Print a per-crate coverage summary (requires cargo-llvm-cov).
 coverage:

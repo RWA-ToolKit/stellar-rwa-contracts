@@ -1,0 +1,60 @@
+name: Release
+
+# Tag-triggered release of the contract Wasm (#708). Pushing `v1.2.3` builds
+# all four contracts in release mode, records each file's SHA-256 in
+# `wasm-hashes.txt`, and attaches the .wasm files and the manifest to the
+# GitHub release, so deployers install exactly what was built and audited
+# instead of rebuilding locally.
+#
+# Reproducing a hash: check out the tag and run the same build command with
+# the same Rust version. The workflow prints `rustc -V` into the manifest,
+# because rust-toolchain.toml tracks `stable` and a different compiler can
+# produce different bytes.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload assets
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        run: rustup show
+
+      - name: Build contracts (wasm, release)
+        run: cargo build --locked --workspace --exclude rwa-fuzz --release --target wasm32v1-none
+
+      - name: Hash manifest
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for c in asset_token compliance dividend registry; do
+            cp "target/wasm32v1-none/release/$c.wasm" dist/
+          done
+          {
+            echo "# ${GITHUB_REF_NAME} — SHA-256 of each contract Wasm"
+            echo "# commit: ${GITHUB_SHA}"
+            echo "# $(rustc -V)"
+            echo "# build: cargo build --locked --workspace --exclude rwa-fuzz --release --target wasm32v1-none"
+            (cd dist && sha256sum *.wasm)
+          } > dist/wasm-hashes.txt
+          cat dist/wasm-hashes.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Contract Wasm built from ${GITHUB_SHA}. Verify with \`sha256sum -c\` against wasm-hashes.txt; see DEPLOYMENTS.md." \
+            dist/*.wasm dist/wasm-hashes.txt

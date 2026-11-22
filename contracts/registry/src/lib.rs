@@ -61,12 +61,25 @@ enum DataKey {
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` was called on a contract that has already been
+    /// initialized.
     AlreadyInitialized = 1,
+    /// An operation requiring the admin (or a stored value) was attempted
+    /// before `initialize` was called.
     NotInitialized = 2,
+    /// The caller is not authorized for this operation: the supplied admin
+    /// does not match the stored admin (or the asset's admin), or the
+    /// supplied oracle does not match the configured oracle.
     Unauthorized = 3,
+    /// No asset exists with the requested registry id.
     AssetNotFound = 4,
+    /// A valuation was supplied that is negative.
     InvalidValuation = 5,
+    /// An arithmetic operation on the total valuation would overflow or
+    /// underflow `i128`.
     Overflow = 6,
+    /// An input failed validation: the asset name is empty or too long, or
+    /// the asset type is not one of the allowed values.
     InvalidInput = 7,
     /// `accept_admin` or `cancel_admin_proposal` called with no pending
     /// admin proposal on file (issue #4).
@@ -345,12 +358,19 @@ impl RegistryContract {
         entry
     }
 
-    /// Returns all assets registered by a given issuer.
+    /// **Deprecated (#722): use [`Self::get_assets_by_issuer_page`].**
     ///
-    /// Backed by a per-issuer index, so cost scales with that issuer's asset
-    /// count, not the whole registry.  Includes both active and deactivated
-    /// assets; use the `active` field on each [`AssetEntry`] to filter if
-    /// needed.
+    /// Returns the issuer's *first* [`MAX_PAGE_SIZE`] assets, not all of them:
+    /// it has always been capped by the same page limit as the paginated
+    /// getter, because returning an unbounded list would exceed the per-call
+    /// footprint limit for a large issuer. An issuer with more assets than one
+    /// page gets a silently truncated list here. It is kept, with that cap, so
+    /// existing integrations keep working; it is equivalent to
+    /// `get_assets_by_issuer_page(issuer, 0, MAX_PAGE_SIZE)` and will be
+    /// removed in a future major version.
+    ///
+    /// Includes both active and deactivated assets; use the `active` field on
+    /// each [`AssetEntry`] to filter if needed.
     ///
     /// # Parameters
     /// - `issuer`: Issuer address to query.
@@ -1266,6 +1286,8 @@ mod test_assets_by_type_page_events;
 mod test_assets_by_type_page_resource_cost;
 #[cfg(test)]
 mod test_assets_page_zero_empty;
+#[cfg(test)]
+mod test_issuer_unpaginated_cap;
 #[cfg(test)]
 mod test_ochedev6789_issuer_page_deactivated;
 #[cfg(test)]
