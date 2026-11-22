@@ -43,7 +43,7 @@
 #[cfg(test)]
 extern crate std;
 
-use asset_token::AssetMetadata;
+use rwa_common::AssetMetadata;
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, Map, Vec,

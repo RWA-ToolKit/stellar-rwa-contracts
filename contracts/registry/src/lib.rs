@@ -6,8 +6,8 @@
 //! monotonically increasing id and tracks issuer, type, valuation and active
 //! status. It also reports total value locked (TVL) across active assets.
 
-use asset_token::AssetMetadata;
 use rwa_common::validation::check_str as common_check_str;
+use rwa_common::AssetMetadata;
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, String, Vec,

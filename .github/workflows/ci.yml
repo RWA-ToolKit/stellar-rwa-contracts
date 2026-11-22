@@ -111,7 +111,9 @@ jobs:
       # artifacts as `stellar contract build` without compiling the full Stellar
       # CLI from source (which needs the libdbus system library and is slow).
       - name: Build contracts (wasm)
-        run: cargo build --workspace --release --target wasm32v1-none
+        # rwa-fuzz is a std host binary (libFuzzer, arbitrary) and cannot build
+        # for wasm32v1-none; including it failed this step on every run.
+        run: cargo build --workspace --exclude rwa-fuzz --release --target wasm32v1-none
 
       # Issue #380: Publish per-contract WASM as build artifacts
       - name: Upload WASM artifacts
