@@ -10,9 +10,9 @@ build:
 test:
 	cargo test
 
-# Run Clippy across the workspace, including test targets.
+# Run Clippy across the workspace; allow deprecated APIs retained for ABI compatibility.
 clippy:
-	cargo clippy --workspace --all-targets -- -D warnings
+	cargo clippy --workspace --all-targets -- -D warnings -A deprecated
 
 # Check whether contract changes since BASE_REF have a CHANGELOG entry.
 changelog-check:
