@@ -69,7 +69,11 @@ fn test_issuer_page_deactivated_asset_still_returned() {
     assert!(!client.get_asset(&id).active);
 
     let result = client.get_assets_by_issuer_page(&issuer, &0u32, &10u32);
-    assert_eq!(result.len(), 1, "deactivated asset must still appear in paged result");
+    assert_eq!(
+        result.len(),
+        1,
+        "deactivated asset must still appear in paged result"
+    );
     assert_eq!(result.get(0).unwrap().id, id);
     assert!(
         !result.get(0).unwrap().active,
@@ -135,7 +139,10 @@ fn test_issuer_page_deactivation_does_not_shift_page_positions() {
     assert_eq!(after.get(1).unwrap().id, id2);
     assert_eq!(after.get(2).unwrap().id, id3);
     assert!(after.get(0).unwrap().active);
-    assert!(!after.get(1).unwrap().active, "middle asset must be deactivated");
+    assert!(
+        !after.get(1).unwrap().active,
+        "middle asset must be deactivated"
+    );
     assert!(after.get(2).unwrap().active);
 }
 
@@ -154,7 +161,10 @@ fn test_issuer_page_reflects_reactivated_state() {
     client.reactivate_asset(&admin, &id);
     let reactivated = client.get_assets_by_issuer_page(&issuer, &0u32, &1u32);
     assert_eq!(reactivated.len(), 1);
-    assert!(reactivated.get(0).unwrap().active, "reactivated asset must show active=true");
+    assert!(
+        reactivated.get(0).unwrap().active,
+        "reactivated asset must show active=true"
+    );
 }
 
 /// Callers can distinguish deactivated assets from active ones by inspecting

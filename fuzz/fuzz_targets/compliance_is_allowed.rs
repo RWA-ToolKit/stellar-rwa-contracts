@@ -63,7 +63,8 @@ fn fuzz_one(input: &FuzzInput) {
     client.initialize(&admin);
 
     let creation_ledger: u32 = 1_000;
-    env.ledger().with_mut(|l| l.sequence_number = creation_ledger);
+    env.ledger()
+        .with_mut(|l| l.sequence_number = creation_ledger);
 
     let user = Address::generate(&env);
     let jur = String::from_str(&env, "US");
@@ -95,8 +96,7 @@ fn fuzz_one(input: &FuzzInput) {
         let capped = input.min_holding_period.min(2_000_000);
         client.set_min_holding_period(&admin, &user, &capped);
 
-        let acq_ledger =
-            creation_ledger.saturating_add(input.acquisition_offset.min(1_000_000));
+        let acq_ledger = creation_ledger.saturating_add(input.acquisition_offset.min(1_000_000));
         env.ledger().with_mut(|l| l.sequence_number = acq_ledger);
         client.record_acquisition(&admin, &user);
     }
@@ -111,8 +111,7 @@ fn fuzz_one(input: &FuzzInput) {
     } else {
         creation_ledger.saturating_add(input.expires_after.min(1_000_000))
     };
-    let record_was_created =
-        input.has_record && (expires_at == 0 || expires_at > creation_ledger);
+    let record_was_created = input.has_record && (expires_at == 0 || expires_at > creation_ledger);
 
     let is_approved = record_was_created && !input.suspended;
     let is_expired = record_was_created && expires_at != 0 && check_ledger >= expires_at;
@@ -137,10 +136,7 @@ fn fuzz_one(input: &FuzzInput) {
         "is_allowed mismatch: has_record={} suspended={} expires_at={expires_at} \
          check_ledger={check_ledger} jur_blocked={jur_blocked} \
          min_holding={} acq_offset={} expected={expected}",
-        input.has_record,
-        input.suspended,
-        input.min_holding_period,
-        input.acquisition_offset,
+        input.has_record, input.suspended, input.min_holding_period, input.acquisition_offset,
     );
 
     // Unknown address (never added) must always return false.

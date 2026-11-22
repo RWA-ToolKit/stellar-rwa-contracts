@@ -124,6 +124,19 @@ size and cost are unchanged. Note that a panicking Soroban invocation may be
 rolled back by the host; treat these events as a local/debugging aid, not an
 indexed production signal.
 
+## Pre-commit hook (optional, recommended)
+
+CI rejects unformatted code. To catch that at commit time instead of after a
+push, enable the repo's hook, which runs `cargo fmt --check` and `cargo clippy`
+when a commit touches Rust files:
+
+```bash
+git config core.hooksPath scripts/git-hooks
+```
+
+If you use the [pre-commit](https://pre-commit.com) framework, `.pre-commit-config.yaml`
+runs the same checks: `pre-commit install`. Skip once with `git commit --no-verify`.
+
 ## Fuzzing
 
 The fuzz targets live in `fuzz/fuzz_targets/` and are separate from the

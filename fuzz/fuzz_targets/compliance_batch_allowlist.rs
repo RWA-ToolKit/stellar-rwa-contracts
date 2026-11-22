@@ -31,14 +31,12 @@ struct FuzzEntry {
     expires_offset: i32,
 }
 
-const JURISDICTIONS: &[&str] = &[
-    "US", "KE", "DE", "us", "ke", "", "USA", "U1", "  ", "ZZ",
-];
+const JURISDICTIONS: &[&str] = &["US", "KE", "DE", "us", "ke", "", "USA", "U1", "  ", "ZZ"];
 
 fn main() {
     // Use a fixed seed so the harness is deterministic when replaying a
     // crash file. In real fuzzing the seed changes every run.
-    let raw: Vec<u8> = (0u8..=255).collect();
+    let raw: std::vec::Vec<u8> = (0u8..=255).collect();
     let mut u = Unstructured::new(&raw);
     for _ in 0..1_000 {
         let Ok(entries_data) = <[FuzzEntry; 4]>::arbitrary(&mut u) else {
@@ -91,10 +89,7 @@ fn fuzz_one(entries_data: &[FuzzEntry]) {
             has_invalid = true;
         }
         // Two-letter uppercase ASCII → valid jurisdiction; otherwise invalid.
-        let valid_jur = jur_str.len() == 2
-            && jur_str
-                .chars()
-                .all(|c| c.is_ascii_alphabetic());
+        let valid_jur = jur_str.len() == 2 && jur_str.chars().all(|c| c.is_ascii_alphabetic());
         if !valid_jur {
             has_invalid = true;
         }

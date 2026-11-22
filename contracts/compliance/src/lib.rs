@@ -40,11 +40,15 @@ pub enum ComplianceStatus {
     Approved,
     /// Deprecated legacy ABI value. Kept only for backwards compatibility;
     /// the contract never writes this status and no public workflow produces it.
-    #[deprecated(note = "Pending is retained for ABI compatibility only; current workflows never set it.")]
+    #[deprecated(
+        note = "Pending is retained for ABI compatibility only; current workflows never set it."
+    )]
     Pending,
     /// Deprecated legacy ABI value. Kept only for backwards compatibility;
     /// the contract never writes this status and no public workflow produces it.
-    #[deprecated(note = "Rejected is retained for ABI compatibility only; current workflows never set it.")]
+    #[deprecated(
+        note = "Rejected is retained for ABI compatibility only; current workflows never set it."
+    )]
     Rejected,
     Suspended,
 }
@@ -577,7 +581,12 @@ impl ComplianceContract {
                 .publish((symbol_short!("expired"), address), record.expires_at);
             return false;
         }
-        if env.storage().persistent().get(&DataKey::Blocked(record.jurisdiction)).unwrap_or(false) {
+        if env
+            .storage()
+            .persistent()
+            .get(&DataKey::Blocked(record.jurisdiction))
+            .unwrap_or(false)
+        {
             return false;
         }
         // Minimum holding period check (issue #454).
@@ -1025,6 +1034,16 @@ impl ComplianceContract {
     /// Only absent or already-empty pages are skipped to keep cost
     /// proportional to live pages, not historical page count (issue #306).
     ///
+    /// # Choosing `max_records` (#727)
+    /// **Use 10–20.** Each examined record is a ledger read, and each pruned
+    /// one deletes two entries (`Record`, `AllowlistPageOf`). A transaction
+    /// may write at most 50 entries, so when every examined record has
+    /// expired (the worst case) the largest `max_records` that fits is **23**
+    /// (`test_prune_expired_cost`). Cost is about 160–170k CPU per record. `0`
+    /// (unbounded) fails outright once more than ~23 expired records are on
+    /// the list, so only use it on a list known to be small. Call repeatedly
+    /// until the return value is `0`. See docs/compliance.md.
+    ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
     /// - `max_records`: Maximum number of allowlist entries to inspect.
@@ -1303,12 +1322,7 @@ impl ComplianceContract {
     ///
     /// # Events
     /// Emits topic `("minhld", holder)` with data `min_ledgers`.
-    pub fn set_min_holding_period(
-        env: Env,
-        admin: Address,
-        holder: Address,
-        min_ledgers: u64,
-    ) {
+    pub fn set_min_holding_period(env: Env, admin: Address, holder: Address, min_ledgers: u64) {
         require_admin(&env, &admin);
         let key = DataKey::MinHoldingPeriod(holder.clone());
         if min_ledgers == 0 {
@@ -1400,8 +1414,9 @@ impl ComplianceContract {
             .persistent()
             .get(&DataKey::FirstAcquiredLedger(holder))
     }
-
 }
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_prune_expired_cost;

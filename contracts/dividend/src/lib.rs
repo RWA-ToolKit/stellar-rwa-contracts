@@ -43,7 +43,7 @@
 #[cfg(test)]
 extern crate std;
 
-use asset_token::AssetMetadata;
+use rwa_common::AssetMetadata;
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
     Env, Map, Vec,
@@ -55,6 +55,7 @@ use soroban_sdk::{
 pub trait AssetInterface {
     fn total_supply(env: Env) -> i128;
     fn get_metadata(env: Env) -> AssetMetadata;
+    fn balance_at(env: Env, snapshot_id: u32, holder: Address) -> i128;
 }
 
 /// Minimal payment-token interface used to move escrowed funds.
@@ -316,6 +317,53 @@ impl DividendContract {
             payment_token,
             total_amount,
             eligible,
+        )
+    }
+
+    /// Create a distribution sized on an asset-token snapshot (#728).
+    ///
+    /// Same as [`Self::create_distribution_deadline`], except each holder's
+    /// balance is read from the asset token's `balance_at(snapshot_id, …)`
+    /// instead of being supplied by the caller. Eligibility is then fixed at
+    /// the ledger the snapshot was taken, on-chain and verifiable: a holder
+    /// who sells after the snapshot is still paid on what they held, and a
+    /// buyer after it is not. Holders with a zero balance at the snapshot are
+    /// left out. As with the list form, the denominator is the sum of the
+    /// listed holders' balances.
+    ///
+    /// # Parameters
+    /// - `snapshot_id`: from `asset-token::snapshot`.
+    /// - `holders`: addresses to include; duplicates are rejected.
+    ///
+    /// # Errors
+    /// As [`Self::create_distribution_deadline`], plus the asset token's
+    /// `SnapshotNotFound` for an unknown `snapshot_id`.
+    pub fn create_distribution_snapshot(
+        env: Env,
+        admin: Address,
+        asset_token: Address,
+        payment_token: Address,
+        total_amount: i128,
+        snapshot_id: u32,
+        holders: Vec<Address>,
+        deadline: u32,
+    ) -> u64 {
+        let asset = AssetClient::new(&env, &asset_token);
+        let mut eligible: Vec<(Address, i128)> = Vec::new(&env);
+        for holder in holders.iter() {
+            let balance = asset.balance_at(&snapshot_id, &holder);
+            if balance > 0 {
+                eligible.push_back((holder, balance));
+            }
+        }
+        Self::create_distribution_deadline(
+            env,
+            admin,
+            asset_token,
+            payment_token,
+            total_amount,
+            eligible,
+            deadline,
         )
     }
 
@@ -1110,3 +1158,5 @@ fn panic_err(env: &Env, error: Error) -> ! {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_snapshot_distribution;

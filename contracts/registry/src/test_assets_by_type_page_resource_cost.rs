@@ -62,11 +62,8 @@ fn get_assets_by_type_page_cost_empty_index() {
     let (env, client, _admin) = setup();
     env.cost_estimate().budget().reset_default();
 
-    let results = client.get_assets_by_type_page(
-        &String::from_str(&env, "commodity"),
-        &0u32,
-        &10u32,
-    );
+    let results =
+        client.get_assets_by_type_page(&String::from_str(&env, "commodity"), &0u32, &10u32);
     assert_eq!(results.len(), 0);
 
     let cpu = env.cost_estimate().budget().cpu_instruction_cost();
@@ -91,11 +88,7 @@ fn get_assets_by_type_page_cost_single_asset() {
     register(&env, &client, &issuer, "invoice", 1_000);
 
     env.cost_estimate().budget().reset_default();
-    let results = client.get_assets_by_type_page(
-        &String::from_str(&env, "invoice"),
-        &0u32,
-        &10u32,
-    );
+    let results = client.get_assets_by_type_page(&String::from_str(&env, "invoice"), &0u32, &10u32);
     assert_eq!(results.len(), 1);
 
     let cpu = env.cost_estimate().budget().cpu_instruction_cost();
@@ -129,11 +122,8 @@ fn get_assets_by_type_page_cost_full_page_10() {
     }
 
     env.cost_estimate().budget().reset_default();
-    let results = client.get_assets_by_type_page(
-        &String::from_str(&env, "real_estate"),
-        &0u32,
-        &10u32,
-    );
+    let results =
+        client.get_assets_by_type_page(&String::from_str(&env, "real_estate"), &0u32, &10u32);
     assert_eq!(results.len(), 10);
 
     let cpu = env.cost_estimate().budget().cpu_instruction_cost();
@@ -164,11 +154,7 @@ fn get_assets_by_type_page_cost_full_page_50() {
     }
 
     env.cost_estimate().budget().reset_default();
-    let results = client.get_assets_by_type_page(
-        &String::from_str(&env, "equity"),
-        &0u32,
-        &50u32,
-    );
+    let results = client.get_assets_by_type_page(&String::from_str(&env, "equity"), &0u32, &50u32);
     assert_eq!(results.len(), 50);
 
     let cpu = env.cost_estimate().budget().cpu_instruction_cost();

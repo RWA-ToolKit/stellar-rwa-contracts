@@ -47,31 +47,10 @@ pub trait ComplianceInterface {
     fn get_jurisdiction_cap(env: Env, jurisdiction: String) -> Option<u32>;
 }
 
-/// On-chain metadata describing the tokenized asset.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AssetMetadata {
-    pub name: String,
-    pub symbol: String,
-    /// e.g. "real_estate", "invoice", "commodity".
-    pub asset_type: String,
-    pub total_supply: i128,
-    pub decimals: u32,
-    pub admin: Address,
-    pub compliance_contract: Address,
-    pub asset_description: String,
-    /// Asset value in USD cents.
-    pub valuation: i128,
-    pub paused: bool,
-    /// Optional emergency-pause delegate (issue #1). May call `pause` but
-    /// not `unpause`, `mint`, `mint_batch`, or any other admin action.
-    /// Absent (`None`) by default.
-    pub guardian: Option<Address>,
-    /// Address nominated by the current admin via `propose_admin`, pending
-    /// acceptance via `accept_admin` (issue #4). Absent when there is no
-    /// proposal in flight.
-    pub pending_admin: Option<Address>,
-}
+/// On-chain metadata describing the tokenized asset. Defined in `rwa-common`
+/// so `dividend` and `registry` can decode it without linking this contract
+/// (which duplicated its exported symbols and broke their Wasm builds).
+pub use rwa_common::AssetMetadata;
 
 #[contracttype]
 #[derive(Clone)]
@@ -83,6 +62,15 @@ enum DataKey {
     /// status so a partial freeze does not affect KYC approval.
     FrozenBalance(Address),
     Allowance(Address, Address),
+    /// Id of the most recent snapshot; absent (0) until the first (#728).
+    SnapshotId,
+    /// Total supply when snapshot `id` was taken.
+    SupplyAt(u32),
+    /// `holder`'s balance at snapshot `id`, written lazily: just before the
+    /// first change to that holder's balance after the snapshot. Absent means
+    /// "unchanged since", so the answer is in a later snapshot or the live
+    /// balance.
+    BalanceAt(u32, Address),
 }
 
 /// SEP-41 allowance record: amount plus the ledger sequence it expires at.
@@ -116,6 +104,8 @@ pub enum Error {
     /// A transfer or mint would push the recipient jurisdiction above its
     /// configured holding cap (issue #737).
     JurisdictionCapExceeded = 15,
+    /// `balance_at` / `total_supply_at` for a snapshot id never taken (#728).
+    SnapshotNotFound = 16,
 }
 
 #[cfg(test)]
@@ -340,7 +330,8 @@ impl AssetTokenContract {
         // leave that aggregate unchanged, so they are exempt.
         if from != to {
             let compliance_client = ComplianceClient::new(&env, &meta.compliance_contract);
-            if compliance_client.get_jurisdiction(&from) != compliance_client.get_jurisdiction(&to) {
+            if compliance_client.get_jurisdiction(&from) != compliance_client.get_jurisdiction(&to)
+            {
                 Self::enforce_jurisdiction_cap(
                     &env,
                     &meta.compliance_contract,
@@ -448,8 +439,8 @@ impl AssetTokenContract {
         if !Self::compliant(&env, &meta.compliance_contract, &from) {
             panic_err(&env, Error::SenderNotCompliant);
         }
-        let from_jurisdiction = ComplianceClient::new(&env, &meta.compliance_contract)
-            .get_jurisdiction(&from);
+        let from_jurisdiction =
+            ComplianceClient::new(&env, &meta.compliance_contract).get_jurisdiction(&from);
         for (to, amount) in transfers.iter() {
             Self::check_amount(&env, amount);
             if !Self::compliant(&env, &meta.compliance_contract, &to) {
@@ -545,13 +536,7 @@ impl AssetTokenContract {
             .total_supply
             .checked_add(amount)
             .unwrap_or_else(|| panic_err(&env, Error::Overflow));
-        Self::enforce_jurisdiction_cap(
-            &env,
-            &meta.compliance_contract,
-            &to,
-            amount,
-            new_supply,
-        );
+        Self::enforce_jurisdiction_cap(&env, &meta.compliance_contract, &to, amount, new_supply);
         let to_bal = Self::balance(env.clone(), to.clone());
         let new_to_bal = to_bal
             .checked_add(amount)
@@ -898,6 +883,85 @@ impl AssetTokenContract {
     /// None.
     pub fn total_supply(env: Env) -> i128 {
         Self::metadata(&env).total_supply
+    }
+
+    /// Record a point-in-time view of every balance (#728). Admin only.
+    ///
+    /// Costs O(1): nothing is copied now. Each holder's balance is recorded
+    /// the first time it changes after the snapshot, so a snapshot only costs
+    /// storage for holders whose balance later moves (the ERC20Snapshot
+    /// approach). Read it back with [`Self::balance_at`] and
+    /// [`Self::total_supply_at`]; `dividend::create_distribution_snapshot`
+    /// uses it to size a distribution on balances fixed at this ledger.
+    ///
+    /// # Returns
+    /// The new snapshot id, starting at 1.
+    ///
+    /// # Events
+    /// Emits topic `("snapshot",)` with data `(id, ledger)`.
+    pub fn snapshot(env: Env, admin: Address) -> u32 {
+        let meta = Self::require_admin(&env, &admin);
+        let id: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SnapshotId)
+            .unwrap_or(0)
+            + 1;
+        env.storage().instance().set(&DataKey::SnapshotId, &id);
+        let key = DataKey::SupplyAt(id);
+        env.storage().persistent().set(&key, &meta.total_supply);
+        env.storage().persistent().extend_ttl(
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        Self::bump(&env);
+        env.events()
+            .publish((symbol_short!("snapshot"),), (id, env.ledger().sequence()));
+        id
+    }
+
+    /// The most recent snapshot id, or 0 if none was ever taken.
+    pub fn current_snapshot_id(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SnapshotId)
+            .unwrap_or(0)
+    }
+
+    /// `holder`'s balance when snapshot `snapshot_id` was taken (#728).
+    ///
+    /// The first recorded value at or after `snapshot_id` is the balance
+    /// held from that snapshot until its first later change; with none, the
+    /// balance has not changed since and the live balance is the answer.
+    /// Cost grows with the number of snapshots taken after `snapshot_id`.
+    ///
+    /// # Errors
+    /// - [`Error::SnapshotNotFound`] — `snapshot_id` is 0 or not yet taken.
+    pub fn balance_at(env: Env, snapshot_id: u32, holder: Address) -> i128 {
+        let current = Self::checked_snapshot(&env, snapshot_id);
+        for id in snapshot_id..=current {
+            if let Some(balance) = env
+                .storage()
+                .persistent()
+                .get::<_, i128>(&DataKey::BalanceAt(id, holder.clone()))
+            {
+                return balance;
+            }
+        }
+        Self::balance(env, holder)
+    }
+
+    /// Total supply when snapshot `snapshot_id` was taken (#728).
+    ///
+    /// # Errors
+    /// - [`Error::SnapshotNotFound`] — `snapshot_id` is 0 or not yet taken.
+    pub fn total_supply_at(env: Env, snapshot_id: u32) -> i128 {
+        Self::checked_snapshot(&env, snapshot_id);
+        env.storage()
+            .persistent()
+            .get(&DataKey::SupplyAt(snapshot_id))
+            .unwrap_or_else(|| panic_err(&env, Error::SnapshotNotFound))
     }
 
     /// Pause every balance-changing operation.
@@ -1364,7 +1428,42 @@ impl AssetTokenContract {
         }
     }
 
+    fn checked_snapshot(env: &Env, snapshot_id: u32) -> u32 {
+        let current: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SnapshotId)
+            .unwrap_or(0);
+        if snapshot_id == 0 || snapshot_id > current {
+            panic_err(env, Error::SnapshotNotFound);
+        }
+        current
+    }
+
     fn set_balance(env: &Env, id: &Address, amount: i128) {
+        // Snapshots (#728): before the first change to this holder's balance
+        // since the latest snapshot, record what it was at that snapshot.
+        let snapshot: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SnapshotId)
+            .unwrap_or(0);
+        if snapshot != 0 {
+            let at = DataKey::BalanceAt(snapshot, id.clone());
+            if !env.storage().persistent().has(&at) {
+                let before: i128 = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Balance(id.clone()))
+                    .unwrap_or(0);
+                env.storage().persistent().set(&at, &before);
+                env.storage().persistent().extend_ttl(
+                    &at,
+                    INSTANCE_LIFETIME_THRESHOLD,
+                    INSTANCE_BUMP_AMOUNT,
+                );
+            }
+        }
         let key = DataKey::Balance(id.clone());
         env.storage().persistent().set(&key, &amount);
         env.storage().persistent().extend_ttl(
@@ -1404,3 +1503,5 @@ mod test_makeem_approve;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_snapshot;

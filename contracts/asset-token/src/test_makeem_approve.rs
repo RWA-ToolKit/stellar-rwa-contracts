@@ -78,7 +78,10 @@ fn positive_amount_with_past_expiration_rejected() {
 fn negative_amount_rejected() {
     let s = setup();
     let spender = Address::generate(&s.env);
-    assert!(s.token.try_approve(&s.admin, &spender, &-1, &1_000).is_err());
+    assert!(s
+        .token
+        .try_approve(&s.admin, &spender, &-1, &1_000)
+        .is_err());
 }
 
 // ---- #533: event emission ----
@@ -117,7 +120,10 @@ fn overwriting_approve_emits_event_each_time() {
 fn rejected_approve_emits_no_event() {
     let s = setup();
     let spender = Address::generate(&s.env);
-    assert!(s.token.try_approve(&s.admin, &spender, &-1, &1_000).is_err());
+    assert!(s
+        .token
+        .try_approve(&s.admin, &spender, &-1, &1_000)
+        .is_err());
     assert_eq!(s.env.events().all().events().len(), 0);
 }
 
@@ -137,7 +143,10 @@ fn approve_cpu_cost_within_baseline() {
     let mem = s.env.cost_estimate().budget().memory_bytes_cost();
     std::println!("approve cost: cpu={cpu} mem={mem}");
     assert!(cpu < 5_000_000, "approve cpu cost unexpectedly high: {cpu}");
-    assert!(mem < 1_000_000, "approve memory cost unexpectedly high: {mem}");
+    assert!(
+        mem < 1_000_000,
+        "approve memory cost unexpectedly high: {mem}"
+    );
 }
 
 #[test]
@@ -151,7 +160,10 @@ fn approve_overwrite_cost_not_greater_than_double_first() {
     s.env.cost_estimate().budget().reset_default();
     s.token.approve(&s.admin, &spender, &2, &exp);
     let second = s.env.cost_estimate().budget().cpu_instruction_cost();
-    assert!(second <= first * 2, "overwrite cost {second} vs first {first}");
+    assert!(
+        second <= first * 2,
+        "overwrite cost {second} vs first {first}"
+    );
 }
 
 // ---- #535: paused state ----
