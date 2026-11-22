@@ -40,11 +40,15 @@ pub enum ComplianceStatus {
     Approved,
     /// Deprecated legacy ABI value. Kept only for backwards compatibility;
     /// the contract never writes this status and no public workflow produces it.
-    #[deprecated(note = "Pending is retained for ABI compatibility only; current workflows never set it.")]
+    #[deprecated(
+        note = "Pending is retained for ABI compatibility only; current workflows never set it."
+    )]
     Pending,
     /// Deprecated legacy ABI value. Kept only for backwards compatibility;
     /// the contract never writes this status and no public workflow produces it.
-    #[deprecated(note = "Rejected is retained for ABI compatibility only; current workflows never set it.")]
+    #[deprecated(
+        note = "Rejected is retained for ABI compatibility only; current workflows never set it."
+    )]
     Rejected,
     Suspended,
 }
@@ -138,11 +142,21 @@ pub const MAX_ALLOWLIST_PAGE_SIZE: u32 = 200;
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` was called on a contract that already has an admin set.
     AlreadyInitialized = 1,
+    /// An operation requiring the stored admin was attempted before
+    /// `initialize` was called.
     NotInitialized = 2,
+    /// The referenced address has no KYC record (e.g. `suspend`, `reinstate`
+    /// or `remove` on an address that was never approved).
     RecordNotFound = 3,
+    /// An `expires_at` value is non-zero and already in the past
+    /// (`expires_at <= current_ledger`).
     InvalidExpiry = 4,
+    /// The caller is not the stored admin, or did not authorize the call.
     Unauthorized = 5,
+    /// A jurisdiction string is not a valid two-letter ISO-3166-1 alpha-2
+    /// code after normalization.
     InvalidJurisdiction = 6,
     /// `accept_admin` or `cancel_admin_proposal` called with no pending
     /// admin proposal on file (issue #4).
@@ -577,7 +591,12 @@ impl ComplianceContract {
                 .publish((symbol_short!("expired"), address), record.expires_at);
             return false;
         }
-        if env.storage().persistent().get(&DataKey::Blocked(record.jurisdiction)).unwrap_or(false) {
+        if env
+            .storage()
+            .persistent()
+            .get(&DataKey::Blocked(record.jurisdiction))
+            .unwrap_or(false)
+        {
             return false;
         }
         // Minimum holding period check (issue #454).
@@ -767,8 +786,11 @@ impl ComplianceContract {
     ///
     /// `offset` is the number of addresses to skip from the start of the
     /// allowlist; `limit` is the maximum number of addresses to return.
-    /// `limit` is clamped to [`MAX_ALLOWLIST_PAGE_SIZE`] — passing `0` or a
-    /// value above the maximum returns up to the maximum page size.  Passing
+    /// `limit` is **silently clamped** to [`MAX_ALLOWLIST_PAGE_SIZE`] (200),
+    /// never rejected — passing `0` or a value above the maximum returns up to
+    /// 200 addresses (#717). Clamping rather than erroring matches the
+    /// registry's paginated getters. 200 is also the allowlist's storage page
+    /// size, so a full page costs at most two ledger reads.  Passing
     /// an `offset` at or beyond the end of the list returns an empty `Vec`,
     /// which is how callers detect the final page.
     ///
@@ -958,6 +980,15 @@ impl ComplianceContract {
     /// Used by the asset token to classify holders when enforcing a
     /// jurisdiction cap; exposes only the jurisdiction, never the full KYC
     /// record.
+    /// Everything `asset-token::transfer` asks compliance, in one call (#721):
+    /// `(is_allowed(from), is_allowed(to), same_jurisdiction)`.
+    pub fn check_transfer(env: Env, from: Address, to: Address) -> (bool, bool, bool) {
+        let from_ok = Self::is_allowed(env.clone(), from.clone());
+        let to_ok = Self::is_allowed(env.clone(), to.clone());
+        let same = Self::get_jurisdiction(env.clone(), from) == Self::get_jurisdiction(env, to);
+        (from_ok, to_ok, same)
+    }
+
     pub fn get_jurisdiction(env: Env, address: Address) -> Option<String> {
         Self::get_record(env, address).map(|record| record.jurisdiction)
     }
@@ -1303,12 +1334,7 @@ impl ComplianceContract {
     ///
     /// # Events
     /// Emits topic `("minhld", holder)` with data `min_ledgers`.
-    pub fn set_min_holding_period(
-        env: Env,
-        admin: Address,
-        holder: Address,
-        min_ledgers: u64,
-    ) {
+    pub fn set_min_holding_period(env: Env, admin: Address, holder: Address, min_ledgers: u64) {
         require_admin(&env, &admin);
         let key = DataKey::MinHoldingPeriod(holder.clone());
         if min_ledgers == 0 {
@@ -1400,8 +1426,9 @@ impl ComplianceContract {
             .persistent()
             .get(&DataKey::FirstAcquiredLedger(holder))
     }
-
 }
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_check_transfer;

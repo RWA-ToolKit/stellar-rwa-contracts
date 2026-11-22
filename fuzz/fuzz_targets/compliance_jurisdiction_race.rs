@@ -62,9 +62,7 @@ fn fuzz_one(ops: &[Op]) {
     client.initialize(&admin);
 
     // Pre-generate a fixed pool of user addresses.
-    let users: std::vec::Vec<Address> = (0..N_USERS)
-        .map(|_| Address::generate(&env))
-        .collect();
+    let users: std::vec::Vec<Address> = (0..N_USERS).map(|_| Address::generate(&env)).collect();
 
     // Track which users have ever been approved (have a record).
     let mut approved = std::vec![false; N_USERS];

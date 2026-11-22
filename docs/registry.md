@@ -32,16 +32,16 @@ and reports total value locked (TVL).
   another id with `DuplicateAsset (#9)` — see "Duplicate registration" below.
 - `get_asset(asset_id) -> AssetEntry` — `AssetNotFound (#4)`.
 - `get_assets_by_issuer(issuer) -> Vec<AssetEntry>` — returns the first
-  page (up to `MAX_PAGE_SIZE` = 100 entries) of assets registered by this
+  page (up to `MAX_PAGE_SIZE` = 50 entries) of assets registered by this
   issuer. Use `get_assets_by_issuer_page` to page through larger result sets
   (issue #430).
 - `get_assets_by_issuer_page(issuer, page, page_size) -> Vec<AssetEntry>` —
   paginated variant (issue #430). Returns up to `page_size` entries starting
   at offset `page × page_size` within the issuer's id list. `page_size` is
-  clamped to `MAX_PAGE_SIZE` (100). Page through by incrementing `page` until
+  clamped to `MAX_PAGE_SIZE` (50). Page through by incrementing `page` until
   the result is shorter than `page_size` (or empty).
 - `get_assets_by_type(asset_type) -> Vec<AssetEntry>` — returns the first
-  page (up to `MAX_PAGE_SIZE` = 100 entries) of assets with this type. See
+  page (up to `MAX_PAGE_SIZE` = 50 entries) of assets with this type. See
   [matching rules](#asset-types). Use `get_assets_by_type_page` for larger
   result sets (issue #430).
 - `get_assets_by_type_page(asset_type, page, page_size) -> Vec<AssetEntry>` —
@@ -49,7 +49,7 @@ and reports total value locked (TVL).
   `get_assets_by_issuer_page`. `page_size` clamped to `MAX_PAGE_SIZE`.
 - `get_all_assets(start_id, limit) -> Vec<AssetEntry>` — returns ids
   `[start_id, start_id + limit)`, capped at the current counter and at
-  `MAX_PAGE_SIZE` (100) regardless of the requested `limit`. Page through the
+  `MAX_PAGE_SIZE` (50) regardless of the requested `limit`. Page through the
   full registry by calling again with `start_id + <count returned>`. A small
   registry that fits in one page keeps working with a single call
   (`start_id = 1`, a large `limit`).
@@ -76,7 +76,7 @@ and reports total value locked (TVL).
 - `get_assets_page(start_index: u32, page_size: u32) -> Vec<AssetEntry>` —
   zero-based index pagination over all registered assets ordered by id,
   including deactivated assets.
-  `page_size` is capped at `MAX_PAGE_SIZE` (100). Returns empty when
+  `page_size` is capped at `MAX_PAGE_SIZE` (50). Returns empty when
   `start_index` is at or beyond the total count. See
   [Pagination helpers](#pagination-helpers-issue-455).
 - `get_active_assets_page(start_index: u32, page_size: u32, active_only: bool) -> Vec<AssetEntry>` —
@@ -137,7 +137,7 @@ landing page and producing duplicate entries on the explore page. Covered by
 
 ### Pagination and max page size (issue #310, issue #430)
 
-`get_all_assets` always enforces `MAX_PAGE_SIZE = 100` as an upper bound on
+`get_all_assets` always enforces `MAX_PAGE_SIZE = 50` as an upper bound on
 the number of entries returned in one call, independent of the `limit`
 argument passed in. This keeps per-call cost bounded as the registry grows,
 while existing callers that pass a large `limit` to fetch everything in one
@@ -234,7 +234,7 @@ without treating page reads as activity.
 | Parameter     | Semantics |
 |---------------|-----------|
 | `start_index` | First entry to return (0-based). Returns empty when ≥ total count. |
-| `page_size`   | Max entries to return. Capped at `MAX_PAGE_SIZE` (100). `0` also returns up to the cap. |
+| `page_size`   | Max entries to return. Capped at `MAX_PAGE_SIZE` (50). `0` also returns up to the cap. |
 
 Typical walk:
 ```

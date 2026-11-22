@@ -257,3 +257,35 @@ it only for genuine recovery, and audit the distinct `("recover", admin,
 from)` event (data: `(to, amount, new_from_bal, new_to_bal)`), which is never
 emitted by ordinary `transfer` calls. Routine operations must continue to use
 `transfer`, which keeps both compliance checks.
+
+## Batch sizes (`mint_batch`, `transfer_batch`)
+
+**Recommended maximum: 10 recipients per call.** Measured 2026-11-22
+(`test_batch_size_bench`, soroban-sdk 26.1.0, under the real per-transaction
+resource limits):
+
+| recipients | `mint_batch` CPU | `transfer_batch` CPU |
+|---:|---:|---:|
+| 1 | 376,838 | 480,824 |
+| 5 | 1,358,662 | 1,507,413 |
+| 10 | 2,829,435 | 3,128,530 |
+| 15 | 4,622,093 | 5,042,290 |
+| 20 | exceeds limits | exceeds limits |
+| 50, 100, 200 | exceeds limits | exceeds limits |
+
+The largest batches that fit are **16** for `mint_batch` and **19** for
+`transfer_batch`. The marginal cost is about 280–340k CPU per recipient (it
+rises slightly with batch size), but CPU is not what stops a large batch. The
+ledger footprint does: each recipient adds its balance and its compliance
+record (about 3 entries), and a transaction may touch at most 100 entries and
+write at most 50.
+
+10 leaves headroom for what the measurement does not include: transfers that
+cross jurisdictions also read the jurisdiction-cap configuration and walk the
+allowlist, and a real transaction may do more than the batch call. An airdrop
+UI should split recipients into chunks of 10 and submit one transaction per
+chunk. Re-run the benchmark after any change to either function:
+
+```bash
+cargo test -p asset-token batch_size_bench -- --nocapture --test-threads=1
+```

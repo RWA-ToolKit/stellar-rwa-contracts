@@ -40,12 +40,8 @@ fn setup(supply: i128) -> Setup {
 }
 
 fn approve(s: &Setup, who: &Address, jurisdiction: &str) {
-    s.compliance.add_to_allowlist(
-        &s.admin,
-        who,
-        &String::from_str(&s.env, jurisdiction),
-        &0,
-    );
+    s.compliance
+        .add_to_allowlist(&s.admin, who, &String::from_str(&s.env, jurisdiction), &0);
 }
 
 #[test]
@@ -60,7 +56,7 @@ fn test_cap_limits_cross_jurisdiction_transfers() {
     assert_eq!(s.token.balance(&bob), 200);
     assert_eq!(
         s.token.try_transfer(&s.admin, &bob, &1),
-        Err(Err(Error::JurisdictionCapExceeded))
+        Err(Ok(Error::JurisdictionCapExceeded.into()))
     );
     assert_eq!(s.token.balance(&bob), 200);
 }
@@ -87,7 +83,7 @@ fn test_clearing_cap_allows_more_transfers() {
         .set_jurisdiction_cap(&s.admin, &String::from_str(&s.env, "DE"), &Some(500));
     assert_eq!(
         s.token.try_transfer(&s.admin, &bob, &100),
-        Err(Err(Error::JurisdictionCapExceeded))
+        Err(Ok(Error::JurisdictionCapExceeded.into()))
     );
     s.compliance
         .set_jurisdiction_cap(&s.admin, &String::from_str(&s.env, "DE"), &None);

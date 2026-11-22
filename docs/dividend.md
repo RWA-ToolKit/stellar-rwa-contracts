@@ -300,3 +300,36 @@ reduce per-claim cost to O(1).
 Both limits are **silent**: the contract emits no custom error; the failure
 comes from the Soroban host.  Admins must account for these bounds when
 constructing the `eligible` list.
+
+## Record dates: distributions from a snapshot (#728)
+
+An RWA dividend is normally owed to whoever held the token on a *record date*,
+not whoever holds it when they get round to claiming. Two pieces do that:
+
+1. **`asset-token::snapshot(admin) -> id`** fixes every balance at the current
+   ledger. It costs O(1): a holder's balance is only written down the first
+   time it changes after the snapshot (the ERC20Snapshot approach), so
+   holders who never move cost nothing. Read it back with
+   `balance_at(id, holder)` and `total_supply_at(id)`.
+2. **`dividend::create_distribution_snapshot(admin, asset_token,
+   payment_token, total_amount, snapshot_id, holders, deadline)`** sizes the
+   distribution on `balance_at(snapshot_id, …)` for each listed holder. The
+   balances come from the token itself rather than from the caller, so they
+   are verifiable on chain. Holders with zero at the snapshot are left out.
+
+Eligibility was already frozen at *creation* time: `create_distribution` stores
+the eligible list, so later transfers never change anyone's share. What the
+snapshot adds is that the frozen balances are the token's own record at a
+chosen ledger, not numbers the admin supplied.
+
+```text
+snap = asset.snapshot(admin)          # record date
+...                                   # trading continues
+dividend.create_distribution_snapshot(admin, asset, usdc, 1_000_000, snap, holders, 0)
+```
+
+`balance_at` walks the snapshots taken after the one asked for, so its cost
+grows with how many snapshots followed. Taking one per distribution keeps that
+small. While at least one snapshot exists, the first balance change per holder
+per snapshot also writes one small entry, which adds one ledger entry to that
+transfer's footprint.
