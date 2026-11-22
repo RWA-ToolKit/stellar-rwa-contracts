@@ -345,12 +345,19 @@ impl RegistryContract {
         entry
     }
 
-    /// Returns all assets registered by a given issuer.
+    /// **Deprecated (#722): use [`Self::get_assets_by_issuer_page`].**
     ///
-    /// Backed by a per-issuer index, so cost scales with that issuer's asset
-    /// count, not the whole registry.  Includes both active and deactivated
-    /// assets; use the `active` field on each [`AssetEntry`] to filter if
-    /// needed.
+    /// Returns the issuer's *first* [`MAX_PAGE_SIZE`] assets, not all of them:
+    /// it has always been capped by the same page limit as the paginated
+    /// getter, because returning an unbounded list would exceed the per-call
+    /// footprint limit for a large issuer. An issuer with more assets than one
+    /// page gets a silently truncated list here. It is kept, with that cap, so
+    /// existing integrations keep working; it is equivalent to
+    /// `get_assets_by_issuer_page(issuer, 0, MAX_PAGE_SIZE)` and will be
+    /// removed in a future major version.
+    ///
+    /// Includes both active and deactivated assets; use the `active` field on
+    /// each [`AssetEntry`] to filter if needed.
     ///
     /// # Parameters
     /// - `issuer`: Issuer address to query.
@@ -1266,6 +1273,8 @@ mod test_assets_by_type_page_events;
 mod test_assets_by_type_page_resource_cost;
 #[cfg(test)]
 mod test_assets_page_zero_empty;
+#[cfg(test)]
+mod test_issuer_unpaginated_cap;
 #[cfg(test)]
 mod test_ochedev6789_issuer_page_deactivated;
 #[cfg(test)]
