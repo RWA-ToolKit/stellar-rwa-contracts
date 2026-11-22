@@ -98,6 +98,22 @@ cargo test
 cargo test -p compliance
 ```
 
+## Pre-PR checks
+
+Run the core local checks before opening a pull request:
+
+```bash
+git fetch upstream main
+make check
+```
+
+`make check` runs formatting, workspace Clippy with warnings denied except for
+deprecated ABI-compatible APIs and generated wrappers for fixed contract
+argument lists, the workspace tests, and the changelog check against
+`upstream/main`. Ensure that ref is current; for a different PR base, override
+it with `make check BASE_REF=upstream/<branch>`. CI also runs platform-specific
+build, interface-spec, fuzz, and script checks.
+
 > **Lockfile note:** the resolver may pull `ed25519-dalek 3.0.0`, which breaks
 > `soroban-env-host`'s test utils. The committed `Cargo.lock` pins it to
 > `2.2.0`. If you regenerate the lockfile, re-pin with:
@@ -123,6 +139,19 @@ string. The event is `cfg(debug_assertions)`-gated, so ordinary release wasm
 size and cost are unchanged. Note that a panicking Soroban invocation may be
 rolled back by the host; treat these events as a local/debugging aid, not an
 indexed production signal.
+
+## Pre-commit hook (optional, recommended)
+
+CI rejects unformatted code. To catch that at commit time instead of after a
+push, enable the repo's hook, which runs `cargo fmt --check` and `cargo clippy`
+when a commit touches Rust files:
+
+```bash
+git config core.hooksPath scripts/git-hooks
+```
+
+If you use the [pre-commit](https://pre-commit.com) framework, `.pre-commit-config.yaml`
+runs the same checks: `pre-commit install`. Skip once with `git commit --no-verify`.
 
 ## Fuzzing
 
@@ -333,6 +362,50 @@ panic at the ABI boundary. State-changing operations are atomic: a panic reverts
 the whole invocation (including events), which is why batch operations such as
 `transfer_batch`, `mint_batch`, and `add_to_allowlist_batch` validate every
 entry and revert as a unit.
+
+## Resource cost tests
+
+Paginated and loop-heavy functions can pass every correctness test and still
+become unusable if they start consuming far more CPU or memory than the
+network allows. The registry contract guards against that with **resource cost
+tests**: tests that call a function and assert on the Soroban resource budget
+it consumed. Existing examples:
+
+- `contracts/registry/src/test_assets_by_type_page_resource_cost.rs`
+- `contracts/registry/src/test_ochedev6789_issuer_page_resource_cost.rs`
+
+The pattern is:
+
+1. **Reset the budget** so the measurement covers only the call under test:
+   ```rust
+   env.cost_estimate().budget().reset_default();
+   ```
+2. **Call the function** exactly as a client would (for example
+   `client.get_assets_by_type_page(&issuer, &asset_type, &start, &limit)`).
+3. **Read the observed costs**:
+   ```rust
+   let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+   let mem = env.cost_estimate().budget().memory_bytes_cost();
+   ```
+4. **Print them** (`std::println!` or the test logger) so a failing run shows
+   the actual numbers and reviewers can see how close the call is to the limit.
+5. **Assert against generous ceilings** — either a comfortable multiple of the
+   expected cost or the Soroban per-transaction hard limits. The goal is to
+   catch order-of-magnitude regressions (an accidental O(n²) scan, an unbounded
+   loop, a missing page limit), not to pin exact numbers. Tight assertions turn
+   every unrelated SDK or compiler bump into a failing test.
+
+Add a resource cost test when you:
+
+- introduce a new paginated function (anything taking a `start`/`limit` pair or
+  returning a page of results),
+- add or change a loop that iterates over stored entries, or
+- change the data layout or iteration order of an existing paginated function.
+
+Keep the test next to the contract's other tests, name it
+`test_<function>_resource_cost.rs`, and use a realistic worst case (a full
+page, or the largest batch the function accepts) so the ceiling reflects the
+most expensive legitimate call.
 
 ## Coding standards
 

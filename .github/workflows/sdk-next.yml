@@ -1,0 +1,58 @@
+name: SDK compatibility (next)
+
+# Early warning, never a gate (#713): builds and tests the workspace against
+# newer soroban-sdk releases than the one Cargo.toml pins, so an upgrade is
+# known to be easy or hard before it is needed. Every job is
+# continue-on-error, so a failure shows up in the run without blocking merges.
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Mondays, alongside Dependabot
+  workflow_dispatch:
+  pull_request:
+    paths: ['Cargo.toml', 'Cargo.lock', '.github/workflows/sdk-next.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  sdk-next:
+    name: soroban-sdk ${{ matrix.channel }}
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        # latest-26: newest 26.x patch/minor, what `cargo update` would pick up.
+        # next-stable: newest stable release on crates.io (the next major once out).
+        # next-pre: newest release including pre-releases (e.g. 30.0.0-rc.1).
+        channel: [latest-26, next-stable, next-pre]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup show
+      - name: Pick the soroban-sdk version
+        id: pick
+        run: |
+          set -euo pipefail
+          meta=$(curl -fsSL -A "stellar-rwa-contracts-ci" https://crates.io/api/v1/crates/soroban-sdk)
+          case "${{ matrix.channel }}" in
+            latest-26)   version="26" ;;
+            next-stable) version="=$(echo "$meta" | jq -r .crate.max_stable_version)" ;;
+            next-pre)    version="=$(echo "$meta" | jq -r .crate.max_version)" ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Testing against soroban-sdk $version"
+      - name: Point the workspace at it
+        run: |
+          set -euo pipefail
+          sed -i -E 's/^soroban-sdk = "[^"]*"/soroban-sdk = "${{ steps.pick.outputs.version }}"/' Cargo.toml
+          sed -i -E 's/^soroban-sdk = \{ version = "[^"]*"/soroban-sdk = { version = "${{ steps.pick.outputs.version }}"/' fuzz/Cargo.toml
+          cargo update --workspace
+          cargo tree -p asset-token -i soroban-sdk --depth 0
+      - name: Build (wasm)
+        run: cargo build --workspace --exclude rwa-fuzz --release --target wasm32v1-none
+      - name: Test
+        run: cargo test --workspace --exclude rwa-fuzz
