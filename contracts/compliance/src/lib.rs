@@ -967,6 +967,15 @@ impl ComplianceContract {
     /// Used by the asset token to classify holders when enforcing a
     /// jurisdiction cap; exposes only the jurisdiction, never the full KYC
     /// record.
+    /// Everything `asset-token::transfer` asks compliance, in one call (#721):
+    /// `(is_allowed(from), is_allowed(to), same_jurisdiction)`.
+    pub fn check_transfer(env: Env, from: Address, to: Address) -> (bool, bool, bool) {
+        let from_ok = Self::is_allowed(env.clone(), from.clone());
+        let to_ok = Self::is_allowed(env.clone(), to.clone());
+        let same = Self::get_jurisdiction(env.clone(), from) == Self::get_jurisdiction(env, to);
+        (from_ok, to_ok, same)
+    }
+
     pub fn get_jurisdiction(env: Env, address: Address) -> Option<String> {
         Self::get_record(env, address).map(|record| record.jurisdiction)
     }
@@ -1408,3 +1417,5 @@ impl ComplianceContract {
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_check_transfer;

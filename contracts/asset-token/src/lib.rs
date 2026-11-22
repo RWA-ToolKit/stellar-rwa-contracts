@@ -42,6 +42,7 @@ mod test_rdj_allowance;
 #[contractclient(name = "ComplianceClient")]
 pub trait ComplianceInterface {
     fn is_allowed(env: Env, address: Address) -> bool;
+    fn check_transfer(env: Env, from: Address, to: Address) -> (bool, bool, bool);
     fn get_allowlist(env: Env) -> Vec<Address>;
     fn get_jurisdiction(env: Env, address: Address) -> Option<String>;
     fn get_jurisdiction_cap(env: Env, jurisdiction: String) -> Option<u32>;
@@ -299,10 +300,12 @@ impl AssetTokenContract {
         if meta.paused {
             panic_err(&env, Error::Paused);
         }
-        if !Self::compliant(&env, &meta.compliance_contract, &from) {
+        let (from_ok, to_ok, same_jurisdiction) =
+            ComplianceClient::new(&env, &meta.compliance_contract).check_transfer(&from, &to);
+        if !from_ok {
             panic_err(&env, Error::SenderNotCompliant);
         }
-        if !Self::compliant(&env, &meta.compliance_contract, &to) {
+        if !to_ok {
             panic_err(&env, Error::RecipientNotCompliant);
         }
         let from_bal = Self::balance(env.clone(), from.clone());
@@ -318,9 +321,7 @@ impl AssetTokenContract {
         // aggregate holdings. Intra-jurisdiction transfers (and self-transfers)
         // leave that aggregate unchanged, so they are exempt.
         if from != to {
-            let compliance_client = ComplianceClient::new(&env, &meta.compliance_contract);
-            if compliance_client.get_jurisdiction(&from) != compliance_client.get_jurisdiction(&to)
-            {
+            if !same_jurisdiction {
                 Self::enforce_jurisdiction_cap(
                     &env,
                     &meta.compliance_contract,
@@ -1378,3 +1379,5 @@ mod test_makeem_approve;
 
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod test_compliance_call_cost;
