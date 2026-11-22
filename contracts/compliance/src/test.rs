@@ -27,6 +27,15 @@ fn test_version() {
     assert_eq!(client.version(), VERSION);
 }
 
+/// Issue #680: pin the exact version constant so an accidental edit to
+/// `VERSION` in lib.rs is caught by CI rather than silently shipped.
+#[test]
+fn test_version_returns_expected_constant() {
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.version(), 1u32);
+    assert_eq!(client.version(), VERSION);
+}
+
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")]
 fn test_double_initialize_fails() {

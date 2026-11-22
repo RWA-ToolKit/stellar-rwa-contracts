@@ -39,6 +39,16 @@ fn test_version() {
 }
 
 #[test]
+fn test_version_pins_expected_constant() {
+    // Pins the public version() return value so an accidental edit to the
+    // VERSION constant is caught by CI (upgrade-compatibility tooling relies
+    // on this value).
+    let (_env, client, _admin) = setup();
+    assert_eq!(client.version(), 1u32);
+    assert_eq!(VERSION, 1u32);
+}
+
+#[test]
 fn test_initialize_admin() {
     let (_env, client, admin) = setup();
     assert_eq!(client.get_admin(), admin);
