@@ -8,7 +8,7 @@ use soroban_sdk::{Env, String};
 /// # Panics
 /// Calls `env.panic_with_error` with the caller-supplied `error_code` when
 /// the length check fails, so the calling contract controls the error variant.
-pub fn check_str<E: soroban_sdk::contracterror::ContractError + Copy>(
+pub fn check_str<E: Into<soroban_sdk::Error>>(
     env: &Env,
     s: &String,
     min_len: u32,

@@ -340,7 +340,8 @@ impl AssetTokenContract {
         // leave that aggregate unchanged, so they are exempt.
         if from != to {
             let compliance_client = ComplianceClient::new(&env, &meta.compliance_contract);
-            if compliance_client.get_jurisdiction(&from) != compliance_client.get_jurisdiction(&to) {
+            if compliance_client.get_jurisdiction(&from) != compliance_client.get_jurisdiction(&to)
+            {
                 Self::enforce_jurisdiction_cap(
                     &env,
                     &meta.compliance_contract,
@@ -448,8 +449,8 @@ impl AssetTokenContract {
         if !Self::compliant(&env, &meta.compliance_contract, &from) {
             panic_err(&env, Error::SenderNotCompliant);
         }
-        let from_jurisdiction = ComplianceClient::new(&env, &meta.compliance_contract)
-            .get_jurisdiction(&from);
+        let from_jurisdiction =
+            ComplianceClient::new(&env, &meta.compliance_contract).get_jurisdiction(&from);
         for (to, amount) in transfers.iter() {
             Self::check_amount(&env, amount);
             if !Self::compliant(&env, &meta.compliance_contract, &to) {
@@ -545,13 +546,7 @@ impl AssetTokenContract {
             .total_supply
             .checked_add(amount)
             .unwrap_or_else(|| panic_err(&env, Error::Overflow));
-        Self::enforce_jurisdiction_cap(
-            &env,
-            &meta.compliance_contract,
-            &to,
-            amount,
-            new_supply,
-        );
+        Self::enforce_jurisdiction_cap(&env, &meta.compliance_contract, &to, amount, new_supply);
         let to_bal = Self::balance(env.clone(), to.clone());
         let new_to_bal = to_bal
             .checked_add(amount)

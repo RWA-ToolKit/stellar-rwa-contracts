@@ -79,9 +79,21 @@ fn reactivate_asset_id_zero_leaves_state_unchanged() {
     // id 0 does not exist — must panic and roll back.
     let _ = client.try_reactivate_asset(&admin, &0u64);
 
-    assert_eq!(client.asset_count(), count_before, "asset_count must be unchanged");
-    assert_eq!(client.active_count(), active_before, "active_count must be unchanged");
-    assert_eq!(client.total_value_locked(), tvl_before, "TVL must be unchanged");
+    assert_eq!(
+        client.asset_count(),
+        count_before,
+        "asset_count must be unchanged"
+    );
+    assert_eq!(
+        client.active_count(),
+        active_before,
+        "active_count must be unchanged"
+    );
+    assert_eq!(
+        client.total_value_locked(),
+        tvl_before,
+        "TVL must be unchanged"
+    );
 }
 
 /// An id just beyond the registered range is also rejected with
@@ -118,8 +130,16 @@ fn reactivate_already_active_asset_is_noop_and_leaves_state_unchanged() {
     // Reactivate an already-active asset — must be a no-op.
     client.reactivate_asset(&admin, &id);
 
-    assert_eq!(client.active_count(), active_before, "active_count must be unchanged");
-    assert_eq!(client.total_value_locked(), tvl_before, "TVL must be unchanged");
+    assert_eq!(
+        client.active_count(),
+        active_before,
+        "active_count must be unchanged"
+    );
+    assert_eq!(
+        client.total_value_locked(),
+        tvl_before,
+        "TVL must be unchanged"
+    );
     assert!(client.get_asset(&id).active, "asset must still be active");
 }
 

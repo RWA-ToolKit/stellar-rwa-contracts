@@ -7,5 +7,5 @@
 //! * `validation` — string-length guard (`check_str`, issue #765)
 //! * `admin`      — two-step admin-handover state machine (issue #764)
 
-pub mod validation;
 pub mod admin;
+pub mod validation;

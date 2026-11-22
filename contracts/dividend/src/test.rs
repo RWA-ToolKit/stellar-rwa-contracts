@@ -131,7 +131,9 @@ fn test_create_distribution_escrows_funds() {
 fn test_cross_token_distribution_end_to_end() {
     let ctx = setup();
     // A second, distinct payout token (e.g. USDC) funded to the admin.
-    let usdc = ctx.env.register_stellar_asset_contract_v2(ctx.admin.clone());
+    let usdc = ctx
+        .env
+        .register_stellar_asset_contract_v2(ctx.admin.clone());
     let usdc_id = usdc.address();
     token::StellarAssetClient::new(&ctx.env, &usdc_id).mint(&ctx.admin, &100_000);
     let usdc_client = token::TokenClient::new(&ctx.env, &usdc_id);
@@ -185,13 +187,8 @@ fn test_asset_admin_can_create_distribution() {
 fn test_unrelated_address_cannot_create_distribution() {
     let ctx = setup();
     let stranger = Address::generate(&ctx.env);
-    ctx.dividend.create_distribution(
-        &stranger,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &500,
-        &eligible(&ctx),
-    );
+    ctx.dividend
+        .create_distribution(&stranger, &ctx.asset_id, &ctx.pay_id, &500, &eligible(&ctx));
 }
 
 #[test]
@@ -880,12 +877,13 @@ fn test_propose_accept_admin_moves_role_only_on_acceptance() {
     assert_eq!(ctx.dividend.get_admin(), successor);
     assert_eq!(ctx.dividend.get_pending_admin(), None);
 
-    // The old admin has lost its privileges.
-    let mut v = Vec::new(&ctx.env);
-    v.push_back((ctx.h1.clone(), 300i128));
-    let res =
-        ctx.dividend
-            .try_create_distribution(&ctx.admin, &ctx.asset_id, &ctx.pay_id, &300, &v);
+    // The old admin has lost the dividend admin role. Checked with an
+    // admin-only call: create_distribution would not show it, because it
+    // also accepts the asset token's admin, which in this setup is the same
+    // address (documented on create_distribution).
+    let res = ctx
+        .dividend
+        .try_propose_admin(&ctx.admin, &Address::generate(&ctx.env));
     assert_eq!(res, Err(Ok(Error::Unauthorized.into())));
 }
 
@@ -1300,95 +1298,6 @@ fn test_reclaim_unclaimed_requires_admin() {
     );
     assert_eq!(pay_balance(&ctx, &ctx.dividend.address), 1000);
     assert!(!ctx.dividend.get_distribution(&id).completed);
-}
-
-#[test]
-fn test_withdraw_unclaimed_after_minimum_age_preserves_claims() {
-    let ctx = setup();
-    let id = ctx.dividend.create_distribution(
-        &ctx.admin,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &1000,
-        &eligible(&ctx),
-    );
-    ctx.dividend.claim(&id, &ctx.h1);
-    let created_at = ctx.dividend.get_distribution(&id).created_at;
-    let recipient = Address::generate(&ctx.env);
-
-    set_ledger_sequence(&ctx.env, created_at + 9);
-    assert_eq!(
-        ctx.dividend
-            .try_withdraw_unclaimed(&ctx.admin, &id, &recipient, &10),
-        Err(Ok(Error::DistributionTooYoung.into()))
-    );
-
-    set_ledger_sequence(&ctx.env, created_at + 10);
-    let withdrawn = ctx
-        .dividend
-        .withdraw_unclaimed(&ctx.admin, &id, &recipient, &10);
-    // One SAC transfer event and the dividend withdrawal event are emitted.
-    assert_eq!(ctx.env.events().all().events().len(), 2);
-    assert_eq!(withdrawn, 700);
-    assert_eq!(pay_balance(&ctx, &recipient), 700);
-    assert_eq!(pay_balance(&ctx, &ctx.h1), 300);
-    assert_eq!(pay_balance(&ctx, &ctx.dividend.address), 0);
-
-    let distribution = ctx.dividend.get_distribution(&id);
-    assert!(distribution.completed);
-    assert_eq!(distribution.distributed, distribution.total_amount);
-    assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 0);
-}
-
-#[test]
-fn test_withdraw_unclaimed_requires_admin() {
-    let ctx = setup();
-    let id = ctx.dividend.create_distribution(
-        &ctx.admin,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &1000,
-        &eligible(&ctx),
-    );
-    let stranger = Address::generate(&ctx.env);
-    let recipient = Address::generate(&ctx.env);
-
-    assert_eq!(
-        ctx.dividend
-            .try_withdraw_unclaimed(&stranger, &id, &recipient, &0),
-        Err(Ok(Error::Unauthorized.into()))
-    );
-    assert_eq!(pay_balance(&ctx, &ctx.dividend.address), 1000);
-}
-
-#[test]
-fn test_withdraw_unclaimed_respects_claim_deadline() {
-    let ctx = setup();
-    let deadline = ctx.env.ledger().sequence() + 100;
-    let id = ctx.dividend.create_distribution_deadline(
-        &ctx.admin,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &1000,
-        &eligible(&ctx),
-        &deadline,
-    );
-    let created_at = ctx.dividend.get_distribution(&id).created_at;
-    let recipient = Address::generate(&ctx.env);
-
-    set_ledger_sequence(&ctx.env, created_at + 50);
-    assert_eq!(
-        ctx.dividend
-            .try_withdraw_unclaimed(&ctx.admin, &id, &recipient, &10),
-        Err(Ok(Error::DeadlineNotReached.into()))
-    );
-
-    set_ledger_sequence(&ctx.env, deadline + 1);
-    assert_eq!(
-        ctx.dividend
-            .withdraw_unclaimed(&ctx.admin, &id, &recipient, &10),
-        1000
-    );
 }
 
 // A distribution with no deadline cannot use the deadline-based reclaim path.

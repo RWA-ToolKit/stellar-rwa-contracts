@@ -116,7 +116,7 @@ fn test_transfer_batch_rejected_when_paused_with_deliberate_error() {
     let res = s.token.try_transfer_batch(&s.admin, &batch);
     assert_eq!(
         res,
-        Err(Ok(Error::Paused)),
+        Err(Ok(Error::Paused.into())),
         "scenario transfer batch rejected when paused with deliberate error: assertion failed"
     );
     assert_eq!(
@@ -142,7 +142,7 @@ fn test_transfer_batch_paused_empty_batch_and_unpause_restores() {
     let empty: Vec<(Address, i128)> = Vec::new(&s.env);
     assert_eq!(
         s.token.try_transfer_batch(&s.admin, &empty),
-        Err(Ok(Error::Paused))
+        Err(Ok(Error::Paused.into()))
     );
 
     s.token.unpause(&s.admin);

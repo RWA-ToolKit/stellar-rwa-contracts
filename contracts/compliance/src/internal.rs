@@ -12,7 +12,10 @@ pub(crate) fn panic_with_error(env: &Env, error: Error) -> ! {
 /// Normalize and validate a jurisdiction code (issue #47).
 /// Strips spaces, uppercases, then enforces exactly 2 ASCII alpha characters
 /// so only real ISO-3166-1 alpha-2 codes (e.g. "US", "KE") are accepted.
-pub(crate) fn normalize_jurisdiction(env: &Env, jurisdiction: &soroban_sdk::String) -> soroban_sdk::String {
+pub(crate) fn normalize_jurisdiction(
+    env: &Env,
+    jurisdiction: &soroban_sdk::String,
+) -> soroban_sdk::String {
     let raw = jurisdiction.to_bytes();
     let len = raw.len();
     let mut buf = [0u8; 2];
