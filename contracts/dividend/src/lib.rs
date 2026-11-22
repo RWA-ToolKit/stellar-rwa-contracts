@@ -499,7 +499,7 @@ impl DividendContract {
             panic_err(&env, Error::ZeroSupply);
         }
         // Reject distributions with empty eligible set (issue #365).
-        if eligible.len() == 0 {
+        if eligible.is_empty() {
             panic_err(&env, Error::InvalidAmount);
         }
         // Validate the eligible list and total its balances *before* pulling any

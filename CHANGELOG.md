@@ -24,7 +24,7 @@ the full convention; CI flags contract changes that do not update this file.
 - **registry**: `deactivate_asset`/`reactivate_asset` called by a non-admin now fail with `Error::Unauthorized` as documented when the asset's token is not an asset-token contract, instead of a host storage error.
 
 ### Changed
-- **ci**: add a strict workspace Clippy gate; retain Soroban SDK deprecation warnings for ABI-compatible events and status variants until they can be migrated (#705).
+- **ci**: add a strict workspace Clippy gate and clean existing lint/test compilation issues; retain warnings for deprecated ABI-compatible APIs and generated contract wrappers with fixed argument counts (#705).
 - **registry**: `MAX_PAGE_SIZE` lowered from 100 to 50 (#716). A page of 100 exceeded Soroban's 100-entry footprint limit (instance and code count too), so a full page could never be served. `get_all_assets` and the paginated getters still clamp silently; a resource-cost test pins that an oversized `limit` costs one capped page.
 - **ci**: Dependabot ignores the pinned `ed25519-dalek` and `arbitrary` (#710); new `authority-matrix` job checks `docs/AUTHORITY_MATRIX.md` table formatting (#714); README badges for CI, license, SDK and good first issues (#715).
 

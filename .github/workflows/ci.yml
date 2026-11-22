@@ -109,9 +109,9 @@ jobs:
           key: ${{ runner.os }}-clippy-${{ hashFiles('**/Cargo.lock') }}
 
       # Existing Soroban event topics and ABI-only status variants are retained
-      # for compatibility; allow their deprecation warnings until they migrate.
+      # for compatibility. ABI wrappers also mirror fixed contract signatures.
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings -A deprecated
+        run: cargo clippy --workspace --all-targets -- -D warnings -A deprecated -A clippy::too_many_arguments
 
   build-wasm:
     runs-on: ubuntu-latest
