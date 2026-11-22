@@ -179,7 +179,7 @@ fn batch_cost(n: u32) -> (u64, u64) {
 
 #[test]
 fn test_transfer_batch_resource_cost_baseline_and_linear_scaling() {
-    let (cpu1, mem1) = batch_cost(1);
+    let (cpu1, _) = batch_cost(1);
     let (cpu10, mem10) = batch_cost(10);
 
     // Baseline ceilings (well under the 100M-instruction network limit).

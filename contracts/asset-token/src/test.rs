@@ -1585,7 +1585,6 @@ proptest! {
         burn_amount in 0i128..1_000_000i128,
     ) {
         let s = setup(1_000_000);
-        let initial_supply = s.token.total_supply();
 
         let bob = Address::generate(&s.env);
         approve(&s.env, &s.compliance, &s.admin, &bob);
@@ -1594,7 +1593,6 @@ proptest! {
             s.token.mint(&s.admin, &bob, &amount);
         }
 
-        let supply_after_mints = s.token.total_supply();
         let bob_balance = s.token.balance(&bob);
 
         if burn_amount <= s.token.balance(&s.admin) {

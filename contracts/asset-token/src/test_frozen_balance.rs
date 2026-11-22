@@ -7,7 +7,6 @@ struct Setup {
     env: Env,
     token: AssetTokenContractClient<'static>,
     compliance: ComplianceContractClient<'static>,
-    compliance_id: Address,
     admin: Address,
 }
 
@@ -36,7 +35,6 @@ fn setup(supply: i128) -> Setup {
         env,
         token,
         compliance,
-        compliance_id,
         admin,
     }
 }

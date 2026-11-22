@@ -150,7 +150,7 @@ fn test_transfer_batch_requires_auth_of_from() {
     c.token.transfer_batch(&alice, &batch);
     let auths = c.env.auths();
     assert_eq!(auths.len(), 1);
-    assert_eq!(auths.get(0).unwrap().0, alice);
+    assert_eq!(auths.first().unwrap().0, alice);
 }
 
 /// A caller outside the compliance allowlist is rejected (#7), even if it

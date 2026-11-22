@@ -4,7 +4,7 @@ use asset_token::{AssetTokenContract, AssetTokenContractClient};
 use compliance::{ComplianceContract, ComplianceContractClient};
 use proptest::prelude::*;
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, Events, Ledger},
+    testutils::{Address as _, AuthorizedFunction, Ledger},
     token, Address, Env, String, Symbol, Vec,
 };
 
@@ -1022,7 +1022,7 @@ proptest! {
 
             // Try to claim for each holder
             for (holder, _) in eligible.iter() {
-                if let Ok(_) = std::panic::catch_unwind(
+                drop(std::panic::catch_unwind(
                     std::panic::AssertUnwindSafe(|| {
                         let claimable = ctx.dividend.claimable(&id, &holder);
                         if claimable > 0 {
@@ -1030,7 +1030,7 @@ proptest! {
                             total_claimed = total_claimed.saturating_add(claimable);
                         }
                     })
-                ) {}
+                ));
             }
 
             prop_assert!(
@@ -1365,7 +1365,7 @@ fn test_uneven_distribution_leaves_dust() {
     let d = ctx.dividend.get_distribution(&id);
     let dust = total_amount - d.distributed;
     // dust must obey the documented bound: 0 <= dust <= N - 1 (N=3 holders).
-    assert!(dust >= 0 && dust <= 2);
+    assert!((0..=2).contains(&dust));
     assert_eq!(dust, 1); // 1001 - (300 + 200 + 500)
 
     // The dust remains stranded in the contract's escrow: nothing further
