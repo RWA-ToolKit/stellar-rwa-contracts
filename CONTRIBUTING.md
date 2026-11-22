@@ -228,8 +228,46 @@ Copy the printed contract ids into [DEPLOYMENTS.md](DEPLOYMENTS.md).
 
 Every change that touches contract source (`contracts/**`) must come with a
 `CHANGELOG.md` entry — updating the changelog is part of the definition of done.
-CI flags any pull request that modifies `contracts/**` without also modifying
-`CHANGELOG.md`.
+
+### How CI enforces it
+
+The `changelog` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+runs [`scripts/check_changelog.sh`](scripts/check_changelog.sh) on every pull
+request. The check fails when your PR changes any of:
+
+- `contracts/**/src/*.rs` (test files are excluded), or
+- `contracts/**/Cargo.toml`
+
+but the `## [Unreleased]` section of `CHANGELOG.md` does not gain at least one
+new non-blank line. In other words, it is not enough to touch `CHANGELOG.md`
+somewhere — the entry must be added under `## [Unreleased]`.
+
+**If the `changelog` job fails**, add a bullet under `## [Unreleased]` in the
+appropriate subsection (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`,
+`Security`) and push the update; the job re-runs automatically. See the
+examples below for the expected shape.
+
+### The `skip-changelog` escape hatch
+
+Some PRs touch contract files without changing contract behaviour — for
+example internal refactors, test-only changes, or comment/formatting fixes. For
+those, add the **`skip-changelog`** label to the PR and the `changelog` job
+will pass without a `CHANGELOG.md` entry.
+
+- The label name must match exactly: `skip-changelog` (lowercase, hyphenated).
+  A misspelled label (e.g. `skip_changelog` or `Skip-Changelog`) will not be
+  recognised and CI will still fail.
+- Use it only when there is genuinely nothing integrators need to know. Any
+  user-visible behaviour change — new function, changed error, altered
+  validation — needs a real entry, not the label.
+- Reviewers may ask you to remove the label and add an entry instead.
+======
+
+<<<<<<< SEARCH
+Refactor / docs-only PR (no contract source change — CI skip):
+=======
+Refactor / docs-only PR (no contract source change — CI skip; if the PR still
+touches `contracts/**`, add the `skip-changelog` label):
 
 Add your entry under the `## [Unreleased]` heading, in the appropriate
 subsection (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`),

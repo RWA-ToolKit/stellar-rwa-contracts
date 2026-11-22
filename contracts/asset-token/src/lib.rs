@@ -47,10 +47,35 @@ pub trait ComplianceInterface {
     fn get_jurisdiction_cap(env: Env, jurisdiction: String) -> Option<u32>;
 }
 
-/// On-chain metadata describing the tokenized asset. Defined in `rwa-common`
-/// so `dividend` and `registry` can decode it without linking this contract
-/// (which duplicated its exported symbols and broke their Wasm builds).
-pub use rwa_common::AssetMetadata;
+/// On-chain metadata describing the tokenized asset.
+///
+/// Amounts (`total_supply`, `valuation`) follow the fixed-point scaling
+/// convention described in `docs/token-scaling.md` (see its "Convention"
+/// section).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AssetMetadata {
+    pub name: String,
+    pub symbol: String,
+    /// e.g. "real_estate", "invoice", "commodity".
+    pub asset_type: String,
+    pub total_supply: i128,
+    pub decimals: u32,
+    pub admin: Address,
+    pub compliance_contract: Address,
+    pub asset_description: String,
+    /// Asset value in USD cents.
+    pub valuation: i128,
+    pub paused: bool,
+    /// Optional emergency-pause delegate (issue #1). May call `pause` but
+    /// not `unpause`, `mint`, `mint_batch`, or any other admin action.
+    /// Absent (`None`) by default.
+    pub guardian: Option<Address>,
+    /// Address nominated by the current admin via `propose_admin`, pending
+    /// acceptance via `accept_admin` (issue #4). Absent when there is no
+    /// proposal in flight.
+    pub pending_admin: Option<Address>,
+}
 
 #[contracttype]
 #[derive(Clone)]
@@ -319,8 +344,7 @@ impl AssetTokenContract {
         // leave that aggregate unchanged, so they are exempt.
         if from != to {
             let compliance_client = ComplianceClient::new(&env, &meta.compliance_contract);
-            if compliance_client.get_jurisdiction(&from) != compliance_client.get_jurisdiction(&to)
-            {
+            if compliance_client.get_jurisdiction(&from) != compliance_client.get_jurisdiction(&to) {
                 Self::enforce_jurisdiction_cap(
                     &env,
                     &meta.compliance_contract,
@@ -428,8 +452,8 @@ impl AssetTokenContract {
         if !Self::compliant(&env, &meta.compliance_contract, &from) {
             panic_err(&env, Error::SenderNotCompliant);
         }
-        let from_jurisdiction =
-            ComplianceClient::new(&env, &meta.compliance_contract).get_jurisdiction(&from);
+        let from_jurisdiction = ComplianceClient::new(&env, &meta.compliance_contract)
+            .get_jurisdiction(&from);
         for (to, amount) in transfers.iter() {
             Self::check_amount(&env, amount);
             if !Self::compliant(&env, &meta.compliance_contract, &to) {
@@ -525,7 +549,13 @@ impl AssetTokenContract {
             .total_supply
             .checked_add(amount)
             .unwrap_or_else(|| panic_err(&env, Error::Overflow));
-        Self::enforce_jurisdiction_cap(&env, &meta.compliance_contract, &to, amount, new_supply);
+        Self::enforce_jurisdiction_cap(
+            &env,
+            &meta.compliance_contract,
+            &to,
+            amount,
+            new_supply,
+        );
         let to_bal = Self::balance(env.clone(), to.clone());
         let new_to_bal = to_bal
             .checked_add(amount)
@@ -969,6 +999,9 @@ impl AssetTokenContract {
 
     /// Returns the full [`AssetMetadata`] struct.
     ///
+    /// Returned amounts follow the fixed-point scaling convention documented
+    /// in `docs/token-scaling.md` (see its "Convention" section).
+    ///
     /// # Parameters
     /// None.
     ///
@@ -1086,6 +1119,8 @@ impl AssetTokenContract {
     /// Propose a new admin. The role does not transfer until `new_admin` calls
     /// [`Self::accept_admin`] (issue #4).
     ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
+    ///
     /// The two-step handover makes a mistyped `new_admin` harmless — re-propose
     /// or cancel — rather than permanently bricking administration.  Note this
     /// does not affect the optional guardian (issue #1), which is set
@@ -1115,6 +1150,8 @@ impl AssetTokenContract {
 
     /// Cancel a pending admin proposal.
     ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
+    ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
     ///
@@ -1141,6 +1178,8 @@ impl AssetTokenContract {
     }
 
     /// Accept a pending admin proposal and complete the handover.
+    ///
+    /// See docs/admin-handover.md for the full two-step handover rationale.
     ///
     /// Must be called by the proposed successor (`new_admin`); the role only
     /// ever moves here, never in [`Self::propose_admin`] (issue #4).
