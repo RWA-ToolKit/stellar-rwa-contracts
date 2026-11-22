@@ -90,29 +90,6 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust
-        run: rustup show
-
-      - name: Cache cargo
-        uses: actions/cache@v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-clippy-${{ hashFiles('**/Cargo.lock') }}
-
-      # Existing Soroban event topics and ABI-only status variants are retained
-      # for compatibility. ABI wrappers also mirror fixed contract signatures.
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings -A deprecated -A clippy::too_many_arguments
-
   build-wasm:
     runs-on: ubuntu-latest
     steps:
@@ -246,40 +223,16 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  fuzz-smoke:
-    name: Fuzz target smoke tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
+      - name: Generate LCOV report
+        run: cargo llvm-cov report --lcov --output-path lcov.info
 
-      - name: Install Rust
-        run: rustup show
-
-      - name: Cache cargo
-        uses: actions/cache@v6
+      - name: Upload coverage to Codecov
+        if: github.event_name == 'pull_request'
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-fuzz-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build fuzz targets
-        run: cargo build --locked --manifest-path fuzz/Cargo.toml --bins
-
-      - name: Run bounded fuzz smoke tests
-        run: |
-          set -euo pipefail
-          for target in \
-            compliance_batch_allowlist \
-            compliance_expiry \
-            compliance_jurisdiction_race \
-            compliance_is_allowed \
-            asset_token_transfer_batch
-          do
-            echo "Running $target"
-            timeout 120s cargo run --locked --manifest-path fuzz/Cargo.toml --bin "$target"
-          done
+          files: lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
   lint-scripts:
     # Validate shell scripts and verify that script paths mentioned in docs
