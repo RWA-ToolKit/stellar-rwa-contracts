@@ -98,6 +98,22 @@ cargo test
 cargo test -p compliance
 ```
 
+## Pre-PR checks
+
+Run the core local checks before opening a pull request:
+
+```bash
+git fetch upstream main
+make check
+```
+
+`make check` runs formatting, workspace Clippy with warnings denied except for
+deprecated ABI-compatible APIs and generated wrappers for fixed contract
+argument lists, the workspace tests, and the changelog check against
+`upstream/main`. Ensure that ref is current; for a different PR base, override
+it with `make check BASE_REF=upstream/<branch>`. CI also runs platform-specific
+build, interface-spec, fuzz, and script checks.
+
 > **Lockfile note:** the resolver may pull `ed25519-dalek 3.0.0`, which breaks
 > `soroban-env-host`'s test utils. The committed `Cargo.lock` pins it to
 > `2.2.0`. If you regenerate the lockfile, re-pin with:

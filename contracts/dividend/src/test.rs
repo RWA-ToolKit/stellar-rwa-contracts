@@ -4,7 +4,7 @@ use asset_token::{AssetTokenContract, AssetTokenContractClient};
 use compliance::{ComplianceContract, ComplianceContractClient};
 use proptest::prelude::*;
 use soroban_sdk::{
-    testutils::{Address as _, AuthorizedFunction, Events, Ledger},
+    testutils::{Address as _, AuthorizedFunction, Ledger},
     token, Address, Env, String, Symbol, Vec,
 };
 
@@ -419,6 +419,16 @@ fn test_get_distributions_for_asset() {
         ctx.dividend.get_distributions_for_asset(&other_asset).len(),
         0
     );
+}
+
+// ---- issue #682: querying distributions for an asset that has never had one
+// created must return an empty Vec rather than panicking on a missing key. ----
+#[test]
+fn test_get_distributions_for_asset_zero_distributions() {
+    let ctx = setup();
+    let fresh_asset = Address::generate(&ctx.env);
+    let distributions = ctx.dividend.get_distributions_for_asset(&fresh_asset);
+    assert_eq!(distributions.len(), 0);
 }
 
 // ---- issue #166: results must be scoped to the requested asset token, not
@@ -937,6 +947,25 @@ fn test_cancel_admin_proposal_by_current_admin() {
     assert_eq!(ctx.dividend.get_admin(), ctx.admin);
 }
 
+// Issue #691: `get_pending_admin` must return `None` after a pending proposal
+// is explicitly cancelled (as opposed to accepted).
+#[test]
+fn test_get_pending_admin_none_after_cancel_admin_proposal() {
+    let ctx = setup();
+    let successor = Address::generate(&ctx.env);
+
+    ctx.dividend.propose_admin(&ctx.admin, &successor);
+    assert_eq!(ctx.dividend.get_pending_admin(), Some(successor.clone()));
+
+    ctx.dividend.cancel_admin_proposal(&ctx.admin);
+    assert_eq!(ctx.dividend.get_pending_admin(), None);
+
+    // The cancelled successor can no longer accept, and the admin is unchanged.
+    let res = ctx.dividend.try_accept_admin(&successor);
+    assert_eq!(res, Err(Ok(Error::NoPendingAdmin.into())));
+    assert_eq!(ctx.dividend.get_admin(), ctx.admin);
+}
+
 #[test]
 fn test_cancel_admin_proposal_with_nothing_pending_fails() {
     let ctx = setup();
@@ -1022,7 +1051,7 @@ proptest! {
 
             // Try to claim for each holder
             for (holder, _) in eligible.iter() {
-                if let Ok(_) = std::panic::catch_unwind(
+                drop(std::panic::catch_unwind(
                     std::panic::AssertUnwindSafe(|| {
                         let claimable = ctx.dividend.claimable(&id, &holder);
                         if claimable > 0 {
@@ -1030,7 +1059,7 @@ proptest! {
                             total_claimed = total_claimed.saturating_add(claimable);
                         }
                     })
-                ) {}
+                ));
             }
 
             prop_assert!(
@@ -1365,7 +1394,7 @@ fn test_uneven_distribution_leaves_dust() {
     let d = ctx.dividend.get_distribution(&id);
     let dust = total_amount - d.distributed;
     // dust must obey the documented bound: 0 <= dust <= N - 1 (N=3 holders).
-    assert!(dust >= 0 && dust <= 2);
+    assert!((0..=2).contains(&dust));
     assert_eq!(dust, 1); // 1001 - (300 + 200 + 500)
 
     // The dust remains stranded in the contract's escrow: nothing further

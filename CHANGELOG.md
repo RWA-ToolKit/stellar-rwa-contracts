@@ -9,14 +9,14 @@ the full convention; CI flags contract changes that do not update this file.
 
 ## [Unreleased]
 
-### Added
-- **asset-token**: `snapshot` (admin), `balance_at`, `total_supply_at` and `current_snapshot_id`: point-in-time balances recorded lazily on first change after a snapshot; new `Error::SnapshotNotFound` (#16) (#728).
-- **dividend**: `create_distribution_snapshot` sizes a distribution on an asset-token snapshot instead of a caller-supplied list; documented in docs/dividend.md (#728).
-- **ci**: allowed-to-fail `sdk-next.yml` tests the workspace against the newest 26.x, the newest stable and the newest pre-release soroban-sdk weekly (#713).
-- **contributing**: optional pre-commit hook (`scripts/git-hooks/pre-commit`, `.pre-commit-config.yaml`) running `cargo fmt --check` and clippy (#711).
+### Performance
+- **asset-token / compliance**: `transfer` asks compliance once, via the new `compliance::check_transfer(from, to)`, instead of four cross-contract calls; −44.6% CPU per transfer on Wasm (#721). **Deployment order:** upgrade compliance before asset-token; an asset token from this version needs `check_transfer`, while the new compliance still serves older asset tokens.
+
+### Deprecated
+- **registry**: `get_assets_by_issuer` is deprecated in favour of `get_assets_by_issuer_page`. It already returned only the first `MAX_PAGE_SIZE` assets, which its docs now say; behaviour is unchanged, and removal is planned for the next major version (#722).
 
 ### Documentation
-- **compliance**: `prune_expired` documents a recommended `max_records` of 10–20: when every record has expired, 23 is the most that fits the 50-entry write limit, and `0` fails beyond ~23 expired records (#727).
+- **docs**: `docs/design-notes/performance-review-721-724.md` records the measurements behind #721–#724: the dividend claimed-state layout is already per-holder, so it is not refactored (#723); explicit `#[inline]` changes nothing under LTO and `inline(always)` only grows the Wasm, so none is applied (#724).
 
 ### Fixed
 - **build**: restored the workspace build and CI, which had been red on `main`: Cargo.lock held `ed25519-dalek` 3.0 (Dependabot #790) against the documented `=2.2` pin, breaking `soroban-env-host`; `fuzz` required `arbitrary` 1.4, which soroban-sdk 26 (`~1.3.0`) cannot resolve; `rwa-common::check_str` named a nonexistent `soroban_sdk::contracterror::ContractError` bound (now `Into<soroban_sdk::Error>`); test files used pre-SDK-26 event and `try_` result APIs, had an unclosed test and a duplicate test name, and were not `cargo fmt` clean. Tests for `update_valuations_batch`, `withdraw_unclaimed` and `suspend_batch`/`reinstate_batch`/`remove_batch` were removed because those functions are not in the contracts (the #735 entry below describes an unmerged change).

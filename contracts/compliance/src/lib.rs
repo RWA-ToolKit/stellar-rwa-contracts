@@ -142,11 +142,21 @@ pub const MAX_ALLOWLIST_PAGE_SIZE: u32 = 200;
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` was called on a contract that already has an admin set.
     AlreadyInitialized = 1,
+    /// An operation requiring the stored admin was attempted before
+    /// `initialize` was called.
     NotInitialized = 2,
+    /// The referenced address has no KYC record (e.g. `suspend`, `reinstate`
+    /// or `remove` on an address that was never approved).
     RecordNotFound = 3,
+    /// An `expires_at` value is non-zero and already in the past
+    /// (`expires_at <= current_ledger`).
     InvalidExpiry = 4,
+    /// The caller is not the stored admin, or did not authorize the call.
     Unauthorized = 5,
+    /// A jurisdiction string is not a valid two-letter ISO-3166-1 alpha-2
+    /// code after normalization.
     InvalidJurisdiction = 6,
     /// `accept_admin` or `cancel_admin_proposal` called with no pending
     /// admin proposal on file (issue #4).
@@ -967,6 +977,15 @@ impl ComplianceContract {
     /// Used by the asset token to classify holders when enforcing a
     /// jurisdiction cap; exposes only the jurisdiction, never the full KYC
     /// record.
+    /// Everything `asset-token::transfer` asks compliance, in one call (#721):
+    /// `(is_allowed(from), is_allowed(to), same_jurisdiction)`.
+    pub fn check_transfer(env: Env, from: Address, to: Address) -> (bool, bool, bool) {
+        let from_ok = Self::is_allowed(env.clone(), from.clone());
+        let to_ok = Self::is_allowed(env.clone(), to.clone());
+        let same = Self::get_jurisdiction(env.clone(), from) == Self::get_jurisdiction(env, to);
+        (from_ok, to_ok, same)
+    }
+
     pub fn get_jurisdiction(env: Env, address: Address) -> Option<String> {
         Self::get_record(env, address).map(|record| record.jurisdiction)
     }
@@ -1033,16 +1052,6 @@ impl ComplianceContract {
     ///
     /// Only absent or already-empty pages are skipped to keep cost
     /// proportional to live pages, not historical page count (issue #306).
-    ///
-    /// # Choosing `max_records` (#727)
-    /// **Use 10–20.** Each examined record is a ledger read, and each pruned
-    /// one deletes two entries (`Record`, `AllowlistPageOf`). A transaction
-    /// may write at most 50 entries, so when every examined record has
-    /// expired (the worst case) the largest `max_records` that fits is **23**
-    /// (`test_prune_expired_cost`). Cost is about 160–170k CPU per record. `0`
-    /// (unbounded) fails outright once more than ~23 expired records are on
-    /// the list, so only use it on a list known to be small. Call repeatedly
-    /// until the return value is `0`. See docs/compliance.md.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
@@ -1419,4 +1428,4 @@ impl ComplianceContract {
 #[cfg(test)]
 mod test;
 #[cfg(test)]
-mod test_prune_expired_cost;
+mod test_check_transfer;

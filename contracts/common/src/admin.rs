@@ -15,7 +15,6 @@ use soroban_sdk::{Address, Env, IntoVal, TryFromVal, Val};
 ///     env.events().publish(("proposed", admin), new_admin);
 /// }
 /// ```
-
 /// Write `new_admin` as the pending successor into instance storage.
 pub fn propose<K>(env: &Env, pending_key: &K, new_admin: &Address)
 where

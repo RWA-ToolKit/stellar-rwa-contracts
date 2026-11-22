@@ -71,10 +71,10 @@ fn fuzz_one(entries_data: &[FuzzEntry]) {
     let mut addrs: std::vec::Vec<Address> = std::vec::Vec::new();
     for (i, e) in entries_data.iter().enumerate() {
         // Even `reuse_addr` and a non-empty batch → reuse an earlier address
-        // (index i % 2) to force a duplicate within the batch. Otherwise
-        // generate a fresh address.
+        // to force a duplicate within the batch. Otherwise generate a fresh
+        // address.
         let addr = if e.reuse_addr % 2 == 0 && !addrs.is_empty() {
-            addrs[i % 2].clone()
+            addrs[i % addrs.len()].clone()
         } else {
             Address::generate(&env)
         };
