@@ -1,6 +1,7 @@
 # Soroban Contracts
 
 [![CI](https://github.com/RWA-ToolKit/stellar-rwa-contracts/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RWA-ToolKit/stellar-rwa-contracts/actions/workflows/ci.yml)
+[![Codecov](https://codecov.io/gh/RWA-ToolKit/stellar-rwa-contracts/branch/main/graph/badge.svg)](https://codecov.io/gh/RWA-ToolKit/stellar-rwa-contracts)
 [![License: MIT](https://img.shields.io/github/license/RWA-ToolKit/stellar-rwa-contracts)](LICENSE)
 [![soroban-sdk 26](https://img.shields.io/badge/soroban--sdk-26-blue)](https://docs.rs/soroban-sdk/26)
 [![Docs](https://img.shields.io/badge/docs-AUTHORITY__MATRIX-informational)](docs/AUTHORITY_MATRIX.md)
@@ -109,6 +110,18 @@ cargo test
 ```
 
 Runs the full test suite with no network access.
+
+## Coverage
+
+CI reports workspace coverage with `cargo-llvm-cov` and uploads an LCOV report to
+Codecov for pull requests. No minimum coverage threshold is enforced.
+
+Maintainers must configure this repository in Codecov and install or authorize
+the Codecov GitHub App for pull request reporting. Add the repository's upload
+token as the GitHub Actions secret `CODECOV_TOKEN` for same-repository pull
+requests. Codecov supports tokenless uploads for pull requests from forks to
+public repositories. Until Codecov is configured, uploads are non-blocking and
+the badge may show an unknown coverage value.
 
 ## Contributing
 
