@@ -250,6 +250,81 @@ fn test_negative_amount_rejected() {
     s.token.transfer(&s.admin, &bob, &-1);
 }
 
+// ---- negative-amount rejection across every balance-affecting function ----
+//
+// `transfer`, `mint`, `burn`, `approve`, and `transfer_from` must all reject a
+// negative `amount` with `Error::InvalidAmount` and leave state untouched.
+// Asymmetric validation across similar functions is a common bug source, so
+// each entry point gets its own explicit test.
+
+#[test]
+fn test_transfer_negative_amount_rejected() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    let res = s.token.try_transfer(&s.admin, &bob, &-1);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.balance(&bob), 0);
+    assert_eq!(s.token.total_supply(), 1_000);
+}
+
+#[test]
+fn test_mint_negative_amount_rejected() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    let res = s.token.try_mint(&s.admin, &bob, &-1);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+    assert_eq!(s.token.balance(&bob), 0);
+    assert_eq!(s.token.total_supply(), 1_000);
+}
+
+#[test]
+fn test_burn_negative_amount_rejected() {
+    let s = setup(1_000);
+
+    let res = s.token.try_burn(&s.admin, &-1);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.total_supply(), 1_000);
+}
+
+#[test]
+fn test_approve_negative_amount_rejected() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+
+    let expiration = s.env.ledger().sequence() + 1_000;
+    let res = s.token.try_approve(&s.admin, &bob, &-1, &expiration);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+    assert_eq!(s.token.allowance(&s.admin, &bob), 0);
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.balance(&bob), 0);
+}
+
+#[test]
+fn test_transfer_from_negative_amount_rejected() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    let carol = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    approve(&s.env, &s.compliance, &s.admin, &carol);
+
+    let expiration = s.env.ledger().sequence() + 1_000;
+    s.token.approve(&s.admin, &bob, &300, &expiration);
+
+    let res = s.token.try_transfer_from(&bob, &s.admin, &carol, &-1);
+    assert_eq!(res, Err(Ok(Error::InvalidAmount.into())));
+    // Neither balances nor the allowance may move.
+    assert_eq!(s.token.allowance(&s.admin, &bob), 300);
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.balance(&carol), 0);
+}
+
 #[test]
 fn test_self_transfer_no_inflation() {
     let s = setup(1_000);

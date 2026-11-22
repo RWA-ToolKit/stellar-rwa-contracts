@@ -683,9 +683,34 @@ impl AssetTokenContract {
     /// pair; it does not add to it. The new `amount` and `expiration_ledger`
     /// fully overwrite the previous values.
     ///
+    /// `amount` must be ≥ 0: a negative amount is rejected with
+    /// [`Error::InvalidAmount`], symmetric with `transfer`, `mint`, `burn` and
+    /// `transfer_from`. `0` is allowed and clears the allowance.
+    ///
     /// Paused tokens reject `approve` the same as `transfer`, since an
     /// approval is only meaningful if a matching `transfer_from` could later
     /// succeed (documented in docs/asset-token.md).
+    ///
+    /// # Parameters
+    /// - `from`: Token owner.  Must authorize the call.
+    /// - `spender`: Address being authorized.
+    /// - `amount`: Maximum tokens `spender` may move.  Must be ≥ 0.
+    /// - `expiration_ledger`: Ledger sequence the allowance expires at
+    ///   (inclusive).  Ignored when `amount == 0`.
+    ///
+    /// # Authority
+    /// `from` must sign the transaction (`from.require_auth()`).
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::InvalidAmount`] — `amount` < 0.
+    /// - [`Error::Paused`] — token is paused.
+    /// - [`Error::InvalidInput`] — `amount > 0` and `expiration_ledger` is in
+    ///   the past.
+    ///
+    /// # Events
+    /// Emits topic `("approve", from, spender)` with data
+    /// `(amount, expiration_ledger)`.
     pub fn approve(
         env: Env,
         from: Address,

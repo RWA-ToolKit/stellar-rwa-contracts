@@ -917,6 +917,16 @@ impl DividendContract {
 
     /// Returns `true` if `holder` has already claimed `distribution_id`.
     ///
+    /// # Behavior for unknown distributions (issue #687)
+    ///
+    /// If no distribution with `distribution_id` exists, this function
+    /// **panics with [`Error::DistributionNotFound`]** rather than returning
+    /// `false`. Returning `false` for an unknown id would be indistinguishable
+    /// from "the distribution exists but this holder has not claimed yet",
+    /// which callers could easily misread. Callers that only want to probe
+    /// claim status should first ensure the id exists (e.g. via
+    /// [`Self::get_distribution`]) or handle the error explicitly.
+    ///
     /// # Parameters
     /// - `distribution_id`: Id of the distribution to query.
     /// - `holder`: Address of the holder to check.
@@ -925,11 +935,15 @@ impl DividendContract {
     /// None — anyone may call.
     ///
     /// # Errors
-    /// None.
+    /// - [`Error::DistributionNotFound`] — no distribution with
+    ///   `distribution_id` exists.
     ///
     /// # Events
     /// None.
     pub fn has_claimed(env: Env, distribution_id: u64, holder: Address) -> bool {
+        // Reject unknown ids up front (issue #687): silently returning `false`
+        // would be misread as "not claimed yet" instead of "doesn't exist".
+        Self::load(&env, distribution_id);
         env.storage()
             .persistent()
             .get(&DataKey::Claimed(distribution_id, holder))
