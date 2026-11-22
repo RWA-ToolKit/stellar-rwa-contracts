@@ -25,6 +25,23 @@ panic = "abort"
 codegen-units = 1
 lto = true
 
+# release-with-logs (#725): the release build with `debug-assertions` on, so
+# `log!`/debug output and debug_assert! checks are compiled in. It is for
+# deploying a debug build to a local sandbox or testnet and reading its logs,
+# so it deliberately keeps release's size settings: the Wasm still has to fit
+# the network's contract size limit and behave like what ships.
+#
+# Measured 2026-11-22, all four contracts, wasm32v1-none:
+#   this profile (opt-level z, lto, codegen-units 1): clean build 24 s;
+#     asset_token 57,944 B, compliance 53,731, dividend 46,269, registry 43,934
+#   opt-level 1, lto off, codegen-units 16:            clean build 30 s;
+#     asset_token 63,442 B (+9.5%, within 2 KB of the 64 KiB limit), compliance
+#     56,698, dividend 48,789, registry 48,300
+#   Rebuild after editing a contract: under 0.5 s with either profile.
+# The faster-compiling settings bought no build time here: the contract crates
+# are small and a clean build is dominated by dependencies. They only grew
+# the Wasm toward the size limit, so this profile keeps release's settings.
+# For quick iteration without deploying, use `cargo test` (native, no Wasm).
 [profile.release-with-logs]
 inherits = "release"
 debug-assertions = true

@@ -9,14 +9,13 @@ the full convention; CI flags contract changes that do not update this file.
 
 ## [Unreleased]
 
-### Performance
-- **asset-token / compliance**: `transfer` asks compliance once, via the new `compliance::check_transfer(from, to)`, instead of four cross-contract calls; −44.6% CPU per transfer on Wasm (#721). **Deployment order:** upgrade compliance before asset-token; an asset token from this version needs `check_transfer`, while the new compliance still serves older asset tokens.
+### Added
+- **ci**: tag-triggered `release.yml` builds the four contracts' release Wasm and attaches the `.wasm` files and a SHA-256 manifest (with the commit and `rustc -V`) to the GitHub release (#708).
+- **asset-token**: `test_batch_size_bench` measures `mint_batch`/`transfer_batch` per-recipient cost and the largest batch that fits the transaction limits (16 and 19); `docs/asset-token.md` recommends at most 10 recipients per call (#726).
 
-### Deprecated
-- **registry**: `get_assets_by_issuer` is deprecated in favour of `get_assets_by_issuer_page`. It already returned only the first `MAX_PAGE_SIZE` assets, which its docs now say; behaviour is unchanged, and removal is planned for the next major version (#722).
-
-### Documentation
-- **docs**: `docs/design-notes/performance-review-721-724.md` records the measurements behind #721–#724: the dividend claimed-state layout is already per-holder, so it is not refactored (#723); explicit `#[inline]` changes nothing under LTO and `inline(always)` only grows the Wasm, so none is applied (#724).
+### Changed
+- **ci**: every action in `ci.yml` is pinned to a commit SHA with a version comment (#709).
+- **build**: `release-with-logs` keeps release's size settings, now with a comment on its intended use and the measured trade-off: a faster-compiling variant saved no build time and grew the Wasm 9.5% toward the size limit (#725).
 
 ### Fixed
 - **build**: restored the workspace build and CI, which had been red on `main`: Cargo.lock held `ed25519-dalek` 3.0 (Dependabot #790) against the documented `=2.2` pin, breaking `soroban-env-host`; `fuzz` required `arbitrary` 1.4, which soroban-sdk 26 (`~1.3.0`) cannot resolve; `rwa-common::check_str` named a nonexistent `soroban_sdk::contracterror::ContractError` bound (now `Into<soroban_sdk::Error>`); test files used pre-SDK-26 event and `try_` result APIs, had an unclosed test and a duplicate test name, and were not `cargo fmt` clean. Tests for `update_valuations_batch`, `withdraw_unclaimed` and `suspend_batch`/`reinstate_batch`/`remove_batch` were removed because those functions are not in the contracts (the #735 entry below describes an unmerged change).
