@@ -1,11 +1,5 @@
 # Soroban Contracts
 
-[![CI](https://github.com/RWA-ToolKit/stellar-rwa-contracts/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/RWA-ToolKit/stellar-rwa-contracts/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/github/license/RWA-ToolKit/stellar-rwa-contracts)](LICENSE)
-[![soroban-sdk 26](https://img.shields.io/badge/soroban--sdk-26-blue)](https://docs.rs/soroban-sdk/26)
-[![Docs](https://img.shields.io/badge/docs-AUTHORITY__MATRIX-informational)](docs/AUTHORITY_MATRIX.md)
-[![Good first issues](https://img.shields.io/github/issues/RWA-ToolKit/stellar-rwa-contracts/good%20first%20issue?label=good%20first%20issues&color=7057ff)](https://github.com/RWA-ToolKit/stellar-rwa-contracts/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
-
 A collection of Soroban smart contracts for tokenized real-world assets, including an
 asset token, compliance rules, dividend distribution, and a registry.
 
@@ -21,10 +15,6 @@ asset token, compliance rules, dividend distribution, and a registry.
 Every privileged (admin- or self-authorized) function across all four
 contracts, the role it requires, and the error raised for the wrong caller
 is documented in the [Authority Matrix](docs/AUTHORITY_MATRIX.md).
-
-For a system-level view of how the four contracts relate to each other —
-which contracts call which, and the direction of each cross-contract call —
-see the [Architecture](docs/ARCHITECTURE.md) doc.
 
 Browse the generated API documentation at
 [RWA ToolKit rustdocs](https://rwa-toolkit.github.io/stellar-rwa-contracts/)
@@ -43,10 +33,28 @@ transfer(from, to, amount)
   └─ move balances + emit event
 ```
 
-This snippet covers only `transfer`'s compliance check. See the
-[Architecture](docs/ARCHITECTURE.md) doc for the full picture, including the
-dividend contract's balance queries against `asset-token` and the registry's
-role as the discovery layer.
+## Deployment Order
+
+The contracts reference each other through cross-contract calls, so they must be
+deployed and initialized in dependency order. Initializing a contract before the
+contract it depends on exists will fail with a confusing cross-contract call error.
+
+1. **Deploy and initialize `compliance`** — it has no dependencies on the other
+   contracts.
+2. **Deploy and initialize `registry`** — it has no dependencies on the other
+   contracts.
+3. **Deploy and initialize `asset-token`**, passing the `compliance` contract
+   address (via `initialize` / `set_compliance`). `asset-token` calls
+   `compliance.is_allowed(...)` on every transfer, so the compliance contract must
+   already exist and be initialized.
+4. **Deploy and initialize `dividend`**, passing the `asset-token` address. The
+   dividend contract reads token balances and holder snapshots from `asset-token`,
+   so the asset token must already exist and be initialized.
+
+For full deployment scripts and per-network addresses, see
+[DEPLOYMENTS.md](DEPLOYMENTS.md). For the meaning of the errors raised when a
+dependency is missing or misconfigured, see
+[docs/ERROR_CODES.md](docs/ERROR_CODES.md).
 
 ## Building
 
