@@ -646,32 +646,6 @@ fn test_cleared_guardian_loses_pause_rights() {
     s.token.pause(&guardian);
 }
 
-/// Issue #660: a `pause` transaction that was simulated while a guardian was
-/// still configured must be re-verified against the current guardian when it
-/// is submitted. If the admin clears the guardian in between, the stale
-/// guardian's `pause` call must be rejected with `Error::Unauthorized` and
-/// must not flip the paused flag.
-#[test]
-fn test_pause_after_guardian_removal_rejected() {
-    let s = setup(1_000);
-    let guardian = Address::generate(&s.env);
-
-    // Guardian is configured and stored.
-    s.token.set_guardian(&s.admin, &Some(guardian.clone()));
-    assert_eq!(s.token.get_metadata().guardian, Some(guardian.clone()));
-
-    // Admin clears the guardian before the in-flight pause is submitted.
-    s.token.set_guardian(&s.admin, &None);
-    assert_eq!(s.token.get_metadata().guardian, None);
-
-    // The stale guardian's pause call must now be rejected.
-    let res = s.token.try_pause(&guardian);
-    assert_eq!(res, Err(Ok(Error::Unauthorized.into())));
-
-    // The rejected call must not have paused the token.
-    assert!(!s.token.get_metadata().paused);
-}
-
 #[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_replaced_guardian_loses_pause_rights() {
@@ -1940,4 +1914,32 @@ fn test_transfer_batch_rejects_non_positive_amount() {
 
     assert_eq!(s.token.balance(&s.admin), 1_000);
     assert_eq!(s.token.balance(&bob), 0);
+}
+
+/// Issue #657: the summed batch amount must be computed with checked
+/// arithmetic so an overflowing sum yields a defined contract error rather
+/// than depending on Cargo's `overflow-checks` flag (which differs across
+/// build profiles). Two entries of `i128::MAX / 2 + 1` sum to `i128::MAX + 1`,
+/// which cannot be represented; the call must fail gracefully with
+/// `Error::Overflow` and leave all balances untouched.
+#[test]
+fn test_transfer_batch_rejects_overflowing_summed_amount() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    let carol = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    approve(&s.env, &s.compliance, &s.admin, &carol);
+
+    let half_plus_one = i128::MAX / 2 + 1;
+    let mut batch = Vec::new(&s.env);
+    batch.push_back((bob.clone(), half_plus_one));
+    batch.push_back((carol.clone(), half_plus_one));
+
+    let res = s.token.try_transfer_batch(&s.admin, &batch);
+    assert_eq!(res, Err(Ok(Error::Overflow.into())));
+
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.balance(&bob), 0);
+    assert_eq!(s.token.balance(&carol), 0);
+    assert_eq!(s.token.total_supply(), 1_000);
 }
