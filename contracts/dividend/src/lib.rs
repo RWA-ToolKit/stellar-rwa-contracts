@@ -550,9 +550,25 @@ impl DividendContract {
     /// Returns `0` if the holder has already claimed, is not in the
     /// distribution's snapshot, or the snapshot supply is zero.
     ///
-    /// Each holder's share is `floor(total_amount * balance_i / snapshot_supply)`:
-    /// integer division truncates toward zero, so a small proportional share
-    /// may round down to zero and be permanently unclaimable.  See the note
+    /// # Rounding convention (integer division truncates toward zero)
+    ///
+    /// Each holder's share is computed as
+    /// `total_amount * balance_i / snapshot_supply` using **integer division
+    /// that truncates toward zero** (i.e. floors, since all operands are
+    /// non-negative).  There is no rounding up, no remainder carry-over and no
+    /// per-holder minimum.
+    ///
+    /// Consequence for dust distributions: when `total_amount` is smaller than
+    /// the number of eligible holders (or a holder's balance is small relative
+    /// to the snapshot supply), a holder with a **nonzero** balance can have a
+    /// claimable amount of exactly `0`.  This is not an error: `claimable`
+    /// returns `0` normally, and `claim` for that holder fails deliberately
+    /// with [`Error::NothingToClaim`] rather than panicking unexpectedly.
+    ///
+    /// The truncated remainder is never paid to any holder.  It stays in this
+    /// contract's escrow and is recoverable by the admin via
+    /// [`Self::reclaim_unclaimed`] once the distribution's deadline has passed
+    /// (or via `withdraw_unclaimed` where that path applies).  See the note
     /// below for the formal dust bound.
     ///
     /// # Rounding behaviour & dust (issue #4)
@@ -744,6 +760,21 @@ impl DividendContract {
     /// `env.ledger().sequence()` — not `env.ledger().timestamp()` — so the
     /// handover point between claiming and reclaiming is deterministic across
     /// validators (issue #677).
+    ///
+    /// # Behaviour on a completed / cancelled ("deactivated") distribution
+    ///
+    /// A distribution that has already reached a terminal state — fully
+    /// claimed, previously reclaimed, or cancelled via
+    /// [`Self::cancel_distribution`] — is treated as deactivated.  Calling
+    /// `reclaim_unclaimed` on such a distribution is a **deliberate, typed
+    /// rejection**: it fails with [`Error::NothingToClaim`] rather than
+    /// attempting a second transfer or panicking unexpectedly.  This is what
+    /// prevents the escrow from being returned to the admin twice.  The
+    /// deadline checks (`NoDeadline`, `DeadlineNotReached`) are evaluated
+    /// first, so a completed distribution with no deadline reports
+    /// `NoDeadline` and one whose deadline has not passed reports
+    /// `DeadlineNotReached`; only once those pass does the terminal-state
+    /// guard produce `NothingToClaim`.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.

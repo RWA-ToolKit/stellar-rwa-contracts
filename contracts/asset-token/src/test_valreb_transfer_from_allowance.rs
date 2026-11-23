@@ -232,3 +232,32 @@ fn test_transfer_from_allowance_decrease_matches_amount() {
     c.token.transfer_from(&c.spender, &c.owner, &c.to, &75);
     assert_eq!(c.token.allowance(&c.owner, &c.spender), 125);
 }
+
+// ---- exact allowance exhaustion (issue #663) ----
+
+/// Spending exactly the full allowance across two partial `transfer_from`
+/// calls leaves the allowance at exactly 0 (checked subtraction, no
+/// underflow), and a subsequent spend is rejected with
+/// `InsufficientAllowance` without changing any state.
+#[test]
+fn test_transfer_from_exact_allowance_exhaustion_rejects_further_spend() {
+    let c = ctx();
+    // ctx() approves 200 from owner to spender.
+    assert_eq!(c.token.allowance(&c.owner, &c.spender), 200);
+
+    c.token.transfer_from(&c.spender, &c.owner, &c.to, &120);
+    assert_eq!(c.token.allowance(&c.owner, &c.spender), 80);
+
+    c.token.transfer_from(&c.spender, &c.owner, &c.to, &80);
+    assert_eq!(c.token.allowance(&c.owner, &c.spender), 0);
+    assert_eq!(c.token.balance(&c.owner), 300);
+    assert_eq!(c.token.balance(&c.to), 200);
+
+    let r = c.token.try_transfer_from(&c.spender, &c.owner, &c.to, &1);
+    assert_eq!(r, Err(Ok(Error::InsufficientAllowance.into())));
+
+    // Nothing changed by the rejected call.
+    assert_eq!(c.token.allowance(&c.owner, &c.spender), 0);
+    assert_eq!(c.token.balance(&c.owner), 300);
+    assert_eq!(c.token.balance(&c.to), 200);
+}
