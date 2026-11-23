@@ -55,6 +55,11 @@ use soroban_sdk::{
 pub trait AssetInterface {
     fn total_supply(env: Env) -> i128;
     fn get_metadata(env: Env) -> AssetMetadata;
+    /// Interface probe (issue #674): every asset-token contract exposes a
+    /// `version()` entry point. Calling it at distribution-creation time
+    /// verifies the supplied `asset_token` address actually implements the
+    /// expected interface before any funds are escrowed.
+    fn version(env: Env) -> u32;
 }
 
 /// Minimal payment-token interface used to move escrowed funds.
@@ -166,6 +171,11 @@ pub enum Error {
     /// current ledger, so it would be reclaimable immediately with no claim
     /// window.
     DeadlineInPast = 17,
+    /// `asset_token` does not implement the expected asset-token interface
+    /// (issue #674). The address is probed with a `version()` cross-contract
+    /// call at creation time so a malformed or non-token address is rejected
+    /// before any funds are escrowed, rather than failing later at claim time.
+    InvalidAssetToken = 18,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -413,8 +423,17 @@ impl DividendContract {
         if deadline != 0 && deadline < env.ledger().sequence() {
             panic_err(&env, Error::DeadlineInPast);
         }
+        // Probe `asset_token` for the expected interface before storing it or
+        // moving any funds (issue #674). A malformed or non-token address would
+        // otherwise only fail later, at claim time, after the admin has already
+        // locked funds into the distribution. `version()` is a cheap read-only
+        // call every asset-token contract exposes.
+        let asset_client = AssetClient::new(&env, &asset_token);
+        if asset_client.try_version().is_err() {
+            panic_err(&env, Error::InvalidAssetToken);
+        }
         // Reject distributions where no holder can ever claim (issue #49).
-        let supply = AssetClient::new(&env, &asset_token).total_supply();
+        let supply = asset_client.total_supply();
         if supply <= 0 {
             panic_err(&env, Error::ZeroSupply);
         }
@@ -505,6 +524,8 @@ impl DividendContract {
             INSTANCE_BUMP_AMOUNT,
         );
         env.storage().instance().set(&DataKey::Counter, &id);
+        // Bump the instance entry (which holds `Admin`/`PendingAdmin`) on every
+        // privileged call so admin-critical keys never lapse (issue #673).
         bump(&env);
         env.events()
             .publish((symbol_short!("created"), admin), (id, total_amount));
@@ -714,6 +735,9 @@ impl DividendContract {
     /// Emits topic `("reclaim", admin)` with data `(distribution_id, remaining)`.
     pub fn reclaim_unclaimed(env: Env, admin: Address, distribution_id: u64) -> i128 {
         Self::require_admin(&env, &admin);
+        // Bump the instance entry (holding `Admin`/`PendingAdmin`) on this
+        // privileged call so admin-critical keys never lapse (issue #673).
+        bump(&env);
         let mut dist = Self::load(&env, distribution_id);
         if dist.deadline == 0 {
             panic_err(&env, Error::NoDeadline);
@@ -786,6 +810,9 @@ impl DividendContract {
     /// Emits topic `("cancel", admin)` with data `distribution_id`.
     pub fn cancel_distribution(env: Env, admin: Address, distribution_id: u64) {
         Self::require_admin(&env, &admin);
+        // Bump the instance entry (holding `Admin`/`PendingAdmin`) on this
+        // privileged call so admin-critical keys never lapse (issue #673).
+        bump(&env);
         let dist = Self::load(&env, distribution_id);
         // Only allow cancellation before any claim is made (issue #366).
         if dist.distributed > 0 {
@@ -1002,6 +1029,8 @@ impl DividendContract {
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
+        // Bump the instance entry so both `Admin` and the freshly written
+        // `PendingAdmin` get the longest TTL (issue #673).
         bump(&env);
         env.events()
             .publish((symbol_short!("proposed"), admin), new_admin);
@@ -1030,6 +1059,7 @@ impl DividendContract {
             panic_err(&env, Error::NoPendingAdmin);
         }
         env.storage().instance().remove(&DataKey::PendingAdmin);
+        // Bump the instance entry so `Admin` keeps the longest TTL (issue #673).
         bump(&env);
         env.events()
             .publish((symbol_short!("cancelled"), admin), ());
@@ -1077,6 +1107,8 @@ impl DividendContract {
             .unwrap_or_else(|| panic_err(&env, Error::NotInitialized));
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.storage().instance().remove(&DataKey::PendingAdmin);
+        // Bump the instance entry so the new `Admin` gets the longest TTL
+        // immediately on handover (issue #673).
         bump(&env);
         env.events()
             .publish((symbol_short!("set_admin"), old_admin), new_admin);
@@ -1127,9 +1159,17 @@ impl DividendContract {
         if stored != *admin {
             panic_err(env, Error::Unauthorized);
         }
+        // Bump the instance entry on every privileged call so admin-critical
+        // keys (`Admin`, `PendingAdmin`) are refreshed on write paths, not just
+        // on read (issue #673).
+        bump(env);
     }
 }
 
+/// Extend the TTL of the instance storage entry, which holds the
+/// admin-critical keys (`Admin`, `PendingAdmin`, `Counter`). Called on every
+/// privileged call and on every state-mutating path so these keys always carry
+/// the longest TTL documented in `docs/storage-ttl-strategy.md` (issue #673).
 fn bump(env: &Env) {
     env.storage()
         .instance()

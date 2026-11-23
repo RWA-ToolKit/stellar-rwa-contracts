@@ -611,6 +611,10 @@ impl RegistryContract {
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
         Self::require_admin_or_asset_admin(&env, &admin, &entry.token_contract);
+        // Issue #673: bump the instance TTL (covering the admin-critical
+        // `Admin`/`PendingAdmin`/`Oracle` keys) on every privileged call, even
+        // the idempotent no-op path, so admin state can never lapse.
+        bump(&env);
         let was_active = entry.active;
         if !was_active {
             return;
@@ -715,6 +719,9 @@ impl RegistryContract {
     /// # Events
     /// None.
     pub fn get_oracle(env: Env) -> Option<Address> {
+        // Issue #673: `Oracle` is admin-critical instance state; bump on read
+        // so a read-only workload cannot let it lapse.
+        bump(&env);
         env.storage().instance().get(&DataKey::Oracle)
     }
 
@@ -792,6 +799,9 @@ impl RegistryContract {
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
         Self::require_admin_or_asset_admin(&env, &admin, &entry.token_contract);
+        // Issue #673: bump the instance TTL on every privileged call, including
+        // the idempotent no-op path, so admin-critical keys never lapse.
+        bump(&env);
         if entry.active {
             return;
         }
@@ -1112,6 +1122,8 @@ impl RegistryContract {
     /// # Events
     /// None.
     pub fn get_admin(env: Env) -> Address {
+        // Issue #673: `Admin` is admin-critical instance state; bump on read.
+        bump(&env);
         env.storage()
             .instance()
             .get(&DataKey::Admin)
@@ -1241,6 +1253,9 @@ impl RegistryContract {
     /// # Events
     /// None.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
+        // Issue #673: `PendingAdmin` is admin-critical instance state; bump on
+        // read so an in-flight handover proposal cannot silently expire.
+        bump(&env);
         rwa_common::admin::get_pending(&env, &DataKey::PendingAdmin)
     }
 
@@ -1321,6 +1336,10 @@ impl RegistryContract {
         if stored != *admin {
             panic_err(env, Error::Unauthorized);
         }
+        // Issue #673: admin-critical instance keys (`Admin`, `PendingAdmin`,
+        // `Oracle`) share the instance TTL, so bump it on every privileged
+        // call rather than only on registration.
+        bump(env);
     }
 
     fn require_admin_or_asset_admin(env: &Env, admin: &Address, asset_token: &Address) {
@@ -1331,6 +1350,9 @@ impl RegistryContract {
             .unwrap_or_else(|| panic_err(env, Error::NotInitialized));
         admin.require_auth();
         if *admin == stored {
+            // Issue #673: keep admin-critical instance keys alive on every
+            // privileged call.
+            bump(env);
             return;
         }
         let asset_admin = AssetClient::new(env, asset_token).get_metadata().admin;
@@ -1451,3 +1473,5 @@ mod test_ochedev6789_issuer_page_events;
 mod test_ochedev6789_issuer_page_resource_cost;
 #[cfg(test)]
 mod test_ochedev6789_issuer_page_zero_empty;
+#[cfg(test)]
+mod test_admin_ttl_extension;

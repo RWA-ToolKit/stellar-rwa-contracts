@@ -37,6 +37,9 @@ use internal::{check_str, panic_err};
 #[cfg(test)]
 mod test_rdj_allowance;
 
+#[cfg(test)]
+mod test_guardian_scope;
+
 /// Cross-contract client for the compliance contract. Only the method the asset
 /// token needs is declared here, decoupling the two contracts at build time.
 #[contractclient(name = "ComplianceClient")]
