@@ -1120,6 +1120,90 @@ fn test_cancel_distribution_after_claim_fails() {
     ctx.dividend.cancel_distribution(&ctx.admin, &id);
 }
 
+// Issue #586: `cancel_distribution` is admin-only. An unprivileged caller is
+// rejected with Unauthorized and the distribution/escrow are left untouched.
+#[test]
+fn test_cancel_distribution_requires_admin() {
+    let ctx = setup();
+    let div_addr = ctx.dividend.address.clone();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    let stranger = Address::generate(&ctx.env);
+
+    assert_eq!(
+        ctx.dividend.try_cancel_distribution(&stranger, &id),
+        Err(Ok(Error::Unauthorized.into()))
+    );
+    // Nothing changed: escrow intact, distribution still live.
+    assert_eq!(pay_balance(&ctx, &div_addr), 1000);
+    assert!(!ctx.dividend.get_distribution(&id).completed);
+}
+
+// Issue #587: cancelling a distribution whose total_amount is zero is a
+// deliberate no-op on funds — it succeeds, marks the distribution completed,
+// and moves nothing.
+#[test]
+fn test_cancel_distribution_zero_amount() {
+    let ctx = setup();
+    let div_addr = ctx.dividend.address.clone();
+    let admin_before = pay_balance(&ctx, &ctx.admin);
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &0,
+        &eligible(&ctx),
+    );
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+
+    ctx.dividend.cancel_distribution(&ctx.admin, &id);
+
+    assert!(ctx.dividend.get_distribution(&id).completed);
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
+}
+
+// Issue #664: cancelling after a partial claim must not double count the
+// already-paid amount. Cancellation is rejected once anything has been
+// distributed, and the claimant's record and funds are unaffected.
+#[test]
+fn test_cancel_distribution_after_partial_claim_reclaims_remainder() {
+    let ctx = setup();
+    let div_addr = ctx.dividend.address.clone();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    // h1 claims its 300 share; 700 remains in escrow.
+    ctx.dividend.claim(&id, &ctx.h1);
+    let h1_after_claim = pay_balance(&ctx, &ctx.h1);
+    assert_eq!(h1_after_claim, 300);
+    assert_eq!(pay_balance(&ctx, &div_addr), 700);
+
+    // Cancellation is rejected because funds have already been distributed.
+    assert_eq!(
+        ctx.dividend.try_cancel_distribution(&ctx.admin, &id),
+        Err(Ok(Error::InvalidAmount.into()))
+    );
+
+    // The claimant's record and balance are untouched, and the running
+    // distributed total counts the single claim exactly once.
+    assert!(ctx.dividend.has_claimed(&id, &ctx.h1));
+    assert_eq!(pay_balance(&ctx, &ctx.h1), h1_after_claim);
+    assert_eq!(pay_balance(&ctx, &div_addr), 700);
+    let d = ctx.dividend.get_distribution(&id);
+    assert_eq!(d.distributed, 300);
+    assert!(!d.completed);
+}
+
 // Issue #367: Test claiming against a distribution whose payment token has
 // unusual (different) decimals from the asset token.
 #[test]
