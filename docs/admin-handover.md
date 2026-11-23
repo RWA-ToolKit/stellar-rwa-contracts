@@ -5,6 +5,25 @@ its admin independently. The current admin proposes a successor; only that
 address can accept. A new proposal replaces any existing pending proposal, and
 the current admin can cancel the pending proposal at any time.
 
+## Proposal expiry
+
+Pending admin proposals expire. When `propose_admin` is called, the contract
+records the current ledger sequence alongside the nominee. The proposal is
+valid for a fixed window of `ADMIN_PROPOSAL_TTL_LEDGERS` ledgers (currently
+`17_280`, roughly one day at ~5s per ledger). This bounds the window in which
+a compromised successor key could be used to take over the contract without
+the current admin having to remember to cancel.
+
+After the window elapses, `accept_admin` fails with an explicit
+`AdminProposalExpired` error. The pending proposal is not silently cleared on
+read; `get_pending_admin` still reports the nominee until it is replaced or
+cancelled, but it can no longer be accepted. To retry, the current admin must
+call `propose_admin` again, which stores a fresh ledger sequence and restarts
+the window. `cancel_admin_proposal` continues to work at any time.
+
+This behaviour is identical across `compliance`, `asset-token`, `registry`,
+and `dividend`.
+
 Set the contract ID to the instance being handed over, then configure the
 network and both identities. The successor identity must already exist and be
 available on the selected network.

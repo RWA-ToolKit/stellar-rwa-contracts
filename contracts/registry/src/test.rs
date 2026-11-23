@@ -986,6 +986,44 @@ fn test_reactivate_overflows_tvl_panics() {
     assert!(client.get_asset(&id2).active);
 }
 
+// ---- TVL overflow with many high-valuation assets (issue #668) ----
+
+/// Summing several near-`i128::MAX` valuations must fail with an explicit
+/// overflow error rather than silently wrapping around to a small/negative
+/// value. Each individual valuation is representable, but their sum is not.
+#[test]
+fn test_tvl_overflow_with_many_high_valuation_assets() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+
+    // Each valuation is i128::MAX / 2 + 1, so two of them already exceed
+    // i128::MAX. Registering a handful of them must not wrap the total.
+    let big = i128::MAX / 2 + 1;
+    for _ in 0..3 {
+        register(&env, &client, &issuer, "real_estate", big);
+    }
+
+    // The running total must be reported as an explicit overflow error, not a
+    // wrapped (possibly negative) value.
+    assert_eq!(
+        client.try_total_value_locked(),
+        Err(Ok(Error::ValuationOverflow.into()))
+    );
+}
+
+/// Control case: the same code path with small valuations sums correctly.
+#[test]
+fn test_tvl_small_valuations_sum_correctly() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+
+    for _ in 0..5 {
+        register(&env, &client, &issuer, "invoice", 1_000);
+    }
+
+    assert_eq!(client.try_total_value_locked(), Ok(5_000));
+}
+
 // ---- pagination helpers (issue #455) ----
 
 /// `get_total_asset_count` returns 0 on an empty registry and increments on

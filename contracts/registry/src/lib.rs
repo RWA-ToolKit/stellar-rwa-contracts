@@ -92,6 +92,9 @@ pub enum Error {
     DuplicateAsset = 9,
     /// No oracle has been configured for `update_valuation_from_oracle`.
     NoOracle = 10,
+    /// A pending admin proposal has expired and can no longer be accepted
+    /// (issue #671). Re-propose to start a fresh window.
+    AdminProposalExpired = 11,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -850,15 +853,47 @@ impl RegistryContract {
     /// None — anyone may call.
     ///
     /// # Errors
-    /// None.
+    /// - [`Error::Overflow`] — the stored running total is inconsistent with
+    ///   the per-asset valuations (e.g. a corrupted or legacy value) such that
+    ///   recomputing it would overflow `i128`. The recomputation uses
+    ///   `checked_add` throughout, so it panics cleanly rather than wrapping.
     ///
     /// # Events
     /// None.
     pub fn total_value_locked(env: Env) -> i128 {
-        env.storage()
+        let stored: i128 = env
+            .storage()
             .instance()
             .get(&DataKey::TotalValuation)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        // Defensive re-derivation (issue #668): the running total is
+        // maintained incrementally with checked arithmetic, but recompute it
+        // from the per-asset entries with checked_add so a corrupted or
+        // legacy stored value can never silently wrap. The recomputed value
+        // is authoritative and is written back when it differs.
+        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        let mut sum: i128 = 0;
+        let mut id: u64 = 1;
+        while id <= counter {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AssetEntry>(&DataKey::Asset(id))
+            {
+                if entry.active {
+                    sum = sum
+                        .checked_add(entry.valuation)
+                        .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+                }
+            }
+            id += 1;
+        }
+        if sum != stored {
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalValuation, &sum);
+        }
+        sum
     }
 
     /// Total number of registered assets, including deactivated ones.
@@ -1134,6 +1169,10 @@ impl RegistryContract {
     /// # Authority
     /// `admin` must be the stored admin and must sign the transaction.
     ///
+    /// The proposal is valid for [`rwa_common::admin::PROPOSAL_TTL_LEDGERS`]
+    /// ledgers; after that `accept_admin` rejects it with
+    /// [`Error::AdminProposalExpired`] (issue #671).
+    ///
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
@@ -1142,7 +1181,8 @@ impl RegistryContract {
     /// Emits topic `("proposed", admin)` with data `new_admin`.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         Self::require_admin(&env, &admin);
-        // Shared admin-handover helper (issue #764).
+        // Shared admin-handover helper (issue #764); records the proposal
+        // ledger so `accept_admin` can enforce the expiry window (#671).
         rwa_common::admin::propose(&env, &DataKey::PendingAdmin, &new_admin);
         bump(&env);
         env.events()
@@ -1197,13 +1237,16 @@ impl RegistryContract {
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
+    /// - [`Error::AdminProposalExpired`] — the proposal is older than the
+    ///   handover window (issue #671); re-propose to start a fresh window.
     /// - [`Error::Unauthorized`] — `new_admin` does not match the pending
     ///   proposal.
     ///
     /// # Events
     /// Emits topic `("set_admin", old_admin)` with data `new_admin`.
     pub fn accept_admin(env: Env, new_admin: Address) {
-        // Shared admin-handover helper (issue #764).
+        // Shared admin-handover helper (issue #764). The helper enforces the
+        // proposal expiry window (issue #671) and reports it as `Expired`.
         let result = rwa_common::admin::accept(
             &env,
             &DataKey::Admin,
@@ -1212,7 +1255,12 @@ impl RegistryContract {
         );
         match result {
             None => panic_err(&env, Error::NoPendingAdmin),
-            Some(Err(())) => panic_err(&env, Error::Unauthorized),
+            Some(Err(rwa_common::admin::AcceptError::Expired)) => {
+                panic_err(&env, Error::AdminProposalExpired)
+            }
+            Some(Err(rwa_common::admin::AcceptError::Unauthorized)) => {
+                panic_err(&env, Error::Unauthorized)
+            }
             Some(Ok((old_admin, _))) => {
                 bump(&env);
                 env.events()
