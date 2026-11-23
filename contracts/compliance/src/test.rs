@@ -2790,3 +2790,46 @@ fn test_resource_budget_is_allowed() {
     );
     assert!(cpu < 300_000, "is_allowed cpu {cpu}");
 }
+
+// ---- issue #667: status_of vs get_record consistency across suspend/reinstate ----
+
+/// Chain `add_to_allowlist` -> `suspend` -> `reinstate` and assert at every
+/// step that `is_allowed` flips correctly (true -> false -> true, with no
+/// fresh `add_to_allowlist` needed to restore access) and that `status_of`
+/// agrees with `get_record().status`. The KYC metadata (jurisdiction and
+/// expiry) must survive the whole cycle unchanged.
+#[test]
+fn test_status_of_and_get_record_agree_across_suspend_reinstate() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let ke = String::from_str(&env, "KE");
+
+    env.ledger().with_mut(|l| l.sequence_number = 10);
+    client.add_to_allowlist(&admin, &user, &ke, &1000);
+
+    // Step 1: freshly approved.
+    assert!(client.is_allowed(&user));
+    let rec = client.get_record(&user).unwrap();
+    assert_eq!(client.status_of(&user), Some(rec.status));
+    assert_eq!(client.status_of(&user), Some(ComplianceStatus::Approved));
+    assert_eq!(rec.jurisdiction, ke);
+    assert_eq!(rec.expires_at, 1000);
+
+    // Step 2: suspended — access denied, statuses agree.
+    client.suspend(&admin, &user);
+    assert!(!client.is_allowed(&user));
+    let rec = client.get_record(&user).unwrap();
+    assert_eq!(client.status_of(&user), Some(rec.status));
+    assert_eq!(client.status_of(&user), Some(ComplianceStatus::Suspended));
+    assert_eq!(rec.jurisdiction, ke);
+    assert_eq!(rec.expires_at, 1000);
+
+    // Step 3: reinstated — access restored without re-adding, statuses agree.
+    client.reinstate(&admin, &user);
+    assert!(client.is_allowed(&user));
+    let rec = client.get_record(&user).unwrap();
+    assert_eq!(client.status_of(&user), Some(rec.status));
+    assert_eq!(client.status_of(&user), Some(ComplianceStatus::Approved));
+    assert_eq!(rec.jurisdiction, ke);
+    assert_eq!(rec.expires_at, 1000);
+}

@@ -164,7 +164,8 @@ pub trait TokenInterface {
   `NothingToClaim (#6)`.
 - `cancel_distribution(admin, distribution_id)` — admin auth; returns escrowed
   funds to the issuer. Only works while nothing has been claimed (`distributed == 0`).
-  Errors: `InvalidAmount (#5)` if any claim has been made.
+  Errors: `InvalidAmount (#5)` if any claim has been made. Emits a `cancel`
+  event on success (see [Cancellation event](#cancellation-event-issue-588)).
 - `get_distribution(distribution_id) -> Distribution` — `DistributionNotFound (#4)`.
 - `get_distributions_for_asset(asset_token) -> Vec<Distribution>`
 - `has_claimed(distribution_id, holder) -> bool`
@@ -207,6 +208,24 @@ pub trait TokenInterface {
 | `withdraw` | (admin) → (id, recipient, amount) | remaining escrow withdrawn |
 | `cancel`  | (admin) → distribution_id  | distribution cancelled |
 | `set_admin` | (old_admin) → new_admin | admin handed over    |
+
+### Cancellation event (issue #588)
+
+`cancel_distribution` emits exactly one event per successful call:
+
+| Topic      | Data              | When                          |
+|------------|-------------------|-------------------------------|
+| `("cancel", admin)` | `distribution_id: u64` | `cancel_distribution` succeeds |
+
+- The event is emitted **only** on a successful cancellation, i.e. while
+  nothing has been claimed yet (`distributed == 0`). A rejected call (any claim
+  already made, `InvalidAmount (#5)`) emits nothing and changes no state.
+- It signals two things to indexers: the escrowed `total_amount` has been
+  refunded to the issuer, and the distribution is now `completed = true` with
+  `cancelled = true`. No further `claim` events can follow for that id.
+- Because the event carries the `admin` in its topic and the
+  `distribution_id` in its data, the indexing API can reconstruct cancellation
+  activity without polling raw storage.
 
 ## Storage / TTL
 

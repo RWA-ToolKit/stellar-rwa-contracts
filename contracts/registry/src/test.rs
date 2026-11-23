@@ -1362,6 +1362,67 @@ fn test_get_active_assets_page_emits_no_events() {
     assert_eq!(events_after, events_before);
 }
 
+// ---- issue #661: update_valuation on deactivated assets ----
+
+/// Policy: valuation changes are forbidden on deactivated assets. Once an
+/// asset is deactivated its valuation is frozen; it must be reactivated first.
+#[test]
+#[should_panic(expected = "Error(Contract, #10)")]
+fn test_update_valuation_on_deactivated_asset_rejected() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "real_estate", 100);
+    client.deactivate_asset(&admin, &id);
+    client.update_valuation(&admin, &id, &200);
+}
+
+/// The same rejection is observable through the fallible entry point, and the
+/// stored valuation is left untouched.
+#[test]
+fn test_update_valuation_on_deactivated_asset_leaves_valuation_unchanged() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "real_estate", 100);
+    client.deactivate_asset(&admin, &id);
+
+    assert_eq!(
+        client.try_update_valuation(&admin, &id, &200),
+        Err(Ok(Error::AssetDeactivated.into()))
+    );
+    assert_eq!(client.get_asset(&id).valuation, 100);
+    assert!(!client.get_asset(&id).active);
+}
+
+/// `update_valuation` still works on an active asset (the intended policy is
+/// "active only", not "never").
+#[test]
+fn test_update_valuation_on_active_asset_succeeds() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "real_estate", 100);
+
+    client.update_valuation(&admin, &id, &250);
+
+    assert_eq!(client.get_asset(&id).valuation, 250);
+    assert!(client.get_asset(&id).active);
+    assert_eq!(client.total_value_locked(), 250);
+}
+
+/// Reactivating the asset lifts the restriction again.
+#[test]
+fn test_update_valuation_allowed_after_reactivation() {
+    let (env, client, admin) = setup();
+    let issuer = Address::generate(&env);
+    let id = register(&env, &client, &issuer, "real_estate", 100);
+    client.deactivate_asset(&admin, &id);
+    client.reactivate_asset(&admin, &id);
+
+    client.update_valuation(&admin, &id, &300);
+
+    assert_eq!(client.get_asset(&id).valuation, 300);
+    assert_eq!(client.total_value_locked(), 300);
+}
+
 // ---- issue #720: register_asset resource budget ----
 
 #[test]

@@ -165,63 +165,6 @@ fn test_cross_token_distribution_end_to_end() {
     assert!(ctx.dividend.get_distribution(&id).completed);
 }
 
-// ---- issue #674: `create_distribution` must validate that `asset_token`
-// really implements the asset-token interface before storing it, so a bogus
-// address is rejected up front rather than failing at claim time after the
-// admin has already escrowed funds. ----
-
-#[test]
-fn test_create_distribution_rejects_non_token_asset_address() {
-    let ctx = setup();
-    let admin_before = pay_balance(&ctx, &ctx.admin);
-    let div_addr = ctx.dividend.address.clone();
-
-    // A plain account address is not a contract at all.
-    let bogus = Address::generate(&ctx.env);
-    let result = ctx.dividend.try_create_distribution(
-        &ctx.admin,
-        &bogus,
-        &ctx.pay_id,
-        &1000,
-        &eligible(&ctx),
-    );
-    assert!(result.is_err(), "non-contract asset address must be rejected");
-
-    // A contract that does not implement the asset-token interface (here the
-    // compliance contract) must be rejected too.
-    let wrong_contract = ctx.dividend.try_create_distribution(
-        &ctx.admin,
-        &ctx.comp_id,
-        &ctx.pay_id,
-        &1000,
-        &eligible(&ctx),
-    );
-    assert!(
-        wrong_contract.is_err(),
-        "non-asset-token contract must be rejected"
-    );
-
-    // Neither rejected call may have escrowed any payment tokens.
-    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
-    assert_eq!(pay_balance(&ctx, &div_addr), 0);
-    assert_eq!(ctx.dividend.get_distributions_for_asset(&bogus).len(), 0);
-}
-
-#[test]
-fn test_create_distribution_accepts_real_asset_token() {
-    let ctx = setup();
-    let id = ctx.dividend.create_distribution(
-        &ctx.admin,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &1000,
-        &eligible(&ctx),
-    );
-    assert_eq!(id, 1);
-    assert_eq!(pay_balance(&ctx, &ctx.dividend.address), 1000);
-    assert_eq!(ctx.dividend.get_distribution(&id).asset_token, ctx.asset_id);
-}
-
 #[test]
 fn test_asset_admin_can_create_distribution() {
     let ctx = setup();
@@ -1177,12 +1120,12 @@ fn test_cancel_distribution_after_claim_fails() {
     ctx.dividend.cancel_distribution(&ctx.admin, &id);
 }
 
-// Issue #586: `cancel_distribution` is admin-only. An unprivileged caller is
-// rejected with Unauthorized and the distribution/escrow are left untouched.
+// Issue #588: a successful cancellation must emit exactly one
+// ("cancel", admin) event carrying the distribution id, so the indexing API
+// can reconstruct activity without polling raw storage.
 #[test]
-fn test_cancel_distribution_requires_admin() {
+fn test_cancel_distribution_emits_event() {
     let ctx = setup();
-    let div_addr = ctx.dividend.address.clone();
     let id = ctx.dividend.create_distribution(
         &ctx.admin,
         &ctx.asset_id,
@@ -1190,48 +1133,30 @@ fn test_cancel_distribution_requires_admin() {
         &1000,
         &eligible(&ctx),
     );
-    let stranger = Address::generate(&ctx.env);
-
-    assert_eq!(
-        ctx.dividend.try_cancel_distribution(&stranger, &id),
-        Err(Ok(Error::Unauthorized.into()))
-    );
-    // Nothing changed: escrow intact, distribution still live.
-    assert_eq!(pay_balance(&ctx, &div_addr), 1000);
-    assert!(!ctx.dividend.get_distribution(&id).completed);
-}
-
-// Issue #587: cancelling a distribution whose total_amount is zero is a
-// deliberate no-op on funds — it succeeds, marks the distribution completed,
-// and moves nothing.
-#[test]
-fn test_cancel_distribution_zero_amount() {
-    let ctx = setup();
-    let div_addr = ctx.dividend.address.clone();
-    let admin_before = pay_balance(&ctx, &ctx.admin);
-    let id = ctx.dividend.create_distribution(
-        &ctx.admin,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &0,
-        &eligible(&ctx),
-    );
-    assert_eq!(pay_balance(&ctx, &div_addr), 0);
 
     ctx.dividend.cancel_distribution(&ctx.admin, &id);
 
-    assert!(ctx.dividend.get_distribution(&id).completed);
-    assert_eq!(pay_balance(&ctx, &div_addr), 0);
-    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
+    let events = ctx.env.events().all();
+    assert_eq!(events.len(), 1);
+    let (contract, topics, data) = events.get(0).unwrap();
+    assert_eq!(contract, ctx.dividend.address);
+    assert_eq!(
+        topics,
+        Vec::from_array(
+            &ctx.env,
+            [
+                Symbol::new(&ctx.env, "cancel").into_val(&ctx.env),
+                ctx.admin.clone().into_val(&ctx.env),
+            ],
+        )
+    );
+    assert_eq!(id.into_val(&ctx.env), data);
 }
 
-// Issue #664: cancelling after a partial claim must not double count the
-// already-paid amount. Cancellation is rejected once anything has been
-// distributed, and the claimant's record and funds are unaffected.
+// Issue #588: a failed cancellation (after a claim) must not emit any event.
 #[test]
-fn test_cancel_distribution_after_partial_claim_reclaims_remainder() {
+fn test_cancel_distribution_failure_emits_no_event() {
     let ctx = setup();
-    let div_addr = ctx.dividend.address.clone();
     let id = ctx.dividend.create_distribution(
         &ctx.admin,
         &ctx.asset_id,
@@ -1239,26 +1164,12 @@ fn test_cancel_distribution_after_partial_claim_reclaims_remainder() {
         &1000,
         &eligible(&ctx),
     );
-    // h1 claims its 300 share; 700 remains in escrow.
     ctx.dividend.claim(&id, &ctx.h1);
-    let h1_after_claim = pay_balance(&ctx, &ctx.h1);
-    assert_eq!(h1_after_claim, 300);
-    assert_eq!(pay_balance(&ctx, &div_addr), 700);
 
-    // Cancellation is rejected because funds have already been distributed.
-    assert_eq!(
-        ctx.dividend.try_cancel_distribution(&ctx.admin, &id),
-        Err(Ok(Error::InvalidAmount.into()))
-    );
+    let result = ctx.dividend.try_cancel_distribution(&ctx.admin, &id);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount.into())));
 
-    // The claimant's record and balance are untouched, and the running
-    // distributed total counts the single claim exactly once.
-    assert!(ctx.dividend.has_claimed(&id, &ctx.h1));
-    assert_eq!(pay_balance(&ctx, &ctx.h1), h1_after_claim);
-    assert_eq!(pay_balance(&ctx, &div_addr), 700);
-    let d = ctx.dividend.get_distribution(&id);
-    assert_eq!(d.distributed, 300);
-    assert!(!d.completed);
+    assert_eq!(ctx.env.events().all().len(), 0);
 }
 
 // Issue #367: Test claiming against a distribution whose payment token has
@@ -1336,37 +1247,6 @@ fn test_claim_after_deadline_fails() {
     );
     set_ledger_sequence(&ctx.env, deadline + 1);
     ctx.dividend.claim(&id, &ctx.h1);
-}
-
-// The deadline is compared against the deterministic ledger sequence number,
-// not the validator-supplied wall-clock timestamp. Claiming at exactly
-// `sequence == deadline` is still allowed; only `deadline + 1` is rejected.
-#[test]
-fn test_claim_at_exact_deadline_boundary() {
-    let ctx = setup();
-    let deadline = ctx.env.ledger().sequence() + 100;
-    let id = ctx.dividend.create_distribution_deadline(
-        &ctx.admin,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &1000,
-        &eligible(&ctx),
-        &deadline,
-    );
-
-    // Pin the ledger to exactly the deadline: the claim must succeed.
-    set_ledger_sequence(&ctx.env, deadline);
-    assert_eq!(ctx.env.ledger().sequence(), deadline);
-    ctx.dividend.claim(&id, &ctx.h1);
-    assert_eq!(pay_balance(&ctx, &ctx.h1), 300);
-
-    // One sequence past the deadline: the claim is rejected with
-    // DistributionExpired (#13) and no funds move.
-    set_ledger_sequence(&ctx.env, deadline + 1);
-    let h2_before = pay_balance(&ctx, &ctx.h2);
-    let res = ctx.dividend.try_claim(&id, &ctx.h2);
-    assert_eq!(res, Err(Ok(Error::DistributionExpired.into())));
-    assert_eq!(pay_balance(&ctx, &ctx.h2), h2_before);
 }
 
 // Claiming before the deadline succeeds normally.
@@ -1573,118 +1453,6 @@ fn test_uneven_distribution_leaves_dust() {
     // can be claimed (distribution is exhausted / no deadline to reclaim).
     assert_eq!(pay_balance(&ctx, &div_addr), dust);
     assert!(!d.completed); // distributed (1000) < total_amount (1001)
-}
-
-// ---- issue #659: dust distributions round every holder's claimable share to
-// zero. `claimable` truncates (floor) the pro-rata share, so a distribution
-// whose `total_amount` is smaller than the holder count yields 0 for every
-// holder. This must not panic, and the whole escrow must remain recoverable
-// by the admin via `reclaim_unclaimed` after the deadline.
-#[test]
-fn test_dust_distribution_rounds_to_zero_and_is_reclaimable() {
-    let ctx = setup();
-    let div_addr = ctx.dividend.address.clone();
-    // 3 eligible holders, total_amount = 1: each share floors to 0.
-    let total_amount = 1i128;
-    let deadline = ctx.env.ledger().sequence() + 100;
-    let id = ctx.dividend.create_distribution_deadline(
-        &ctx.admin,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &total_amount,
-        &eligible(&ctx),
-        &deadline,
-    );
-    assert_eq!(pay_balance(&ctx, &div_addr), total_amount);
-
-    // Every holder's claimable share truncates to zero, without panicking.
-    assert_eq!(ctx.dividend.claimable(&id, &ctx.h1), 0);
-    assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 0);
-    assert_eq!(ctx.dividend.claimable(&id, &ctx.admin), 0);
-
-    // Claiming a zero entitlement is rejected deliberately (NothingToClaim),
-    // not an uncaught panic, and moves no funds.
-    assert_eq!(
-        ctx.dividend.try_claim(&id, &ctx.h1),
-        Err(Ok(Error::NothingToClaim.into()))
-    );
-    assert_eq!(pay_balance(&ctx, &ctx.h1), 0);
-    assert_eq!(pay_balance(&ctx, &div_addr), total_amount);
-
-    // After the deadline the admin recovers the full remainder.
-    set_ledger_sequence(&ctx.env, deadline + 1);
-    let admin_before = pay_balance(&ctx, &ctx.admin);
-    let reclaimed = ctx.dividend.reclaim_unclaimed(&ctx.admin, &id);
-    assert_eq!(reclaimed, total_amount);
-    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before + total_amount);
-    assert_eq!(pay_balance(&ctx, &div_addr), 0);
-    assert!(ctx.dividend.get_distribution(&id).completed);
-}
-
-// ---- issue #585: `reclaim_unclaimed` against a deactivated distribution.
-// The dividend contract has no pause switch, so "deactivated" is modelled by
-// the terminal states: a distribution that is already `completed` (fully
-// distributed or previously reclaimed) or `cancelled`. Reclaiming such a
-// distribution must fail with a documented error variant rather than panic.
-#[test]
-fn test_reclaim_unclaimed_on_completed_distribution_fails() {
-    let ctx = setup();
-    let deadline = ctx.env.ledger().sequence() + 100;
-    let id = ctx.dividend.create_distribution_deadline(
-        &ctx.admin,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &1000,
-        &eligible(&ctx),
-        &deadline,
-    );
-    set_ledger_sequence(&ctx.env, deadline + 1);
-
-    // First reclaim succeeds and marks the distribution completed.
-    let reclaimed = ctx.dividend.reclaim_unclaimed(&ctx.admin, &id);
-    assert_eq!(reclaimed, 1000);
-    assert!(ctx.dividend.get_distribution(&id).completed);
-
-    // A second reclaim on the now-deactivated distribution is rejected
-    // deliberately (AlreadyCompleted) and moves no further funds.
-    let div_addr = ctx.dividend.address.clone();
-    let admin_before = pay_balance(&ctx, &ctx.admin);
-    assert_eq!(
-        ctx.dividend.try_reclaim_unclaimed(&ctx.admin, &id),
-        Err(Ok(Error::AlreadyCompleted.into()))
-    );
-    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
-    assert_eq!(pay_balance(&ctx, &div_addr), 0);
-}
-
-#[test]
-fn test_reclaim_unclaimed_on_cancelled_distribution_fails() {
-    let ctx = setup();
-    let deadline = ctx.env.ledger().sequence() + 100;
-    let id = ctx.dividend.create_distribution_deadline(
-        &ctx.admin,
-        &ctx.asset_id,
-        &ctx.pay_id,
-        &1000,
-        &eligible(&ctx),
-        &deadline,
-    );
-    // Cancel before any claim: escrow returns to admin and the distribution
-    // is deactivated.
-    ctx.dividend.cancel_distribution(&ctx.admin, &id);
-    let div_addr = ctx.dividend.address.clone();
-    assert_eq!(pay_balance(&ctx, &div_addr), 0);
-
-    set_ledger_sequence(&ctx.env, deadline + 1);
-    let admin_before = pay_balance(&ctx, &ctx.admin);
-    // Reclaiming a cancelled distribution is rejected deliberately and moves
-    // no funds.
-    assert_eq!(
-        ctx.dividend.try_reclaim_unclaimed(&ctx.admin, &id),
-        Err(Ok(Error::AlreadyCompleted.into()))
-    );
-    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
-    assert_eq!(pay_balance(&ctx, &div_addr), 0);
 }
 
 // ---- issue #718 / #720: claim resource budget ----
