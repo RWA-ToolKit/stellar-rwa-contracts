@@ -227,6 +227,23 @@ distributions per asset token (issue #166).
   non-negative (issue #291) and no address may appear twice (issue #290) — a
   duplicate would otherwise be counted in the denominator but be unclaimable,
   permanently stranding that slice of the escrow.
+- **`asset_token` validation (issue #674):** `create_distribution` (and
+  `create_distribution_deadline`) performs an early sanity cross-contract call
+  to the supplied `asset_token` — it invokes `version()` on the token before
+  any funds are escrowed. If the address does not implement the expected
+  asset-token interface (e.g. it is an EOA, an unrelated contract, or a
+  malformed address), the probe fails and the whole `create_distribution` call
+  is rejected, so no distribution is stored and no funds move. This turns what
+  would otherwise be a deferred failure into a fail-fast check at creation
+  time. Note that this is only a *sanity* check: it confirms the address
+  responds to the asset-token interface, not that its balances are meaningful
+  or that the admin picked the intended token. Choosing the correct
+  `asset_token` remains the admin's responsibility. If validation were ever
+  bypassed or the token later became unreachable, the failure would surface at
+  `claim` time (the `balance`/`total_supply` cross-contract calls would trap),
+  potentially after funds were already locked into the distribution — which is
+  exactly the failure mode this early probe is meant to prevent.
+=======
 
 ## Holder-snapshot scaling limits (issue #429)
 

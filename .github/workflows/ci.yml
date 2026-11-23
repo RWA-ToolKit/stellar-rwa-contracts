@@ -47,6 +47,11 @@ jobs:
       - uses: actions/checkout@v7
       - name: Check table formatting
         run: python3 scripts/check_authority_matrix.py
+      # Cross-check every privileged `pub fn` in the four contracts against a
+      # row in docs/AUTHORITY_MATRIX.md, so a newly added admin-gated function
+      # can't silently drift out of the documentation (#669).
+      - name: Check matrix covers all privileged functions
+        run: python3 scripts/check_authority_matrix.py --check-code
 
   test:
     runs-on: ubuntu-latest

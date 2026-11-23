@@ -165,6 +165,63 @@ fn test_cross_token_distribution_end_to_end() {
     assert!(ctx.dividend.get_distribution(&id).completed);
 }
 
+// ---- issue #674: `create_distribution` must validate that `asset_token`
+// really implements the asset-token interface before storing it, so a bogus
+// address is rejected up front rather than failing at claim time after the
+// admin has already escrowed funds. ----
+
+#[test]
+fn test_create_distribution_rejects_non_token_asset_address() {
+    let ctx = setup();
+    let admin_before = pay_balance(&ctx, &ctx.admin);
+    let div_addr = ctx.dividend.address.clone();
+
+    // A plain account address is not a contract at all.
+    let bogus = Address::generate(&ctx.env);
+    let result = ctx.dividend.try_create_distribution(
+        &ctx.admin,
+        &bogus,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    assert!(result.is_err(), "non-contract asset address must be rejected");
+
+    // A contract that does not implement the asset-token interface (here the
+    // compliance contract) must be rejected too.
+    let wrong_contract = ctx.dividend.try_create_distribution(
+        &ctx.admin,
+        &ctx.comp_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    assert!(
+        wrong_contract.is_err(),
+        "non-asset-token contract must be rejected"
+    );
+
+    // Neither rejected call may have escrowed any payment tokens.
+    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+    assert_eq!(ctx.dividend.get_distributions_for_asset(&bogus).len(), 0);
+}
+
+#[test]
+fn test_create_distribution_accepts_real_asset_token() {
+    let ctx = setup();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    assert_eq!(id, 1);
+    assert_eq!(pay_balance(&ctx, &ctx.dividend.address), 1000);
+    assert_eq!(ctx.dividend.get_distribution(&id).asset_token, ctx.asset_id);
+}
+
 #[test]
 fn test_asset_admin_can_create_distribution() {
     let ctx = setup();
