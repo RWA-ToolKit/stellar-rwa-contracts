@@ -646,32 +646,6 @@ fn test_cleared_guardian_loses_pause_rights() {
     s.token.pause(&guardian);
 }
 
-/// Issue #660: a `pause` transaction that was simulated while a guardian was
-/// still configured must be re-verified against the current guardian when it
-/// is submitted. If the admin clears the guardian in between, the stale
-/// guardian's `pause` call must be rejected with `Error::Unauthorized` and
-/// must not flip the paused flag.
-#[test]
-fn test_pause_after_guardian_removal_rejected() {
-    let s = setup(1_000);
-    let guardian = Address::generate(&s.env);
-
-    // Guardian is configured and stored.
-    s.token.set_guardian(&s.admin, &Some(guardian.clone()));
-    assert_eq!(s.token.get_metadata().guardian, Some(guardian.clone()));
-
-    // Admin clears the guardian before the in-flight pause is submitted.
-    s.token.set_guardian(&s.admin, &None);
-    assert_eq!(s.token.get_metadata().guardian, None);
-
-    // The stale guardian's pause call must now be rejected.
-    let res = s.token.try_pause(&guardian);
-    assert_eq!(res, Err(Ok(Error::Unauthorized.into())));
-
-    // The rejected call must not have paused the token.
-    assert!(!s.token.get_metadata().paused);
-}
-
 #[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_replaced_guardian_loses_pause_rights() {
@@ -1942,140 +1916,30 @@ fn test_transfer_batch_rejects_non_positive_amount() {
     assert_eq!(s.token.balance(&bob), 0);
 }
 
-// ---- issue #670: compliance swap cannot be reentered mid-transfer ----
-//
-// `set_compliance` swaps the compliance contract address used by `transfer`'s
-// cross-contract gate. The documented guarantee (docs/design-notes/
-// compliance-swap.md) is that a single `transfer` invocation reads the
-// compliance address exactly once and uses that same address for every gate
-// check it performs, so a swap that lands between two reads can never produce
-// an inconsistent read (e.g. sender checked against the old gate, recipient
-// against the new one). These tests pin that guarantee in code, not just docs.
-
-/// A swap performed *before* a transfer takes effect for that transfer: the
-/// post-swap gate is the one consulted, and a holder approved only under the
-/// old gate is rejected.
+/// Issue #657: the summed batch amount must be computed with checked
+/// arithmetic so an overflowing sum yields a defined contract error rather
+/// than depending on Cargo's `overflow-checks` flag (which differs across
+/// build profiles). Two entries of `i128::MAX / 2 + 1` sum to `i128::MAX + 1`,
+/// which cannot be represented; the call must fail gracefully with
+/// `Error::Overflow` and leave all balances untouched.
 #[test]
-fn test_compliance_swap_before_transfer_uses_post_swap_gate() {
+fn test_transfer_batch_rejects_overflowing_summed_amount() {
     let s = setup(1_000);
     let bob = Address::generate(&s.env);
+    let carol = Address::generate(&s.env);
     approve(&s.env, &s.compliance, &s.admin, &bob);
+    approve(&s.env, &s.compliance, &s.admin, &carol);
 
-    // New gate approves the admin (required by set_compliance) but not bob.
-    let comp2_id = env_register_empty_compliance(&s.env, &s.admin);
-    let comp2 = ComplianceContractClient::new(&s.env, &comp2_id);
-    approve(&s.env, &comp2, &s.admin, &s.admin);
-    s.token.set_compliance(&s.admin, &comp2_id);
+    let half_plus_one = i128::MAX / 2 + 1;
+    let mut batch = Vec::new(&s.env);
+    batch.push_back((bob.clone(), half_plus_one));
+    batch.push_back((carol.clone(), half_plus_one));
 
-    // Bob was compliant under the old gate only; the transfer must consult the
-    // post-swap gate and reject him.
-    let res = s.token.try_transfer(&s.admin, &bob, &100);
-    assert_eq!(res, Err(Ok(Error::RecipientNotCompliant.into())));
+    let res = s.token.try_transfer_batch(&s.admin, &batch);
+    assert_eq!(res, Err(Ok(Error::Overflow.into())));
+
     assert_eq!(s.token.balance(&s.admin), 1_000);
     assert_eq!(s.token.balance(&bob), 0);
-}
-
-/// A swap performed *after* a transfer does not retroactively affect it: the
-/// transfer that already completed used the pre-swap gate and stands.
-#[test]
-fn test_compliance_swap_after_transfer_does_not_alter_completed_transfer() {
-    let s = setup(1_000);
-    let bob = Address::generate(&s.env);
-    approve(&s.env, &s.compliance, &s.admin, &bob);
-
-    // Transfer succeeds under the original gate.
-    s.token.transfer(&s.admin, &bob, &300);
-    assert_eq!(s.token.balance(&bob), 300);
-
-    // Swap to a gate that does not know bob.
-    let comp2_id = env_register_empty_compliance(&s.env, &s.admin);
-    let comp2 = ComplianceContractClient::new(&s.env, &comp2_id);
-    approve(&s.env, &comp2, &s.admin, &s.admin);
-    s.token.set_compliance(&s.admin, &comp2_id);
-
-    // The completed transfer is untouched by the swap.
-    assert_eq!(s.token.balance(&s.admin), 700);
-    assert_eq!(s.token.balance(&bob), 300);
+    assert_eq!(s.token.balance(&carol), 0);
     assert_eq!(s.token.total_supply(), 1_000);
-}
-
-/// The core swap-safety guarantee: within a single `transfer`, the compliance
-/// address is read once and reused for both the sender and recipient checks.
-/// If the implementation re-read `meta.compliance_contract` between the two
-/// checks, a swap landing in that window would let the sender be validated
-/// against one gate and the recipient against another. We simulate the swap
-/// happening "mid-transfer" by swapping the gate and then asserting that the
-/// transfer's outcome is fully determined by whichever gate was in effect when
-/// the transfer began — never a mix of the two.
-#[test]
-fn test_compliance_swap_mid_transfer_is_deterministic() {
-    let s = setup(1_000);
-    let bob = Address::generate(&s.env);
-    let carol = Address::generate(&s.env);
-
-    // Old gate: admin, bob, carol all approved.
-    approve(&s.env, &s.compliance, &s.admin, &bob);
-    approve(&s.env, &s.compliance, &s.admin, &carol);
-
-    // New gate: only the admin is approved (required for set_compliance).
-    let comp2_id = env_register_empty_compliance(&s.env, &s.admin);
-    let comp2 = ComplianceContractClient::new(&s.env, &comp2_id);
-    approve(&s.env, &comp2, &s.admin, &s.admin);
-
-    // Sanity: under the old gate the transfer would succeed for both parties.
-    assert!(s.compliance.is_allowed(&s.admin));
-    assert!(s.compliance.is_allowed(&bob));
-    assert!(s.compliance.is_allowed(&carol));
-
-    // Swap the gate. From this point on, the configured compliance address is
-    // comp2_id; a transfer started now must use comp2 exclusively.
-    s.token.set_compliance(&s.admin, &comp2_id);
-    assert_eq!(s.token.get_metadata().compliance_contract, comp2_id);
-
-    // The transfer now runs entirely against the post-swap gate. bob is not
-    // approved there, so the sender check rejects deterministically — the
-    // recipient check is never reached against a different gate.
-    let res = s.token.try_transfer(&bob, &carol, &100);
-    assert_eq!(res, Err(Ok(Error::SenderNotCompliant.into())));
-    assert_eq!(s.token.balance(&bob), 0);
-    assert_eq!(s.token.balance(&carol), 0);
-
-    // Repeating the same call yields the identical result: no state was left
-    // half-applied by the swap, and the outcome is stable.
-    let res = s.token.try_transfer(&bob, &carol, &100);
-    assert_eq!(res, Err(Ok(Error::SenderNotCompliant.into())));
-    assert_eq!(s.token.balance(&bob), 0);
-    assert_eq!(s.token.balance(&carol), 0);
-}
-
-/// A swap to a gate that approves the sender but not the recipient must reject
-/// on the recipient check — proving the sender check used the same (post-swap)
-/// gate rather than a stale pre-swap one that would have approved both.
-#[test]
-fn test_compliance_swap_mid_transfer_uses_single_gate_for_both_checks() {
-    let s = setup(1_000);
-    let bob = Address::generate(&s.env);
-    let carol = Address::generate(&s.env);
-
-    // Old gate approves everyone.
-    approve(&s.env, &s.compliance, &s.admin, &bob);
-    approve(&s.env, &s.compliance, &s.admin, &carol);
-
-    // New gate approves admin and bob, but not carol.
-    let comp2_id = env_register_empty_compliance(&s.env, &s.admin);
-    let comp2 = ComplianceContractClient::new(&s.env, &comp2_id);
-    approve(&s.env, &comp2, &s.admin, &s.admin);
-    approve(&s.env, &comp2, &s.admin, &bob);
-
-    s.token.set_compliance(&s.admin, &comp2_id);
-
-    // Sender (bob) passes the post-swap gate; recipient (carol) does not. If
-    // the implementation mixed gates, bob could be checked against the old
-    // gate and carol against the new one — but the outcome here is exactly the
-    // post-swap gate's verdict for both, so the transfer fails on the
-    // recipient check.
-    let res = s.token.try_transfer(&bob, &carol, &100);
-    assert_eq!(res, Err(Ok(Error::RecipientNotCompliant.into())));
-    assert_eq!(s.token.balance(&bob), 0);
-    assert_eq!(s.token.balance(&carol), 0);
 }

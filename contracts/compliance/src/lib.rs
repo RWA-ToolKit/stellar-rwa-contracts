@@ -900,6 +900,48 @@ impl ComplianceContract {
     /// `Approved` and unexpired.  Idempotent: blocking an already-blocked
     /// jurisdiction does not emit a second event.
     ///
+    /// # Semantics: immediate, retroactive, and non-destructive
+    ///
+    /// A block takes effect **immediately and retroactively** for every
+    /// address already on the allowlist whose [`KycRecord::jurisdiction`]
+    /// matches the blocked code — it is *not* limited to new entries. The
+    /// block is evaluated by [`Self::is_allowed`] at check time (it reads the
+    /// `Blocked` flag for the record's jurisdiction on every call), so the
+    /// very next transfer or mint involving such a holder fails, with no
+    /// additional per-holder write required.
+    ///
+    /// Existing KYC records are **not** modified or deleted by this call:
+    /// their `status` stays `Approved`, their `verified_at`/`expires_at` are
+    /// untouched, and they remain on the allowlist pages (so
+    /// [`Self::get_allowlist`] and [`Self::get_allowlist_count`] still include
+    /// them). Only the derived result of [`Self::is_allowed`] changes. This
+    /// keeps the block fully reversible: [`Self::unblock_jurisdiction`]
+    /// restores eligibility for those holders without re-approval, provided
+    /// their record has not expired in the meantime.
+    ///
+    /// # Interaction with `add_to_allowlist` / `add_to_allowlist_batch`
+    ///
+    /// Adding an address whose jurisdiction is currently blocked is
+    /// **permitted** and succeeds normally: the record is written, the
+    /// address is appended to the allowlist, and the `approved` event is
+    /// emitted. The new record is simply not transferable while the block
+    /// remains in force, because [`Self::is_allowed`] rejects it. Neither
+    /// add path checks the blocklist, so there is no ordering hazard between
+    /// a batch allowlist operation and a concurrent `block_jurisdiction`:
+    ///
+    /// - *Block first, then add*: the added holders are recorded but
+    ///   immediately non-transferable.
+    /// - *Add first, then block*: the added holders become non-transferable
+    ///   as soon as the block lands.
+    ///
+    /// Both orderings converge on the same observable state — records
+    /// present, `is_allowed` returning `false` — so a block racing an
+    /// in-flight batch cannot leave a holder in a jurisdiction that is
+    /// blocked yet still transferable. See the regression tests
+    /// `test_block_jurisdiction_after_allowlist_invalidates_holder` and
+    /// `test_block_jurisdiction_before_allowlist_blocks_new_holder` in
+    /// `test.rs` for both orderings.
+    ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
     /// - `jurisdiction`: Two-letter ISO country code to block.  Normalized
