@@ -34,6 +34,34 @@ expired and not in a blocked jurisdiction) pass `is_allowed`.
 
 > Time is measured in **ledger sequence numbers**, not calendar dates.
 
+### Clock choice: ledger sequence, never wall-clock time
+
+Every time-based check in this contract — KYC expiry (`expires_at`), the
+minimum holding period (`min_ledgers`), and the `expires_at` validation in
+`add_to_allowlist` — reads `env.ledger().sequence()`. **No security-critical
+logic reads `env.ledger().timestamp()`.**
+
+Why sequence numbers:
+
+- **Deterministic.** The ledger sequence is agreed by consensus and is part of
+  the ledger header every validator signs. Two nodes replaying the same
+  transaction see the same value, so a check that passes on one node passes on
+  all of them.
+- **No validator clock skew.** `env.ledger().timestamp()` is a wall-clock
+  value supplied by validators. It can drift between validators and is not
+  guaranteed to be monotonic across ledgers, so a deadline expressed in
+  timestamps has an implicit tolerance window during which a transfer could
+  be accepted or rejected depending on which validator's clock was used.
+  Sequence numbers have no such window: a deadline is either reached or not.
+- **No tolerance window to tune.** Because the comparison is exact, there is
+  no "skew allowance" constant that could be set too tight (rejecting valid
+  transfers) or too loose (letting a lock-up lapse early).
+
+The trade-off is that durations are expressed in ledgers, not seconds. At the
+network's target close time of ~5 s per ledger, one day ≈ 17,280 ledgers and
+one year ≈ 6,307,200 ledgers; convert calendar requirements to ledgers when
+configuring `expires_at` or `min_ledgers`.
+
 ### Jurisdiction canonical form
 
 To prevent "USA", "us", and "US" from being silently treated as three
@@ -193,6 +221,20 @@ schedules, and anti-flip mechanisms for regulated distributions.
    `hldfail` event. If no `FirstAcquiredLedger` entry exists for the holder,
    the check is **skipped (fail-open)** so existing holders whose acquisition
    was never recorded are not inadvertently locked out.
+
+   **Exact boundary semantics.** The comparison is `>=` against
+   `env.ledger().sequence()`, so the lock-up is inclusive of its end ledger:
+   - At `now == first_acquired_ledger + min_ledgers - 1` the holder is still
+     locked and `is_allowed` returns `false` (emitting `hldfail`).
+   - At `now == first_acquired_ledger + min_ledgers` the holder is unlocked
+     and `is_allowed` returns `true` (subject to the other conditions).
+   - `min_ledgers = 0` is equivalent to no requirement: the boundary is the
+     acquisition ledger itself, so the holder is unlocked immediately.
+
+   Because the clock is the ledger sequence, this boundary is exact on every
+   validator — there is no skew window in which the transfer is accepted on
+   one node and rejected on another. Boundary behaviour is covered by
+   `test_holding_period_boundary_exact` in `contracts/compliance/src/test.rs`.
 
 > **Burning tokens** is not affected by compliance checks: the asset-token
 > contract's `burn` function does not call `is_allowed`, so a locked-up holder
@@ -429,6 +471,11 @@ non-negative integer expiry) happens before any transaction is sent.
   on it inside transfers.
 - Expiry is enforced against `env.ledger().sequence()` at read time, so an
   expired KYC blocks transfers without any keeper/cron.
+- All time-based logic (KYC expiry, minimum holding period, `expires_at`
+  validation) uses `env.ledger().sequence()`, never
+  `env.ledger().timestamp()`. Sequence numbers are consensus-agreed and
+  deterministic, so deadlines have no tolerance window for validator clock
+  skew. See [Clock choice](#clock-choice-ledger-sequence-never-wall-clock-time).
 
 ## Emergency pause (issue #731)
 

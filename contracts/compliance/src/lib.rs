@@ -136,6 +136,12 @@ const ALLOWLIST_PAGE_SIZE: u32 = 200;
 /// the final partial page).
 pub const MAX_ALLOWLIST_PAGE_SIZE: u32 = 200;
 
+/// Maximum number of addresses `get_allowlist` will return in a single call
+/// (issue #676). Above this size the unbounded full-list read risks exceeding
+/// Soroban's per-transaction resource limits, so `get_allowlist` refuses to
+/// execute and callers must use `get_allowlist_page` instead.
+pub const MAX_ALLOWLIST_RETURN: u32 = 1_000;
+
 /// Typed contract errors. Signalled via `panic_with_error!`, which produces a
 /// deterministic contract error (not an unhandled host panic).
 #[contracterror]
@@ -691,8 +697,23 @@ impl ComplianceContract {
     /// (issue #306). Includes suspended addresses (their page slot is
     /// preserved by [`Self::suspend`]).
     ///
-    /// For large lists prefer [`Self::get_allowlist_page`] to bound per-call
-    /// resource usage; this function transfers the entire list in one call.
+    /// # Unbounded cost (issue #676)
+    ///
+    /// This function transfers the **entire** allowlist in a single call, so
+    /// its CPU-instruction, memory and ledger-read cost grows linearly with
+    /// the number of addresses on the list. Once the allowlist grows large
+    /// enough, a single invocation can exceed Soroban's per-transaction
+    /// resource and fee limits, making this call unusable (effectively
+    /// DoS-ing callers that rely on it).
+    ///
+    /// Callers should prefer the paginated alternatives:
+    /// - [`Self::get_allowlist_page`] to read the list in bounded chunks, and
+    /// - [`Self::get_allowlist_count`] to learn the list size in O(1).
+    ///
+    /// As a hard guard, this function refuses to execute when the allowlist
+    /// holds more than [`MAX_ALLOWLIST_RETURN`] addresses: it panics with a
+    /// clear message directing callers to paginate instead. Lists at or below
+    /// that size behave exactly as before.
     ///
     /// # Parameters
     /// None.
@@ -701,11 +722,22 @@ impl ComplianceContract {
     /// None — anyone may call.
     ///
     /// # Errors
-    /// None.
+    /// Panics (with a message pointing at [`Self::get_allowlist_page`]) when
+    /// the allowlist exceeds [`MAX_ALLOWLIST_RETURN`] addresses.
     ///
     /// # Events
     /// None.
     pub fn get_allowlist(env: Env) -> Vec<Address> {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistCount)
+            .unwrap_or(0u32);
+        if count > MAX_ALLOWLIST_RETURN {
+            panic!(
+                "get_allowlist: allowlist exceeds MAX_ALLOWLIST_RETURN; use get_allowlist_page"
+            );
+        }
         let mut all = Vec::new(&env);
         let (current_page, _) = allowlist_meta(&env);
         for page_idx in 0..=current_page {
