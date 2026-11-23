@@ -1915,3 +1915,31 @@ fn test_transfer_batch_rejects_non_positive_amount() {
     assert_eq!(s.token.balance(&s.admin), 1_000);
     assert_eq!(s.token.balance(&bob), 0);
 }
+
+/// Issue #657: the summed batch amount must be computed with checked
+/// arithmetic so an overflowing sum yields a defined contract error rather
+/// than depending on Cargo's `overflow-checks` flag (which differs across
+/// build profiles). Two entries of `i128::MAX / 2 + 1` sum to `i128::MAX + 1`,
+/// which cannot be represented; the call must fail gracefully with
+/// `Error::Overflow` and leave all balances untouched.
+#[test]
+fn test_transfer_batch_rejects_overflowing_summed_amount() {
+    let s = setup(1_000);
+    let bob = Address::generate(&s.env);
+    let carol = Address::generate(&s.env);
+    approve(&s.env, &s.compliance, &s.admin, &bob);
+    approve(&s.env, &s.compliance, &s.admin, &carol);
+
+    let half_plus_one = i128::MAX / 2 + 1;
+    let mut batch = Vec::new(&s.env);
+    batch.push_back((bob.clone(), half_plus_one));
+    batch.push_back((carol.clone(), half_plus_one));
+
+    let res = s.token.try_transfer_batch(&s.admin, &batch);
+    assert_eq!(res, Err(Ok(Error::Overflow.into())));
+
+    assert_eq!(s.token.balance(&s.admin), 1_000);
+    assert_eq!(s.token.balance(&bob), 0);
+    assert_eq!(s.token.balance(&carol), 0);
+    assert_eq!(s.token.total_supply(), 1_000);
+}

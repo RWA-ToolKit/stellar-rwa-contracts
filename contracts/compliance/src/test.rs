@@ -2640,6 +2640,137 @@ fn test_get_allowlist_page_clamps_to_200_with_a_larger_allowlist() {
     );
 }
 
+// ---- issue #658: jurisdiction block vs. in-flight batch allowlist ----
+
+/// Issue #658, ordering (a): the jurisdiction is blocked *before* the batch
+/// allowlist call.  The batch itself is not rejected (it only validates
+/// jurisdiction syntax and expiry), so the holders are recorded — but
+/// `is_allowed` must deny them immediately because the block is consulted on
+/// every read, not only at admission time.
+#[test]
+fn test_block_jurisdiction_before_batch_denies_new_holders() {
+    let (env, client, admin) = setup();
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+    let ir = String::from_str(&env, "IR");
+
+    // Block first.
+    client.block_jurisdiction(&admin, &ir);
+    assert!(client.is_jurisdiction_blocked(&ir));
+
+    // Then admit holders in the blocked jurisdiction via the batch path.
+    let mut entries: Vec<AllowlistEntry> = Vec::new(&env);
+    entries.push_back(AllowlistEntry {
+        address: user_a.clone(),
+        jurisdiction: ir.clone(),
+        expires_at: 0,
+    });
+    entries.push_back(AllowlistEntry {
+        address: user_b.clone(),
+        jurisdiction: ir.clone(),
+        expires_at: 0,
+    });
+    client.add_to_allowlist_batch(&admin, &entries);
+
+    // The records exist and are Approved...
+    assert_eq!(client.status_of(&user_a), Some(ComplianceStatus::Approved));
+    assert_eq!(client.status_of(&user_b), Some(ComplianceStatus::Approved));
+    assert_eq!(client.get_allowlist_count(), 2);
+
+    // ...but is_allowed denies them because the jurisdiction is blocked.
+    assert!(!client.is_allowed(&user_a));
+    assert!(!client.is_allowed(&user_b));
+}
+
+/// Issue #658, ordering (b): the batch allowlist call happens *first* and the
+/// jurisdiction is blocked afterwards.  Blocking must retroactively invalidate
+/// already-allowlisted holders in that jurisdiction — the block is a live
+/// filter in `is_allowed`, not a one-shot admission check.
+#[test]
+fn test_block_jurisdiction_after_batch_denies_existing_holders() {
+    let (env, client, admin) = setup();
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+    let ir = String::from_str(&env, "IR");
+
+    let mut entries: Vec<AllowlistEntry> = Vec::new(&env);
+    entries.push_back(AllowlistEntry {
+        address: user_a.clone(),
+        jurisdiction: ir.clone(),
+        expires_at: 0,
+    });
+    entries.push_back(AllowlistEntry {
+        address: user_b.clone(),
+        jurisdiction: ir.clone(),
+        expires_at: 0,
+    });
+    client.add_to_allowlist_batch(&admin, &entries);
+
+    // Before the block, both holders pass.
+    assert!(client.is_allowed(&user_a));
+    assert!(client.is_allowed(&user_b));
+
+    // Blocking mid-flight invalidates the already-allowlisted holders.
+    client.block_jurisdiction(&admin, &ir);
+    assert!(!client.is_allowed(&user_a));
+    assert!(!client.is_allowed(&user_b));
+
+    // The KYC records themselves are untouched by the block.
+    assert_eq!(client.status_of(&user_a), Some(ComplianceStatus::Approved));
+    assert_eq!(client.status_of(&user_b), Some(ComplianceStatus::Approved));
+    assert_eq!(client.get_allowlist_count(), 2);
+
+    // Unblocking restores them without re-admission.
+    client.unblock_jurisdiction(&admin, &ir);
+    assert!(client.is_allowed(&user_a));
+    assert!(client.is_allowed(&user_b));
+}
+
+/// Issue #658: both orderings converge on the same observable state — the
+/// block is authoritative regardless of whether it lands before or after the
+/// batch admission.
+#[test]
+fn test_block_jurisdiction_batch_orderings_converge() {
+    let ir = String::from_str(&Env::default(), "IR");
+
+    // Ordering (a): block, then batch.
+    let (env_a, client_a, admin_a) = setup();
+    let user_a = Address::generate(&env_a);
+    let ir_a = String::from_str(&env_a, "IR");
+    client_a.block_jurisdiction(&admin_a, &ir_a);
+    let mut entries_a: Vec<AllowlistEntry> = Vec::new(&env_a);
+    entries_a.push_back(AllowlistEntry {
+        address: user_a.clone(),
+        jurisdiction: ir_a.clone(),
+        expires_at: 0,
+    });
+    client_a.add_to_allowlist_batch(&admin_a, &entries_a);
+
+    // Ordering (b): batch, then block.
+    let (env_b, client_b, admin_b) = setup();
+    let user_b = Address::generate(&env_b);
+    let ir_b = String::from_str(&env_b, "IR");
+    let mut entries_b: Vec<AllowlistEntry> = Vec::new(&env_b);
+    entries_b.push_back(AllowlistEntry {
+        address: user_b.clone(),
+        jurisdiction: ir_b.clone(),
+        expires_at: 0,
+    });
+    client_b.add_to_allowlist_batch(&admin_b, &entries_b);
+    client_b.block_jurisdiction(&admin_b, &ir_b);
+
+    // Same outcome in both cases: recorded, but not allowed.
+    assert_eq!(client_a.get_allowlist_count(), 1);
+    assert_eq!(client_b.get_allowlist_count(), 1);
+    assert!(!client_a.is_allowed(&user_a));
+    assert!(!client_b.is_allowed(&user_b));
+    assert!(client_a.is_jurisdiction_blocked(&ir_a));
+    assert!(client_b.is_jurisdiction_blocked(&ir_b));
+
+    // Silence the unused binding from the helper above.
+    let _ = ir;
+}
+
 // ---- issue #720: is_allowed resource budget ----
 
 #[test]

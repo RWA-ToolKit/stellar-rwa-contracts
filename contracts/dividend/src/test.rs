@@ -1432,3 +1432,92 @@ fn test_resource_budget_claim() {
     );
     assert!(cpu < 1_500_000, "claim cpu {cpu}");
 }
+
+// ---- issue #589: cancel_distribution resource budget ----
+
+/// Resource cost of cancelling a distribution before any claim. Printed for
+/// docs/RESOURCE_BUDGETS.md and bounded so a regression fails CI.
+///
+/// `cargo test -p dividend resource_budget -- --nocapture`
+#[test]
+fn test_resource_budget_cancel_distribution() {
+    extern crate std;
+    let ctx = setup();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    ctx.env.cost_estimate().budget().reset_unlimited();
+    ctx.dividend.cancel_distribution(&ctx.admin, &id);
+    let cpu = ctx.env.cost_estimate().budget().cpu_instruction_cost();
+    let mem = ctx.env.cost_estimate().budget().memory_bytes_cost();
+    let res = ctx.env.cost_estimate().resources();
+    std::println!(
+        "[budget] cancel_distribution: cpu={cpu} mem={mem} reads={} writes={}",
+        res.disk_read_entries + res.memory_read_entries,
+        res.write_entries
+    );
+    // Baseline recorded in issue #589. Cancel is a single auth check, one
+    // distribution read, one escrow transfer and a few storage writes, so it
+    // should stay well under the claim budget above.
+    assert!(cpu < 1_500_000, "cancel_distribution cpu {cpu}");
+}
+
+// ---- issue #590: cancel_distribution vs paused / deactivated state ----
+
+/// Established behaviour: cancel_distribution does not consult the asset
+/// token's paused flag. The asset token is only referenced for the admin
+/// check (via `get_metadata`), and pausing it does not block that read, so a
+/// cancel while the asset token is paused succeeds and refunds the escrow to
+/// the admin. This is deliberate: cancellation only moves the payment token
+/// back out of escrow and never touches the (paused) asset token's balances.
+#[test]
+fn test_cancel_distribution_with_paused_asset_token_succeeds() {
+    let ctx = setup();
+    let div_addr = ctx.dividend.address.clone();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    assert_eq!(pay_balance(&ctx, &div_addr), 1000);
+
+    // Pause the asset token before cancelling.
+    let asset = AssetTokenContractClient::new(&ctx.env, &ctx.asset_id);
+    asset.pause(&ctx.admin);
+
+    // Cancel is a defined success, not an uncaught panic.
+    let res = ctx.dividend.try_cancel_distribution(&ctx.admin, &id);
+    assert_eq!(res, Ok(Ok(())));
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+    assert_eq!(pay_balance(&ctx, &ctx.admin), 100_000);
+}
+
+/// Established behaviour: a non-admin caller is rejected with the contract's
+/// defined `Unauthorized` error even while the asset token is paused — the
+/// auth check runs before any asset-token interaction, so the paused state
+/// never turns this into an uncaught panic.
+#[test]
+fn test_cancel_distribution_unauthorized_while_asset_paused() {
+    let ctx = setup();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    let asset = AssetTokenContractClient::new(&ctx.env, &ctx.asset_id);
+    asset.pause(&ctx.admin);
+
+    let stranger = Address::generate(&ctx.env);
+    let res = ctx.dividend.try_cancel_distribution(&stranger, &id);
+    assert_eq!(res, Err(Ok(Error::Unauthorized.into())));
+    // Escrow is untouched by the rejected call.
+    assert_eq!(pay_balance(&ctx, &ctx.dividend.address), 1000);
+}

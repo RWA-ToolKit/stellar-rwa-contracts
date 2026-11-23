@@ -443,6 +443,25 @@ impl AssetTokenContract {
     ///
     /// Like `mint_batch`, there is no cap on the number of entries; the caller
     /// pays for the resources it consumes.
+    ///
+    /// ## Overflow handling
+    /// The per-recipient amounts are summed with explicit checked arithmetic
+    /// (`checked_add`) before any balance is debited. If the running total
+    /// would exceed `i128::MAX`, the call reverts with [`Error::Overflow`].
+    /// This does not rely on Cargo's `overflow-checks` flag, so the behavior is
+    /// deterministic across all build profiles (debug, release, release-with-logs).
+    ///
+    /// # Errors
+    /// - [`Error::NotInitialized`] — contract not yet initialized.
+    /// - [`Error::Paused`] — token is paused.
+    /// - [`Error::SenderNotCompliant`] — `from` is not compliance-approved.
+    /// - [`Error::InvalidAmount`] — any amount in the batch is ≤ 0.
+    /// - [`Error::RecipientNotCompliant`] — any recipient is not
+    ///   compliance-approved.
+    /// - [`Error::InsufficientBalance`] — `from` balance is insufficient for
+    ///   the summed amount.
+    /// - [`Error::Overflow`] — the summed amount overflows `i128`, or a
+    ///   recipient balance would overflow `i128`.
     pub fn transfer_batch(env: Env, from: Address, transfers: Vec<(Address, i128)>) {
         from.require_auth();
         let meta = Self::metadata(&env);
@@ -451,6 +470,16 @@ impl AssetTokenContract {
         }
         if !Self::compliant(&env, &meta.compliance_contract, &from) {
             panic_err(&env, Error::SenderNotCompliant);
+        }
+        // Sum the batch amounts with explicit checked arithmetic so an
+        // overflowing total fails deterministically with `Error::Overflow`
+        // regardless of the build profile's `overflow-checks` setting.
+        let mut total_amount: i128 = 0;
+        for (_, amount) in transfers.iter() {
+            Self::check_amount(&env, amount);
+            total_amount = total_amount
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_err(&env, Error::Overflow));
         }
         let from_jurisdiction = ComplianceClient::new(&env, &meta.compliance_contract)
             .get_jurisdiction(&from);
