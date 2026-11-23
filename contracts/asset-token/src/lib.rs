@@ -933,6 +933,11 @@ impl AssetTokenContract {
     /// Emits topic `("pause",)` with data `caller`.
     pub fn pause(env: Env, caller: Address) {
         caller.require_auth();
+        // Re-read the stored metadata on every call so the authorization check
+        // always reflects the *current* admin/guardian. In particular, if the
+        // admin has cleared the guardian via `set_guardian(admin, None)` while
+        // a pause transaction was in flight, the stale guardian is rejected
+        // here rather than being honoured from a cached value.
         let mut meta = Self::metadata(&env);
         let is_guardian = meta.guardian.as_ref() == Some(&caller);
         if meta.admin != caller && !is_guardian {
@@ -990,6 +995,8 @@ impl AssetTokenContract {
     /// value, which may be `None`).
     pub fn set_guardian(env: Env, admin: Address, guardian: Option<Address>) {
         let mut meta = Self::require_admin(&env, &admin);
+        // `None` clears the guardian in instance storage, so a subsequent
+        // `pause` from the former guardian fails with `Unauthorized`.
         meta.guardian = guardian;
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);

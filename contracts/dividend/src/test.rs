@@ -1403,6 +1403,118 @@ fn test_uneven_distribution_leaves_dust() {
     assert!(!d.completed); // distributed (1000) < total_amount (1001)
 }
 
+// ---- issue #659: dust distributions round every holder's claimable share to
+// zero. `claimable` truncates (floor) the pro-rata share, so a distribution
+// whose `total_amount` is smaller than the holder count yields 0 for every
+// holder. This must not panic, and the whole escrow must remain recoverable
+// by the admin via `reclaim_unclaimed` after the deadline.
+#[test]
+fn test_dust_distribution_rounds_to_zero_and_is_reclaimable() {
+    let ctx = setup();
+    let div_addr = ctx.dividend.address.clone();
+    // 3 eligible holders, total_amount = 1: each share floors to 0.
+    let total_amount = 1i128;
+    let deadline = ctx.env.ledger().sequence() + 100;
+    let id = ctx.dividend.create_distribution_deadline(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &total_amount,
+        &eligible(&ctx),
+        &deadline,
+    );
+    assert_eq!(pay_balance(&ctx, &div_addr), total_amount);
+
+    // Every holder's claimable share truncates to zero, without panicking.
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h1), 0);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.h2), 0);
+    assert_eq!(ctx.dividend.claimable(&id, &ctx.admin), 0);
+
+    // Claiming a zero entitlement is rejected deliberately (NothingToClaim),
+    // not an uncaught panic, and moves no funds.
+    assert_eq!(
+        ctx.dividend.try_claim(&id, &ctx.h1),
+        Err(Ok(Error::NothingToClaim.into()))
+    );
+    assert_eq!(pay_balance(&ctx, &ctx.h1), 0);
+    assert_eq!(pay_balance(&ctx, &div_addr), total_amount);
+
+    // After the deadline the admin recovers the full remainder.
+    set_ledger_sequence(&ctx.env, deadline + 1);
+    let admin_before = pay_balance(&ctx, &ctx.admin);
+    let reclaimed = ctx.dividend.reclaim_unclaimed(&ctx.admin, &id);
+    assert_eq!(reclaimed, total_amount);
+    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before + total_amount);
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+    assert!(ctx.dividend.get_distribution(&id).completed);
+}
+
+// ---- issue #585: `reclaim_unclaimed` against a deactivated distribution.
+// The dividend contract has no pause switch, so "deactivated" is modelled by
+// the terminal states: a distribution that is already `completed` (fully
+// distributed or previously reclaimed) or `cancelled`. Reclaiming such a
+// distribution must fail with a documented error variant rather than panic.
+#[test]
+fn test_reclaim_unclaimed_on_completed_distribution_fails() {
+    let ctx = setup();
+    let deadline = ctx.env.ledger().sequence() + 100;
+    let id = ctx.dividend.create_distribution_deadline(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+        &deadline,
+    );
+    set_ledger_sequence(&ctx.env, deadline + 1);
+
+    // First reclaim succeeds and marks the distribution completed.
+    let reclaimed = ctx.dividend.reclaim_unclaimed(&ctx.admin, &id);
+    assert_eq!(reclaimed, 1000);
+    assert!(ctx.dividend.get_distribution(&id).completed);
+
+    // A second reclaim on the now-deactivated distribution is rejected
+    // deliberately (AlreadyCompleted) and moves no further funds.
+    let div_addr = ctx.dividend.address.clone();
+    let admin_before = pay_balance(&ctx, &ctx.admin);
+    assert_eq!(
+        ctx.dividend.try_reclaim_unclaimed(&ctx.admin, &id),
+        Err(Ok(Error::AlreadyCompleted.into()))
+    );
+    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+}
+
+#[test]
+fn test_reclaim_unclaimed_on_cancelled_distribution_fails() {
+    let ctx = setup();
+    let deadline = ctx.env.ledger().sequence() + 100;
+    let id = ctx.dividend.create_distribution_deadline(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+        &deadline,
+    );
+    // Cancel before any claim: escrow returns to admin and the distribution
+    // is deactivated.
+    ctx.dividend.cancel_distribution(&ctx.admin, &id);
+    let div_addr = ctx.dividend.address.clone();
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+
+    set_ledger_sequence(&ctx.env, deadline + 1);
+    let admin_before = pay_balance(&ctx, &ctx.admin);
+    // Reclaiming a cancelled distribution is rejected deliberately and moves
+    // no funds.
+    assert_eq!(
+        ctx.dividend.try_reclaim_unclaimed(&ctx.admin, &id),
+        Err(Ok(Error::AlreadyCompleted.into()))
+    );
+    assert_eq!(pay_balance(&ctx, &ctx.admin), admin_before);
+    assert_eq!(pay_balance(&ctx, &div_addr), 0);
+}
+
 // ---- issue #718 / #720: claim resource budget ----
 
 /// Resource cost of the common path: one holder claiming. Printed for
