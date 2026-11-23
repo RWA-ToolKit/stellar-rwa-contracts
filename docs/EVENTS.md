@@ -99,7 +99,10 @@ Notes:
 - `create_distribution` is a wrapper around `create_distribution_deadline`, so
   both produce the same `created` event.
 - `cancel_distribution` refunds escrow and emits `cancel`; it is only allowed
-  while nothing has been claimed.
+  while nothing has been claimed. The event is published on every successful
+  cancellation (the only state change the function makes), so indexers can
+  reconstruct cancellations from `cancel` events alone without polling raw
+  storage.
 
 ## registry (`contracts/registry/src/lib.rs`)
 

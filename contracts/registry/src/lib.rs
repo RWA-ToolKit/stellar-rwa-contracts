@@ -92,6 +92,10 @@ pub enum Error {
     DuplicateAsset = 9,
     /// No oracle has been configured for `update_valuation_from_oracle`.
     NoOracle = 10,
+    /// A valuation update was attempted on a deactivated asset. Valuation
+    /// changes on deactivated assets are rejected; reactivate the asset first
+    /// with `reactivate_asset` if a change is intended.
+    AssetDeactivated = 11,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -651,10 +655,15 @@ impl RegistryContract {
 
     /// Update an asset's valuation. Admin only.
     ///
-    /// Adjusts total value locked accordingly (only while the asset is
-    /// `active`) and emits a `valuation` event carrying the asset id and both
-    /// the old and new valuations, so indexers can observe the change without
-    /// polling (issue #3).
+    /// Adjusts total value locked accordingly and emits a `valuation` event
+    /// carrying the asset id and both the old and new valuations, so indexers
+    /// can observe the change without polling (issue #3).
+    ///
+    /// Valuation changes on **deactivated** assets are explicitly rejected
+    /// (issue #661): a deactivated asset is excluded from TVL, so silently
+    /// accepting a new valuation would leave the stored entry inconsistent
+    /// with the intent of deactivation. Reactivate the asset first with
+    /// [`Self::reactivate_asset`] if a change is intended.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
@@ -668,6 +677,7 @@ impl RegistryContract {
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
     /// - [`Error::AssetNotFound`] — no asset with `asset_id` exists.
+    /// - [`Error::AssetDeactivated`] — the asset is deactivated.
     /// - [`Error::InvalidValuation`] — `new_valuation` < 0.
     /// - [`Error::Overflow`] — TVL would overflow or underflow `i128`.
     ///
@@ -735,6 +745,7 @@ impl RegistryContract {
     /// - [`Error::Unauthorized`] — `oracle` is not the configured oracle.
     /// - [`Error::InvalidValuation`] — `new_valuation` < 0.
     /// - [`Error::AssetNotFound`] — no asset with `asset_id` exists.
+    /// - [`Error::AssetDeactivated`] — the asset is deactivated.
     /// - [`Error::Overflow`] — TVL would overflow or underflow `i128`.
     pub fn update_valuation_from_oracle(
         env: Env,
@@ -1395,6 +1406,12 @@ fn apply_valuation(env: &Env, asset_id: u64, new_valuation: i128) {
         .persistent()
         .get(&DataKey::Asset(asset_id))
         .unwrap_or_else(|| panic_err(env, Error::AssetNotFound));
+    // Issue #661: valuation changes on deactivated assets are explicitly
+    // rejected. Deactivated assets are excluded from TVL, so accepting a new
+    // valuation here would silently diverge from the deactivation intent.
+    if !entry.active {
+        panic_err(env, Error::AssetDeactivated);
+    }
     let old_valuation = entry.valuation;
     entry.valuation = new_valuation;
     env.storage()

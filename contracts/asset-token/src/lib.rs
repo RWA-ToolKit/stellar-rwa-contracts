@@ -1414,6 +1414,8 @@ mod test_frozen_balance;
 mod test_jurisdiction_cap;
 #[cfg(test)]
 mod test_makeem_approve;
+#[cfg(test)]
+mod test_mint_batch;
 
 #[cfg(test)]
 mod test;

@@ -1120,6 +1120,58 @@ fn test_cancel_distribution_after_claim_fails() {
     ctx.dividend.cancel_distribution(&ctx.admin, &id);
 }
 
+// Issue #588: a successful cancellation must emit exactly one
+// ("cancel", admin) event carrying the distribution id, so the indexing API
+// can reconstruct activity without polling raw storage.
+#[test]
+fn test_cancel_distribution_emits_event() {
+    let ctx = setup();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+
+    ctx.dividend.cancel_distribution(&ctx.admin, &id);
+
+    let events = ctx.env.events().all();
+    assert_eq!(events.len(), 1);
+    let (contract, topics, data) = events.get(0).unwrap();
+    assert_eq!(contract, ctx.dividend.address);
+    assert_eq!(
+        topics,
+        Vec::from_array(
+            &ctx.env,
+            [
+                Symbol::new(&ctx.env, "cancel").into_val(&ctx.env),
+                ctx.admin.clone().into_val(&ctx.env),
+            ],
+        )
+    );
+    assert_eq!(id.into_val(&ctx.env), data);
+}
+
+// Issue #588: a failed cancellation (after a claim) must not emit any event.
+#[test]
+fn test_cancel_distribution_failure_emits_no_event() {
+    let ctx = setup();
+    let id = ctx.dividend.create_distribution(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+    );
+    ctx.dividend.claim(&id, &ctx.h1);
+
+    let result = ctx.dividend.try_cancel_distribution(&ctx.admin, &id);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount.into())));
+
+    assert_eq!(ctx.env.events().all().len(), 0);
+}
+
 // Issue #367: Test claiming against a distribution whose payment token has
 // unusual (different) decimals from the asset token.
 #[test]
