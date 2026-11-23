@@ -646,6 +646,32 @@ fn test_cleared_guardian_loses_pause_rights() {
     s.token.pause(&guardian);
 }
 
+/// Issue #660: a `pause` transaction that was simulated while a guardian was
+/// still configured must be re-verified against the current guardian when it
+/// is submitted. If the admin clears the guardian in between, the stale
+/// guardian's `pause` call must be rejected with `Error::Unauthorized` and
+/// must not flip the paused flag.
+#[test]
+fn test_pause_after_guardian_removal_rejected() {
+    let s = setup(1_000);
+    let guardian = Address::generate(&s.env);
+
+    // Guardian is configured and stored.
+    s.token.set_guardian(&s.admin, &Some(guardian.clone()));
+    assert_eq!(s.token.get_metadata().guardian, Some(guardian.clone()));
+
+    // Admin clears the guardian before the in-flight pause is submitted.
+    s.token.set_guardian(&s.admin, &None);
+    assert_eq!(s.token.get_metadata().guardian, None);
+
+    // The stale guardian's pause call must now be rejected.
+    let res = s.token.try_pause(&guardian);
+    assert_eq!(res, Err(Ok(Error::Unauthorized.into())));
+
+    // The rejected call must not have paused the token.
+    assert!(!s.token.get_metadata().paused);
+}
+
 #[test]
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_replaced_guardian_loses_pause_rights() {

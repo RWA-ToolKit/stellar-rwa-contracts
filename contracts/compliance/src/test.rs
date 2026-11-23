@@ -2668,6 +2668,110 @@ fn test_get_allowlist_page_clamps_to_200_with_a_larger_allowlist() {
     );
 }
 
+// ---- issue #676: get_allowlist unbounded-return guard ----
+
+/// A small allowlist (well under the cap) is returned in full by
+/// `get_allowlist`, and the result matches the paginated view.
+#[test]
+fn test_get_allowlist_returns_full_small_list() {
+    let (env, client, admin) = setup();
+    let us = String::from_str(&env, "US");
+    let mut addrs: Vec<Address> = Vec::new(&env);
+    for _ in 0..5 {
+        let a = Address::generate(&env);
+        client.add_to_allowlist(&admin, &a, &us, &0);
+        addrs.push_back(a);
+    }
+
+    let list = client.get_allowlist();
+    assert_eq!(list.len(), 5);
+    for (i, a) in addrs.iter().enumerate() {
+        assert_eq!(list.get(i as u32).unwrap(), a);
+    }
+    // The paginated view agrees with the unbounded one for small lists.
+    assert_eq!(client.get_allowlist_page(&0, &u32::MAX).len(), 5);
+}
+
+/// Once the allowlist exceeds `MAX_GET_ALLOWLIST_SIZE`, `get_allowlist`
+/// refuses to execute (panics with `Error::AllowlistTooLarge`) instead of
+/// risking a resource-limit blowout, while `get_allowlist_page` continues to
+/// work and can enumerate the whole list.
+#[test]
+fn test_get_allowlist_panics_above_cap_but_page_still_works() {
+    let (env, client, admin) = setup();
+    env.cost_estimate().budget().reset_unlimited();
+    let us = String::from_str(&env, "US");
+    let total = MAX_GET_ALLOWLIST_SIZE + 1;
+    for _ in 0..total {
+        client.add_to_allowlist(&admin, &Address::generate(&env), &us, &0);
+    }
+
+    // The unbounded read must refuse to run.
+    assert_eq!(
+        client.try_get_allowlist(),
+        Err(Ok(Error::AllowlistTooLarge.into()))
+    );
+
+    // Pagination still works and can walk the entire list.
+    let mut seen: u32 = 0;
+    let mut offset: u32 = 0;
+    loop {
+        let page = client.get_allowlist_page(&offset, &u32::MAX);
+        if page.len() == 0 {
+            break;
+        }
+        seen += page.len();
+        offset += page.len();
+    }
+    assert_eq!(seen, total);
+    assert_eq!(client.get_allowlist_count(), total);
+}
+
+/// Exactly at the cap, `get_allowlist` is still allowed to run.
+#[test]
+fn test_get_allowlist_allowed_at_exact_cap() {
+    let (env, client, admin) = setup();
+    env.cost_estimate().budget().reset_unlimited();
+    let us = String::from_str(&env, "US");
+    for _ in 0..MAX_GET_ALLOWLIST_SIZE {
+        client.add_to_allowlist(&admin, &Address::generate(&env), &us, &0);
+    }
+    assert_eq!(client.get_allowlist().len(), MAX_GET_ALLOWLIST_SIZE);
+}
+
+// ---- issue #677: holding-period deadline uses ledger sequence, not timestamp ----
+
+/// The holding-period deadline is computed from `env.ledger().sequence()`
+/// (deterministic), not `env.ledger().timestamp()` (validator-supplied).
+/// At exactly `first_acquired_ledger + min_ledgers` the holder is allowed;
+/// one ledger earlier they are rejected.  The timestamp is deliberately
+/// advanced to a wildly different value to prove it is not consulted.
+#[test]
+fn test_holding_period_deadline_boundary_uses_sequence() {
+    let (env, client, admin) = setup();
+    let user = Address::generate(&env);
+    let us = String::from_str(&env, "US");
+
+    env.ledger().with_mut(|l| l.sequence_number = 100);
+    client.add_to_allowlist(&admin, &user, &us, &0);
+    client.record_acquisition(&admin, &user);
+    client.set_min_holding_period(&admin, &user, &50u64);
+
+    // One ledger before the deadline (149 < 100 + 50): rejected.
+    env.ledger().with_mut(|l| {
+        l.sequence_number = 149;
+        l.timestamp = 9_999_999; // irrelevant: must not influence the check
+    });
+    assert!(!client.is_allowed(&user));
+
+    // Exactly at the deadline (150 == 100 + 50): allowed.
+    env.ledger().with_mut(|l| {
+        l.sequence_number = 150;
+        l.timestamp = 0; // irrelevant: must not influence the check
+    });
+    assert!(client.is_allowed(&user));
+}
+
 // ---- issue #720: is_allowed resource budget ----
 
 #[test]

@@ -5,6 +5,32 @@ members = [
   "fuzz",
 ]
 
+# cargo-audit configuration (issue #679). `cargo audit` reads this section
+# automatically when run from the workspace root, so the CI job needs no extra
+# flags. Accepted-risk advisories go in `ignore` below; anything not listed
+# here fails the build.
+[advisories]
+# Fail on vulnerabilities and on unmaintained/yanked crates pulled in by the
+# pinned dependency set; warnings are surfaced but do not fail the job.
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "deny"
+notice = "warn"
+# Accepted risks. Each entry must name the advisory, the crate/version it
+# applies to, why it is accepted, and when to re-check. Remove an entry as soon
+# as the underlying constraint is lifted.
+ignore = [
+  # RUSTSEC-2024-0344: `curve25519-dalek` timing variability in the
+  # `Scalar29`/`Scalar52` `sub` implementations. Reached only through
+  # ed25519-dalek =2.2, which is pinned (see the comment below) because
+  # soroban-sdk 26 / soroban-env-host 22.x links against that curve25519-dalek
+  # version. Not exploitable here: contracts only verify signatures with public
+  # inputs, never perform secret-scalar arithmetic on attacker-controlled
+  # timings. Re-check on every soroban-sdk major bump and when the
+  # ed25519-dalek pin is lifted (tracked with issue #753).
+  "RUSTSEC-2024-0344",
+]
+
 [workspace.dependencies]
 soroban-sdk = "26"
 # ed25519-dalek 2.2 pin re-evaluated 2026-11-20 (issue #753).

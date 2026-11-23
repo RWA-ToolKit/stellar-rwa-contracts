@@ -140,6 +140,12 @@ const ALLOWLIST_PAGE_SIZE: u32 = 200;
 /// the final partial page).
 pub const MAX_ALLOWLIST_PAGE_SIZE: u32 = 200;
 
+/// Maximum number of addresses `get_allowlist` will return in a single call
+/// (issue #676). Above this size the unbounded full-list read risks exceeding
+/// Soroban's per-transaction resource limits, so `get_allowlist` refuses to
+/// execute and callers must use `get_allowlist_page` instead.
+pub const MAX_ALLOWLIST_RETURN: u32 = 1_000;
+
 /// Typed contract errors. Signalled via `panic_with_error!`, which produces a
 /// deterministic contract error (not an unhandled host panic).
 #[contracterror]
@@ -710,8 +716,23 @@ impl ComplianceContract {
     /// (issue #306). Includes suspended addresses (their page slot is
     /// preserved by [`Self::suspend`]).
     ///
-    /// For large lists prefer [`Self::get_allowlist_page`] to bound per-call
-    /// resource usage; this function transfers the entire list in one call.
+    /// # Unbounded cost (issue #676)
+    ///
+    /// This function transfers the **entire** allowlist in a single call, so
+    /// its CPU-instruction, memory and ledger-read cost grows linearly with
+    /// the number of addresses on the list. Once the allowlist grows large
+    /// enough, a single invocation can exceed Soroban's per-transaction
+    /// resource and fee limits, making this call unusable (effectively
+    /// DoS-ing callers that rely on it).
+    ///
+    /// Callers should prefer the paginated alternatives:
+    /// - [`Self::get_allowlist_page`] to read the list in bounded chunks, and
+    /// - [`Self::get_allowlist_count`] to learn the list size in O(1).
+    ///
+    /// As a hard guard, this function refuses to execute when the allowlist
+    /// holds more than [`MAX_ALLOWLIST_RETURN`] addresses: it panics with a
+    /// clear message directing callers to paginate instead. Lists at or below
+    /// that size behave exactly as before.
     ///
     /// # Parameters
     /// None.
@@ -720,11 +741,22 @@ impl ComplianceContract {
     /// None — anyone may call.
     ///
     /// # Errors
-    /// None.
+    /// Panics (with a message pointing at [`Self::get_allowlist_page`]) when
+    /// the allowlist exceeds [`MAX_ALLOWLIST_RETURN`] addresses.
     ///
     /// # Events
     /// None.
     pub fn get_allowlist(env: Env) -> Vec<Address> {
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowlistCount)
+            .unwrap_or(0u32);
+        if count > MAX_ALLOWLIST_RETURN {
+            panic!(
+                "get_allowlist: allowlist exceeds MAX_ALLOWLIST_RETURN; use get_allowlist_page"
+            );
+        }
         let mut all = Vec::new(&env);
         let (current_page, _) = allowlist_meta(&env);
         for page_idx in 0..=current_page {
@@ -1186,6 +1218,12 @@ impl ComplianceContract {
     /// # Events
     /// None.
     pub fn get_admin(env: Env) -> Address {
+        // Admin is the single most security-critical key in this contract: if
+        // its instance entry lapses, every privileged entry point becomes
+        // unusable. Bump on read as well as on every privileged write so that
+        // read-only traffic (e.g. an indexer polling `get_admin`) keeps the
+        // admin-critical instance entry alive (issue #673).
+        bump_instance(&env);
         env.storage()
             .instance()
             .get(&DataKey::Admin)
@@ -1360,6 +1398,11 @@ impl ComplianceContract {
     /// # Events
     /// None.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
+        // `PendingAdmin` lives in the same instance entry as `Admin`, so a
+        // read here must extend the same TTL window; otherwise an in-flight
+        // handover proposal could silently vanish and `accept_admin` would
+        // fail with `NoPendingAdmin` (issue #673).
+        bump_instance(&env);
         env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
@@ -1501,9 +1544,19 @@ impl ComplianceContract {
     ///
     /// Returns `None` when no holding period has been set for this address.
     pub fn get_min_holding_period(env: Env, holder: Address) -> Option<u64> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::MinHoldingPeriod(holder))
+        let key = DataKey::MinHoldingPeriod(holder);
+        let value: Option<u64> = env.storage().persistent().get(&key);
+        if value.is_some() {
+            // Persistent entries are not covered by `bump_instance`; extend
+            // the entry's own TTL on read so an actively queried holding
+            // period never lapses (issue #673).
+            env.storage().persistent().extend_ttl(
+                &key,
+                INSTANCE_LIFETIME_THRESHOLD,
+                INSTANCE_BUMP_AMOUNT,
+            );
+        }
+        value
     }
 
     /// Return the ledger sequence at which `holder` first acquired tokens,
@@ -1513,9 +1566,122 @@ impl ComplianceContract {
     /// same holder (e.g. a top-up transfer) do not overwrite it, so the
     /// returned ledger is always the earliest acquisition.
     pub fn get_first_acquired_ledger(env: Env, holder: Address) -> Option<u64> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::FirstAcquiredLedger(holder))
+        let key = DataKey::FirstAcquiredLedger(holder);
+        let value: Option<u64> = env.storage().persistent().get(&key);
+        if value.is_some() {
+            // Same rationale as `get_min_holding_period`: keep the
+            // acquisition clock alive while it is being read (issue #673).
+            env.storage().persistent().extend_ttl(
+                &key,
+                INSTANCE_LIFETIME_THRESHOLD,
+                INSTANCE_BUMP_AMOUNT,
+            );
+        }
+        value
+    }
+}
+
+#[cfg(test)]
+mod test_ttl_audit {
+    //! TTL audit coverage for admin-critical keys (issue #673).
+    //!
+    //! Verifies that the admin-critical instance entry (which holds `Admin`,
+    //! `PendingAdmin`, `AllowlistCount` and `BlockedList`) survives the
+    //! documented TTL window when the contract is only touched by privileged
+    //! calls and by the admin getters, and that the persistent holding-period
+    //! keys are extended on read.
+
+    use super::*;
+    use soroban_sdk::testutils::Ledger as _;
+    use soroban_sdk::{Env, String};
+
+    fn setup() -> (Env, ComplianceContractClient<'static>, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(ComplianceContract, ());
+        let client = ComplianceContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+        // Leak the env so the returned client can borrow it for the test body.
+        let env: &'static Env = Box::leak(Box::new(env));
+        let client = ComplianceContractClient::new(env, &contract_id);
+        (env.clone(), client, admin)
+    }
+
+    #[test]
+    fn admin_survives_ttl_window_via_privileged_calls() {
+        let (env, client, admin) = setup();
+
+        // Advance close to the bump amount, then exercise a privileged call
+        // that must re-extend the instance entry.
+        env.ledger()
+            .set_sequence_number(INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS);
+        let new_admin = Address::generate(&env);
+        client.propose_admin(&admin, &new_admin);
+        assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
+
+        // Another full window later the admin and pending proposal must still
+        // be readable — the privileged call above bumped the TTL.
+        env.ledger()
+            .set_sequence_number(2 * INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS);
+        assert_eq!(client.get_admin(), admin);
+        assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
+
+        // Completing the handover must also keep the entry alive.
+        client.accept_admin(&new_admin);
+        env.ledger()
+            .set_sequence_number(3 * INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS);
+        assert_eq!(client.get_admin(), new_admin);
+        assert_eq!(client.get_pending_admin(), None);
+    }
+
+    #[test]
+    fn admin_survives_ttl_window_via_reads() {
+        let (env, client, admin) = setup();
+
+        // Repeated read-only traffic alone must keep the admin entry alive.
+        for window in 1..=3u32 {
+            env.ledger()
+                .set_sequence_number(window * INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS);
+            assert_eq!(client.get_admin(), admin);
+        }
+    }
+
+    #[test]
+    fn holding_period_keys_extended_on_read() {
+        let (env, client, admin) = setup();
+        let holder = Address::generate(&env);
+
+        client.set_min_holding_period(&admin, &holder, &100u64);
+        client.record_acquisition(&admin, &holder);
+
+        // Read the persistent keys near the end of their window; the reads
+        // themselves must extend the entries.
+        env.ledger()
+            .set_sequence_number(INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS);
+        assert_eq!(client.get_min_holding_period(&holder), Some(100u64));
+        assert!(client.get_first_acquired_ledger(&holder).is_some());
+
+        env.ledger()
+            .set_sequence_number(2 * INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS);
+        assert_eq!(client.get_min_holding_period(&holder), Some(100u64));
+        assert!(client.get_first_acquired_ledger(&holder).is_some());
+    }
+
+    #[test]
+    fn jurisdiction_cap_and_blocked_list_survive_ttl_window() {
+        let (env, client, admin) = setup();
+        let us = String::from_str(&env, "US");
+
+        client.block_jurisdiction(&admin, &us);
+        client.set_jurisdiction_cap(&admin, &us, &Some(5_000u32));
+
+        env.ledger()
+            .set_sequence_number(2 * INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS);
+        // `get_admin` bumps the instance entry holding `BlockedList`.
+        assert_eq!(client.get_admin(), admin);
+        assert!(client.is_jurisdiction_blocked(&us));
+        assert_eq!(client.get_blocked_jurisdictions().len(), 1);
     }
 }
 
