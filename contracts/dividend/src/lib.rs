@@ -864,6 +864,30 @@ impl DividendContract {
     /// # Authority
     /// `admin` must be the stored admin and must sign the transaction.
     ///
+    /// This entry point is **not** open to arbitrary callers: `require_admin`
+    /// runs first, so an address with no special authority is rejected with
+    /// [`Error::Unauthorized`] (or [`Error::NotInitialized`] if the contract
+    /// was never initialized) before any distribution is loaded or any funds
+    /// move.
+    ///
+    /// # Minimal / empty input
+    ///
+    /// Cancellation does not depend on the distribution's size or holder set.
+    /// A distribution created with a minimal snapshot (e.g. a single holder
+    /// with a zero balance, or any distribution whose `total_amount` is zero)
+    /// is still cancellable before any claim: the escrow transfer of zero is a
+    /// no-op and the distribution is still marked `completed`/`cancelled`, so
+    /// no later claim can succeed against it. This behaviour is deliberate —
+    /// cancellation is a state transition, not a payout.
+    ///
+    /// # Partial claims
+    ///
+    /// Cancellation after **any** claim has been processed is rejected with
+    /// [`Error::InvalidAmount`], so the amount returned to the admin is always
+    /// the full `total_amount` and amounts already paid to holders are never
+    /// double counted. Use [`Self::reclaim_unclaimed`] (deadline-based) to
+    /// recover only the unclaimed remainder after partial claims.
+    ///
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
