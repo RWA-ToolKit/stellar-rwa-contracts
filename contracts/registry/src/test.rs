@@ -821,6 +821,44 @@ fn test_register_rejects_asset_type_with_wrong_case() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_register_rejects_oversized_asset_type() {
+    // Issue #675: an asset_type longer than MAX_ASSET_TYPE_LEN must be
+    // rejected with InvalidInput (#7) to prevent storage-spam DoS.
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let mut long = [b'a'; 256];
+    let oversized = String::from_bytes(&env, &long[..(MAX_ASSET_TYPE_LEN as usize + 1)]);
+    client.register_asset(
+        &issuer,
+        &token,
+        &String::from_str(&env, "Asset"),
+        &oversized,
+        &100,
+    );
+}
+
+#[test]
+fn test_register_accepts_asset_type_at_max_len() {
+    // Issue #675: an asset_type exactly at MAX_ASSET_TYPE_LEN is accepted.
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let long = [b'a'; 256];
+    let at_max = String::from_bytes(&env, &long[..(MAX_ASSET_TYPE_LEN as usize)]);
+    let id = client.register_asset(
+        &issuer,
+        &token,
+        &String::from_str(&env, "Asset"),
+        &at_max,
+        &100,
+    );
+    assert_eq!(id, 1);
+    assert_eq!(client.get_asset(&id).asset_type, at_max);
+}
+
+#[test]
 fn test_duplicate_registration_does_not_double_count_tvl() {
     let (env, client, _admin) = setup();
     let issuer = Address::generate(&env);

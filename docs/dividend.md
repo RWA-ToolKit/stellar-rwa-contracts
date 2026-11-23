@@ -72,6 +72,24 @@ mechanisms that can recover stranded funds, and
 2. `create_distribution_deadline(..., deadline)` sets a ledger sequence
    number after which `claim` is rejected with `DeadlinePassed (#13)`. Up to
    and including that ledger, claiming works normally.
+
+   **Clock choice:** the deadline is a **ledger sequence number**, compared
+   against `env.ledger().sequence()` — never against
+   `env.ledger().timestamp()`. Ledger sequence numbers are assigned by
+   consensus and are identical for every validator, so the boundary is
+   deterministic: a claim in ledger `L` succeeds iff `deadline == 0 ||
+   L <= deadline`, and fails with `DeadlinePassed (#13)` once `L > deadline`.
+   Wall-clock timestamps, by contrast, are validator-supplied and can drift
+   by a few seconds between nodes; a timestamp-based deadline would let a
+   claim land on either side of the boundary depending on which validator
+   closed the ledger. Because no timestamp is consulted, there is no
+   tolerance window to tune and no clock-skew manipulation surface. The same
+   rule applies to `reclaim_unclaimed` and to the deadline check in
+   `withdraw_unclaimed`: recovery is permitted only once
+   `env.ledger().sequence() > deadline`. The exact boundary is covered by
+   `test_claim_at_exact_deadline_ledger` and
+   `test_claim_one_ledger_after_deadline` in `contracts/dividend/src/test.rs`.
+=======
 3. After the deadline passes, and **only** the contract **admin** (not the
    issuer, not any holder) may call `reclaim_unclaimed(admin, distribution_id)`
    to sweep `total_amount - distributed` out of escrow to the admin. This is

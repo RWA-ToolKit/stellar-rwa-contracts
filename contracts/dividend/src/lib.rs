@@ -359,6 +359,19 @@ impl DividendContract {
     /// [`Self::create_distribution`] — no deadline, funds are never
     /// reclaimable.
     ///
+    /// # Clock choice (issue #677)
+    ///
+    /// `deadline` is a **ledger sequence number**, compared against
+    /// `env.ledger().sequence()` — never `env.ledger().timestamp()`. The
+    /// sequence number is a deterministic, monotonically increasing counter
+    /// agreed on by consensus, so every validator evaluates the boundary at
+    /// exactly the same point. `timestamp()` is validator-supplied wall-clock
+    /// time and can vary between validators within a ledger, which would make
+    /// a deadline boundary non-deterministic and manipulable. Because the
+    /// comparison is tolerance-free (`sequence() > deadline`), there is no
+    /// skew window to exploit: a claim is valid iff it lands in a ledger whose
+    /// sequence is `<= deadline`.
+    ///
     /// See the module-level "Claim deadline & reclaim policy" section for
     /// the full rules (issue #2).
     ///
@@ -612,8 +625,17 @@ impl DividendContract {
     /// set but the funds were not sent (issue #1).
     ///
     /// If the distribution carries a `deadline`, claims are rejected once
-    /// `current_ledger > deadline`; only [`Self::reclaim_unclaimed`]
+    /// `env.ledger().sequence() > deadline`; only [`Self::reclaim_unclaimed`]
     /// (admin-only) may move funds after that point (issue #2).
+    ///
+    /// The deadline check uses the **ledger sequence number**, not
+    /// `env.ledger().timestamp()` (issue #677). Sequence is consensus-agreed
+    /// and identical on every validator, so the boundary is deterministic; a
+    /// wall-clock timestamp could differ between validators within the same
+    /// ledger and would introduce a skew window. The comparison is exact and
+    /// tolerance-free: a claim in the ledger numbered `deadline` succeeds, and
+    /// the first ledger numbered `deadline + 1` fails with
+    /// [`Error::DeadlinePassed`].
     ///
     /// # Parameters
     /// - `distribution_id`: Id of the distribution to claim from.
@@ -651,6 +673,14 @@ impl DividendContract {
         }
         // Policy (issue #2): once past the deadline, claims are rejected;
         // admin recovery operations have their own separate guards.
+        //
+        // Clock choice (issue #677): the deadline is a ledger *sequence*
+        // number, compared against `env.ledger().sequence()`. We deliberately
+        // do NOT use `env.ledger().timestamp()`: sequence is consensus-agreed
+        // and identical on every validator, whereas timestamp is
+        // validator-supplied wall-clock time that can differ within a ledger.
+        // The comparison is exact (`>`, no tolerance window), so a claim in
+        // ledger `deadline` succeeds and one in `deadline + 1` fails.
         if dist.deadline != 0 && env.ledger().sequence() > dist.deadline {
             panic_err(&env, Error::DeadlinePassed);
         }
@@ -710,7 +740,10 @@ impl DividendContract {
     /// (issue #2 policy).
     ///
     /// Reclaim before the deadline, or on a distribution with no deadline, is
-    /// rejected.
+    /// rejected. Like [`Self::claim`], the deadline is compared against
+    /// `env.ledger().sequence()` — not `env.ledger().timestamp()` — so the
+    /// handover point between claiming and reclaiming is deterministic across
+    /// validators (issue #677).
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
@@ -742,6 +775,10 @@ impl DividendContract {
         if dist.deadline == 0 {
             panic_err(&env, Error::NoDeadline);
         }
+        // Clock choice (issue #677): compare against the ledger *sequence*
+        // number, mirroring `claim`'s `sequence() > deadline` cutoff exactly so
+        // there is no gap or overlap between the claim window and the reclaim
+        // window. `timestamp()` is intentionally not used (see `claim`).
         if env.ledger().sequence() <= dist.deadline {
             panic_err(&env, Error::DeadlineNotReached);
         }

@@ -1254,6 +1254,37 @@ fn test_claim_after_deadline_fails() {
     ctx.dividend.claim(&id, &ctx.h1);
 }
 
+// The deadline is compared against the deterministic ledger sequence number,
+// not the validator-supplied wall-clock timestamp. Claiming at exactly
+// `sequence == deadline` is still allowed; only `deadline + 1` is rejected.
+#[test]
+fn test_claim_at_exact_deadline_boundary() {
+    let ctx = setup();
+    let deadline = ctx.env.ledger().sequence() + 100;
+    let id = ctx.dividend.create_distribution_deadline(
+        &ctx.admin,
+        &ctx.asset_id,
+        &ctx.pay_id,
+        &1000,
+        &eligible(&ctx),
+        &deadline,
+    );
+
+    // Pin the ledger to exactly the deadline: the claim must succeed.
+    set_ledger_sequence(&ctx.env, deadline);
+    assert_eq!(ctx.env.ledger().sequence(), deadline);
+    ctx.dividend.claim(&id, &ctx.h1);
+    assert_eq!(pay_balance(&ctx, &ctx.h1), 300);
+
+    // One sequence past the deadline: the claim is rejected with
+    // DistributionExpired (#13) and no funds move.
+    set_ledger_sequence(&ctx.env, deadline + 1);
+    let h2_before = pay_balance(&ctx, &ctx.h2);
+    let res = ctx.dividend.try_claim(&id, &ctx.h2);
+    assert_eq!(res, Err(Ok(Error::DistributionExpired.into())));
+    assert_eq!(pay_balance(&ctx, &ctx.h2), h2_before);
+}
+
 // Claiming before the deadline succeeds normally.
 #[test]
 fn test_claim_before_deadline_succeeds() {

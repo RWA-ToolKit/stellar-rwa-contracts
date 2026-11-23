@@ -114,6 +114,15 @@ pub const MAX_PAGE_SIZE: u32 = 100;
 /// limit with only 32 visible glyphs.
 pub const MAX_NAME_LEN: u32 = 64;
 
+/// Maximum byte length for an `asset_type` string (issue #675).
+///
+/// The longest canonical type in `VALID_ASSET_TYPES` is `"real_estate"`
+/// (11 bytes), so 32 bytes leaves ample headroom while still bounding the
+/// storage and resource cost of the `TypeIndex` key and the stored entry.
+/// `register_asset` rejects any `asset_type` outside `1..=MAX_ASSET_TYPE_LEN`
+/// bytes with [`Error::InvalidInput`] before the allow-list check runs.
+pub const MAX_ASSET_TYPE_LEN: u32 = 32;
+
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
 pub const VERSION: u32 = 3;
@@ -196,10 +205,12 @@ impl RegistryContract {
     /// - `issuer`: Address of the asset issuer.  Must authorize the call.
     /// - `token_contract`: On-chain address of the asset-token contract.  Must
     ///   not already be registered.
-    /// - `name`: Human-readable name of the asset.  Must be non-empty.
+    /// - `name`: Human-readable name of the asset.  Must be non-empty and at
+    ///   most [`MAX_NAME_LEN`] (64) bytes.
     /// - `asset_type`: Category from the allowed list (`"real_estate"`,
     ///   `"invoice"`, `"commodity"`, `"bond"`, `"equity"`, `"fund"`).
-    ///   Case-sensitive, no leading/trailing whitespace.
+    ///   Case-sensitive, no leading/trailing whitespace.  Must be between 1
+    ///   and [`MAX_ASSET_TYPE_LEN`] (32) bytes inclusive.
     /// - `valuation`: Initial USD-cent valuation.  Must be ≥ 0.
     ///
     /// # Authority
@@ -208,8 +219,9 @@ impl RegistryContract {
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::InvalidValuation`] — `valuation` < 0.
-    /// - [`Error::InvalidInput`] — `name` is empty or `asset_type` is not in
-    ///   the allowed list.
+    /// - [`Error::InvalidInput`] — `name` is empty or longer than
+    ///   [`MAX_NAME_LEN`] bytes; `asset_type` is empty, longer than
+    ///   [`MAX_ASSET_TYPE_LEN`] bytes, or not in the allowed list.
     /// - [`Error::DuplicateAsset`] — `token_contract` is already registered.
     /// - [`Error::Overflow`] — TVL would overflow `i128`.
     ///
@@ -246,6 +258,18 @@ impl RegistryContract {
         // Delegates to the shared rwa-common guard so the cap stays consistent
         // with the asset-token contract automatically.
         common_check_str(&env, &name, 1, MAX_NAME_LEN, Error::InvalidInput);
+        // Bound asset_type before the allow-list check (issue #675): an
+        // unbounded string would bloat the stored entry and the TypeIndex key,
+        // enabling storage-spam DoS. The allow-list check below already
+        // rejects anything that is not a canonical type, but the explicit
+        // length cap keeps the guard independent of that list.
+        common_check_str(
+            &env,
+            &asset_type,
+            1,
+            MAX_ASSET_TYPE_LEN,
+            Error::InvalidInput,
+        );
         validate_asset_type(&env, &asset_type);
         // Reject re-registering the same token contract under a new id
         // (issue #308): otherwise TVL and the explore page would double-count
