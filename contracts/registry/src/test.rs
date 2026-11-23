@@ -821,6 +821,44 @@ fn test_register_rejects_asset_type_with_wrong_case() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #7)")]
+fn test_register_rejects_oversized_asset_type() {
+    // Issue #675: an asset_type longer than MAX_ASSET_TYPE_LEN must be
+    // rejected with InvalidInput (#7) to prevent storage-spam DoS.
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let mut long = [b'a'; 256];
+    let oversized = String::from_bytes(&env, &long[..(MAX_ASSET_TYPE_LEN as usize + 1)]);
+    client.register_asset(
+        &issuer,
+        &token,
+        &String::from_str(&env, "Asset"),
+        &oversized,
+        &100,
+    );
+}
+
+#[test]
+fn test_register_accepts_asset_type_at_max_len() {
+    // Issue #675: an asset_type exactly at MAX_ASSET_TYPE_LEN is accepted.
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+    let token = Address::generate(&env);
+    let long = [b'a'; 256];
+    let at_max = String::from_bytes(&env, &long[..(MAX_ASSET_TYPE_LEN as usize)]);
+    let id = client.register_asset(
+        &issuer,
+        &token,
+        &String::from_str(&env, "Asset"),
+        &at_max,
+        &100,
+    );
+    assert_eq!(id, 1);
+    assert_eq!(client.get_asset(&id).asset_type, at_max);
+}
+
+#[test]
 fn test_duplicate_registration_does_not_double_count_tvl() {
     let (env, client, _admin) = setup();
     let issuer = Address::generate(&env);
@@ -984,6 +1022,44 @@ fn test_reactivate_overflows_tvl_panics() {
     assert!(!client.get_asset(&id_max).active);
     // The second asset must still be active.
     assert!(client.get_asset(&id2).active);
+}
+
+// ---- TVL overflow with many high-valuation assets (issue #668) ----
+
+/// Summing several near-`i128::MAX` valuations must fail with an explicit
+/// overflow error rather than silently wrapping around to a small/negative
+/// value. Each individual valuation is representable, but their sum is not.
+#[test]
+fn test_tvl_overflow_with_many_high_valuation_assets() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+
+    // Each valuation is i128::MAX / 2 + 1, so two of them already exceed
+    // i128::MAX. Registering a handful of them must not wrap the total.
+    let big = i128::MAX / 2 + 1;
+    for _ in 0..3 {
+        register(&env, &client, &issuer, "real_estate", big);
+    }
+
+    // The running total must be reported as an explicit overflow error, not a
+    // wrapped (possibly negative) value.
+    assert_eq!(
+        client.try_total_value_locked(),
+        Err(Ok(Error::ValuationOverflow.into()))
+    );
+}
+
+/// Control case: the same code path with small valuations sums correctly.
+#[test]
+fn test_tvl_small_valuations_sum_correctly() {
+    let (env, client, _admin) = setup();
+    let issuer = Address::generate(&env);
+
+    for _ in 0..5 {
+        register(&env, &client, &issuer, "invoice", 1_000);
+    }
+
+    assert_eq!(client.try_total_value_locked(), Ok(5_000));
 }
 
 // ---- pagination helpers (issue #455) ----

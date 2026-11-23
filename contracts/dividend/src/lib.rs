@@ -95,6 +95,10 @@ enum DataKey {
     /// acceptance via `accept_admin` (issue #4). Absent when there is no
     /// proposal in flight.
     PendingAdmin,
+    /// Ledger sequence at which the pending admin proposal was made
+    /// (issue #671). Used to expire stale proposals after
+    /// [`ADMIN_PROPOSAL_TTL_LEDGERS`].
+    PendingAdminLedger,
     Counter,
     Ids,
     Dist(u64),
@@ -166,7 +170,17 @@ pub enum Error {
     /// current ledger, so it would be reclaimable immediately with no claim
     /// window.
     DeadlineInPast = 17,
+    /// `accept_admin` was called after the pending admin proposal's expiry
+    /// window elapsed (issue #671). The proposal must be re-issued by the
+    /// current admin via `propose_admin`.
+    AdminProposalExpired = 18,
 }
+
+/// Number of ledgers a pending admin proposal remains acceptable after
+/// `propose_admin` (issue #671). After this many ledgers `accept_admin` is
+/// rejected with [`Error::AdminProposalExpired`] and the current admin must
+/// re-propose. Matches the shared value used across all four contracts.
+pub const ADMIN_PROPOSAL_TTL_LEDGERS: u32 = 17_280;
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
@@ -996,12 +1010,20 @@ impl DividendContract {
     /// instead of a single-step transfer that would permanently brick
     /// administration.
     ///
+    /// The proposal is only acceptable for [`ADMIN_PROPOSAL_TTL_LEDGERS`]
+    /// ledgers after this call; afterwards `accept_admin` is rejected with
+    /// [`Error::AdminProposalExpired`] (issue #671), bounding the window in
+    /// which a compromised successor key could take over.
+    ///
     /// See docs/admin-handover.md for the full two-step handover rationale.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         Self::require_admin(&env, &admin);
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdminLedger, &env.ledger().sequence());
         bump(&env);
         env.events()
             .publish((symbol_short!("proposed"), admin), new_admin);
@@ -1030,6 +1052,7 @@ impl DividendContract {
             panic_err(&env, Error::NoPendingAdmin);
         }
         env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::PendingAdminLedger);
         bump(&env);
         env.events()
             .publish((symbol_short!("cancelled"), admin), ());
@@ -1057,6 +1080,9 @@ impl DividendContract {
     /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
     /// - [`Error::Unauthorized`] — `new_admin` does not match the pending
     ///   proposal.
+    /// - [`Error::AdminProposalExpired`] — more than
+    ///   [`ADMIN_PROPOSAL_TTL_LEDGERS`] ledgers have elapsed since the
+    ///   proposal was made (issue #671).
     ///
     /// # Events
     /// Emits topic `("set_admin", old_admin)` with data `new_admin`.
@@ -1070,6 +1096,16 @@ impl DividendContract {
         if pending != new_admin {
             panic_err(&env, Error::Unauthorized);
         }
+        // Reject a stale proposal (issue #671): the window in which a
+        // compromised successor key could accept is bounded by the TTL.
+        let proposed_at: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminLedger)
+            .unwrap_or(0);
+        if env.ledger().sequence() > proposed_at.saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS) {
+            panic_err(&env, Error::AdminProposalExpired);
+        }
         let old_admin: Address = env
             .storage()
             .instance()
@@ -1077,6 +1113,7 @@ impl DividendContract {
             .unwrap_or_else(|| panic_err(&env, Error::NotInitialized));
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage().instance().remove(&DataKey::PendingAdminLedger);
         bump(&env);
         env.events()
             .publish((symbol_short!("set_admin"), old_admin), new_admin);
@@ -1099,6 +1136,25 @@ impl DividendContract {
     /// None.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Returns the ledger sequence at which the pending admin proposal was
+    /// made, if any (issue #671). Clients can use this together with
+    /// [`ADMIN_PROPOSAL_TTL_LEDGERS`] to know when the proposal expires.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
+    pub fn get_pending_admin_ledger(env: Env) -> Option<u32> {
+        env.storage().instance().get(&DataKey::PendingAdminLedger)
     }
 
     // ---- internal helpers ----

@@ -92,6 +92,9 @@ pub enum Error {
     DuplicateAsset = 9,
     /// No oracle has been configured for `update_valuation_from_oracle`.
     NoOracle = 10,
+    /// A pending admin proposal has expired and can no longer be accepted
+    /// (issue #671). Re-propose to start a fresh window.
+    AdminProposalExpired = 11,
 }
 
 const DAY_IN_LEDGERS: u32 = 17_280;
@@ -113,6 +116,15 @@ pub const MAX_PAGE_SIZE: u32 = 100;
 /// so a name consisting of 32 two-byte characters (e.g. é, ñ) reaches the
 /// limit with only 32 visible glyphs.
 pub const MAX_NAME_LEN: u32 = 64;
+
+/// Maximum byte length for an `asset_type` string (issue #675).
+///
+/// The longest canonical type in `VALID_ASSET_TYPES` is `"real_estate"`
+/// (11 bytes), so 32 bytes leaves ample headroom while still bounding the
+/// storage and resource cost of the `TypeIndex` key and the stored entry.
+/// `register_asset` rejects any `asset_type` outside `1..=MAX_ASSET_TYPE_LEN`
+/// bytes with [`Error::InvalidInput`] before the allow-list check runs.
+pub const MAX_ASSET_TYPE_LEN: u32 = 32;
 
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
@@ -196,10 +208,12 @@ impl RegistryContract {
     /// - `issuer`: Address of the asset issuer.  Must authorize the call.
     /// - `token_contract`: On-chain address of the asset-token contract.  Must
     ///   not already be registered.
-    /// - `name`: Human-readable name of the asset.  Must be non-empty.
+    /// - `name`: Human-readable name of the asset.  Must be non-empty and at
+    ///   most [`MAX_NAME_LEN`] (64) bytes.
     /// - `asset_type`: Category from the allowed list (`"real_estate"`,
     ///   `"invoice"`, `"commodity"`, `"bond"`, `"equity"`, `"fund"`).
-    ///   Case-sensitive, no leading/trailing whitespace.
+    ///   Case-sensitive, no leading/trailing whitespace.  Must be between 1
+    ///   and [`MAX_ASSET_TYPE_LEN`] (32) bytes inclusive.
     /// - `valuation`: Initial USD-cent valuation.  Must be ≥ 0.
     ///
     /// # Authority
@@ -208,8 +222,9 @@ impl RegistryContract {
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::InvalidValuation`] — `valuation` < 0.
-    /// - [`Error::InvalidInput`] — `name` is empty or `asset_type` is not in
-    ///   the allowed list.
+    /// - [`Error::InvalidInput`] — `name` is empty or longer than
+    ///   [`MAX_NAME_LEN`] bytes; `asset_type` is empty, longer than
+    ///   [`MAX_ASSET_TYPE_LEN`] bytes, or not in the allowed list.
     /// - [`Error::DuplicateAsset`] — `token_contract` is already registered.
     /// - [`Error::Overflow`] — TVL would overflow `i128`.
     ///
@@ -246,6 +261,18 @@ impl RegistryContract {
         // Delegates to the shared rwa-common guard so the cap stays consistent
         // with the asset-token contract automatically.
         common_check_str(&env, &name, 1, MAX_NAME_LEN, Error::InvalidInput);
+        // Bound asset_type before the allow-list check (issue #675): an
+        // unbounded string would bloat the stored entry and the TypeIndex key,
+        // enabling storage-spam DoS. The allow-list check below already
+        // rejects anything that is not a canonical type, but the explicit
+        // length cap keeps the guard independent of that list.
+        common_check_str(
+            &env,
+            &asset_type,
+            1,
+            MAX_ASSET_TYPE_LEN,
+            Error::InvalidInput,
+        );
         validate_asset_type(&env, &asset_type);
         // Reject re-registering the same token contract under a new id
         // (issue #308): otherwise TVL and the explore page would double-count
@@ -611,6 +638,10 @@ impl RegistryContract {
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
         Self::require_admin_or_asset_admin(&env, &admin, &entry.token_contract);
+        // Issue #673: bump the instance TTL (covering the admin-critical
+        // `Admin`/`PendingAdmin`/`Oracle` keys) on every privileged call, even
+        // the idempotent no-op path, so admin state can never lapse.
+        bump(&env);
         let was_active = entry.active;
         if !was_active {
             return;
@@ -715,6 +746,9 @@ impl RegistryContract {
     /// # Events
     /// None.
     pub fn get_oracle(env: Env) -> Option<Address> {
+        // Issue #673: `Oracle` is admin-critical instance state; bump on read
+        // so a read-only workload cannot let it lapse.
+        bump(&env);
         env.storage().instance().get(&DataKey::Oracle)
     }
 
@@ -792,6 +826,9 @@ impl RegistryContract {
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
         Self::require_admin_or_asset_admin(&env, &admin, &entry.token_contract);
+        // Issue #673: bump the instance TTL on every privileged call, including
+        // the idempotent no-op path, so admin-critical keys never lapse.
+        bump(&env);
         if entry.active {
             return;
         }
@@ -850,15 +887,47 @@ impl RegistryContract {
     /// None — anyone may call.
     ///
     /// # Errors
-    /// None.
+    /// - [`Error::Overflow`] — the stored running total is inconsistent with
+    ///   the per-asset valuations (e.g. a corrupted or legacy value) such that
+    ///   recomputing it would overflow `i128`. The recomputation uses
+    ///   `checked_add` throughout, so it panics cleanly rather than wrapping.
     ///
     /// # Events
     /// None.
     pub fn total_value_locked(env: Env) -> i128 {
-        env.storage()
+        let stored: i128 = env
+            .storage()
             .instance()
             .get(&DataKey::TotalValuation)
-            .unwrap_or(0)
+            .unwrap_or(0);
+        // Defensive re-derivation (issue #668): the running total is
+        // maintained incrementally with checked arithmetic, but recompute it
+        // from the per-asset entries with checked_add so a corrupted or
+        // legacy stored value can never silently wrap. The recomputed value
+        // is authoritative and is written back when it differs.
+        let counter: u64 = env.storage().instance().get(&DataKey::Counter).unwrap_or(0);
+        let mut sum: i128 = 0;
+        let mut id: u64 = 1;
+        while id <= counter {
+            if let Some(entry) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, AssetEntry>(&DataKey::Asset(id))
+            {
+                if entry.active {
+                    sum = sum
+                        .checked_add(entry.valuation)
+                        .unwrap_or_else(|| panic_err(&env, Error::Overflow));
+                }
+            }
+            id += 1;
+        }
+        if sum != stored {
+            env.storage()
+                .instance()
+                .set(&DataKey::TotalValuation, &sum);
+        }
+        sum
     }
 
     /// Total number of registered assets, including deactivated ones.
@@ -1112,6 +1181,8 @@ impl RegistryContract {
     /// # Events
     /// None.
     pub fn get_admin(env: Env) -> Address {
+        // Issue #673: `Admin` is admin-critical instance state; bump on read.
+        bump(&env);
         env.storage()
             .instance()
             .get(&DataKey::Admin)
@@ -1134,6 +1205,10 @@ impl RegistryContract {
     /// # Authority
     /// `admin` must be the stored admin and must sign the transaction.
     ///
+    /// The proposal is valid for [`rwa_common::admin::PROPOSAL_TTL_LEDGERS`]
+    /// ledgers; after that `accept_admin` rejects it with
+    /// [`Error::AdminProposalExpired`] (issue #671).
+    ///
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
@@ -1142,7 +1217,8 @@ impl RegistryContract {
     /// Emits topic `("proposed", admin)` with data `new_admin`.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         Self::require_admin(&env, &admin);
-        // Shared admin-handover helper (issue #764).
+        // Shared admin-handover helper (issue #764); records the proposal
+        // ledger so `accept_admin` can enforce the expiry window (#671).
         rwa_common::admin::propose(&env, &DataKey::PendingAdmin, &new_admin);
         bump(&env);
         env.events()
@@ -1197,13 +1273,16 @@ impl RegistryContract {
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
+    /// - [`Error::AdminProposalExpired`] — the proposal is older than the
+    ///   handover window (issue #671); re-propose to start a fresh window.
     /// - [`Error::Unauthorized`] — `new_admin` does not match the pending
     ///   proposal.
     ///
     /// # Events
     /// Emits topic `("set_admin", old_admin)` with data `new_admin`.
     pub fn accept_admin(env: Env, new_admin: Address) {
-        // Shared admin-handover helper (issue #764).
+        // Shared admin-handover helper (issue #764). The helper enforces the
+        // proposal expiry window (issue #671) and reports it as `Expired`.
         let result = rwa_common::admin::accept(
             &env,
             &DataKey::Admin,
@@ -1212,7 +1291,12 @@ impl RegistryContract {
         );
         match result {
             None => panic_err(&env, Error::NoPendingAdmin),
-            Some(Err(())) => panic_err(&env, Error::Unauthorized),
+            Some(Err(rwa_common::admin::AcceptError::Expired)) => {
+                panic_err(&env, Error::AdminProposalExpired)
+            }
+            Some(Err(rwa_common::admin::AcceptError::Unauthorized)) => {
+                panic_err(&env, Error::Unauthorized)
+            }
             Some(Ok((old_admin, _))) => {
                 bump(&env);
                 env.events()
@@ -1241,6 +1325,9 @@ impl RegistryContract {
     /// # Events
     /// None.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
+        // Issue #673: `PendingAdmin` is admin-critical instance state; bump on
+        // read so an in-flight handover proposal cannot silently expire.
+        bump(&env);
         rwa_common::admin::get_pending(&env, &DataKey::PendingAdmin)
     }
 
@@ -1321,6 +1408,10 @@ impl RegistryContract {
         if stored != *admin {
             panic_err(env, Error::Unauthorized);
         }
+        // Issue #673: admin-critical instance keys (`Admin`, `PendingAdmin`,
+        // `Oracle`) share the instance TTL, so bump it on every privileged
+        // call rather than only on registration.
+        bump(env);
     }
 
     fn require_admin_or_asset_admin(env: &Env, admin: &Address, asset_token: &Address) {
@@ -1331,6 +1422,9 @@ impl RegistryContract {
             .unwrap_or_else(|| panic_err(env, Error::NotInitialized));
         admin.require_auth();
         if *admin == stored {
+            // Issue #673: keep admin-critical instance keys alive on every
+            // privileged call.
+            bump(env);
             return;
         }
         let asset_admin = AssetClient::new(env, asset_token).get_metadata().admin;
@@ -1451,3 +1545,5 @@ mod test_ochedev6789_issuer_page_events;
 mod test_ochedev6789_issuer_page_resource_cost;
 #[cfg(test)]
 mod test_ochedev6789_issuer_page_zero_empty;
+#[cfg(test)]
+mod test_admin_ttl_extension;

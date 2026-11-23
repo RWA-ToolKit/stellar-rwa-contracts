@@ -37,6 +37,9 @@ use internal::{check_str, panic_err};
 #[cfg(test)]
 mod test_rdj_allowance;
 
+#[cfg(test)]
+mod test_guardian_scope;
+
 /// Cross-contract client for the compliance contract. Only the method the asset
 /// token needs is declared here, decoupling the two contracts at build time.
 #[contractclient(name = "ComplianceClient")]
@@ -75,6 +78,12 @@ pub struct AssetMetadata {
     /// acceptance via `accept_admin` (issue #4). Absent when there is no
     /// proposal in flight.
     pub pending_admin: Option<Address>,
+    /// Ledger sequence at which `pending_admin` was proposed (issue #671).
+    /// `accept_admin` rejects the proposal once more than
+    /// [`ADMIN_PROPOSAL_TTL_LEDGERS`] ledgers have elapsed since this value,
+    /// bounding the window in which a compromised successor key could be used.
+    /// `None` when there is no proposal in flight.
+    pub pending_admin_proposed_at: Option<u32>,
 }
 
 #[contracttype]
@@ -120,6 +129,9 @@ pub enum Error {
     /// A transfer or mint would push the recipient jurisdiction above its
     /// configured holding cap (issue #737).
     JurisdictionCapExceeded = 15,
+    /// `accept_admin` was called after the pending admin proposal expired
+    /// (issue #671). The current admin must re-propose.
+    AdminProposalExpired = 16,
 }
 
 #[cfg(test)]
@@ -148,6 +160,15 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 /// compare against.
 const MAX_VALUATION_CHANGE_BPS: i128 = 5_000;
 const BPS_DENOMINATOR: i128 = 10_000;
+
+/// Number of ledgers a pending admin proposal stays acceptable (issue #671).
+/// After this many ledgers have elapsed since `propose_admin`, `accept_admin`
+/// rejects the proposal with [`Error::AdminProposalExpired`] and the current
+/// admin must re-propose. This bounds the window in which a successor key that
+/// is compromised after nomination can still be used to seize the role.
+/// Kept identical across the asset-token, compliance, dividend and registry
+/// contracts; see `docs/admin-handover.md`.
+pub const ADMIN_PROPOSAL_TTL_LEDGERS: u32 = 7 * DAY_IN_LEDGERS;
 #[cfg(test)]
 mod test_jhaydeeee_transfer_batch;
 
@@ -258,6 +279,7 @@ impl AssetTokenContract {
             paused: false,
             guardian: None,
             pending_admin: None,
+            pending_admin_proposed_at: None,
         };
         env.storage().instance().set(&DataKey::Metadata, &metadata);
         Self::set_balance(&env, &admin, total_supply);
@@ -962,6 +984,11 @@ impl AssetTokenContract {
     /// Emits topic `("pause",)` with data `caller`.
     pub fn pause(env: Env, caller: Address) {
         caller.require_auth();
+        // Re-read the stored metadata on every call so the authorization check
+        // always reflects the *current* admin/guardian. In particular, if the
+        // admin has cleared the guardian via `set_guardian(admin, None)` while
+        // a pause transaction was in flight, the stale guardian is rejected
+        // here rather than being honoured from a cached value.
         let mut meta = Self::metadata(&env);
         let is_guardian = meta.guardian.as_ref() == Some(&caller);
         if meta.admin != caller && !is_guardian {
@@ -1019,6 +1046,8 @@ impl AssetTokenContract {
     /// value, which may be `None`).
     pub fn set_guardian(env: Env, admin: Address, guardian: Option<Address>) {
         let mut meta = Self::require_admin(&env, &admin);
+        // `None` clears the guardian in instance storage, so a subsequent
+        // `pause` from the former guardian fails with `Unauthorized`.
         meta.guardian = guardian;
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);
@@ -1155,6 +1184,10 @@ impl AssetTokenContract {
     /// does not affect the optional guardian (issue #1), which is set
     /// independently via [`Self::set_guardian`].
     ///
+    /// The proposal records the current ledger sequence and expires after
+    /// [`ADMIN_PROPOSAL_TTL_LEDGERS`] ledgers (issue #671); an expired proposal
+    /// is rejected by [`Self::accept_admin`] and must be re-proposed.
+    ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
     /// - `new_admin`: Address being nominated as successor.
@@ -1171,6 +1204,7 @@ impl AssetTokenContract {
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         let mut meta = Self::require_admin(&env, &admin);
         meta.pending_admin = Some(new_admin.clone());
+        meta.pending_admin_proposed_at = Some(env.ledger().sequence());
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);
         env.events()
@@ -1200,6 +1234,7 @@ impl AssetTokenContract {
             panic_err(&env, Error::NoPendingAdmin);
         }
         meta.pending_admin = None;
+        meta.pending_admin_proposed_at = None;
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);
         env.events()
@@ -1216,6 +1251,10 @@ impl AssetTokenContract {
     /// off-chain indexers can observe this security-critical transition
     /// (issue #2).
     ///
+    /// The proposal expires [`ADMIN_PROPOSAL_TTL_LEDGERS`] ledgers after it was
+    /// made (issue #671); accepting later reverts with
+    /// [`Error::AdminProposalExpired`] and the current admin must re-propose.
+    ///
     /// # Parameters
     /// - `new_admin`: The address accepting the admin role.  Must match the
     ///   pending proposal and must sign the transaction.
@@ -1228,6 +1267,8 @@ impl AssetTokenContract {
     /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
     /// - [`Error::Unauthorized`] — `new_admin` does not match the pending
     ///   proposal.
+    /// - [`Error::AdminProposalExpired`] — the proposal is older than
+    ///   [`ADMIN_PROPOSAL_TTL_LEDGERS`] ledgers.
     ///
     /// # Events
     /// Emits topic `("set_admin", old_admin)` with data `new_admin`.
@@ -1241,9 +1282,16 @@ impl AssetTokenContract {
         if pending != new_admin {
             panic_err(&env, Error::Unauthorized);
         }
+        let proposed_at = meta
+            .pending_admin_proposed_at
+            .unwrap_or_else(|| panic_err(&env, Error::NoPendingAdmin));
+        if env.ledger().sequence().saturating_sub(proposed_at) > ADMIN_PROPOSAL_TTL_LEDGERS {
+            panic_err(&env, Error::AdminProposalExpired);
+        }
         let old_admin = meta.admin.clone();
         meta.admin = new_admin.clone();
         meta.pending_admin = None;
+        meta.pending_admin_proposed_at = None;
         env.storage().instance().set(&DataKey::Metadata, &meta);
         Self::bump(&env);
         env.events()
@@ -1443,6 +1491,9 @@ mod test_frozen_balance;
 mod test_jurisdiction_cap;
 #[cfg(test)]
 mod test_makeem_approve;
+
+#[cfg(test)]
+mod test_admin_proposal_expiry;
 
 #[cfg(test)]
 mod test;
