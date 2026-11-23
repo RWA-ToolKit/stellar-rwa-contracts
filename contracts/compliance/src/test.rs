@@ -752,6 +752,34 @@ fn test_add_to_allowlist_batch_emits_approved_event_per_entry() {
     assert_eq!(client.get_allowlist_count(), 2);
 }
 
+/// Issue #662: `prune_expired` with `max_records = 0` must be a safe no-op:
+/// it returns 0 and leaves every record (and the allowlist) untouched.
+#[test]
+fn test_prune_expired_zero_max_records_is_noop() {
+    let (env, client, admin) = setup();
+    let us = String::from_str(&env, "US");
+    let mut users: Vec<Address> = Vec::new(&env);
+    for _ in 0..3 {
+        users.push_back(Address::generate(&env));
+    }
+    env.ledger().with_mut(|l| l.sequence_number = 10);
+    for u in users.iter() {
+        client.add_to_allowlist(&admin, &u, &us, &100);
+    }
+    env.ledger().with_mut(|l| l.sequence_number = 101);
+    assert_eq!(client.get_allowlist().len(), 3);
+
+    // A zero cap must not prune anything and must report 0.
+    let remaining = client.prune_expired(&admin, &0);
+    assert_eq!(remaining, 0);
+
+    // No storage was mutated: every record and allowlist slot survives.
+    assert_eq!(client.get_allowlist().len(), 3);
+    for u in users.iter() {
+        assert!(client.get_record(&u).is_some());
+    }
+}
+
 #[test]
 fn test_prune_expired_respects_bound_and_reports_remaining() {
     // Issue #333: prune_expired must accept a bound on how many records a

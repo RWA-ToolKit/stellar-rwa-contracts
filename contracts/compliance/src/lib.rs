@@ -93,6 +93,10 @@ enum DataKey {
     /// acceptance via `accept_admin` (issue #4). Absent when there is no
     /// proposal in flight.
     PendingAdmin,
+    /// Ledger sequence at which the pending admin proposal was made
+    /// (issue #671). Used to expire stale proposals after
+    /// [`ADMIN_PROPOSAL_TTL_LEDGERS`]. Absent when there is no proposal.
+    PendingAdminLedger,
     /// Small fixed-size (current_page, current_page_len) cursor for appends.
     AllowlistMeta,
     /// One page of up to `ALLOWLIST_PAGE_SIZE` addresses, in persistent storage
@@ -167,6 +171,10 @@ pub enum Error {
     /// `accept_admin` or `cancel_admin_proposal` called with no pending
     /// admin proposal on file (issue #4).
     NoPendingAdmin = 7,
+    /// `accept_admin` was called after the pending admin proposal's expiry
+    /// window elapsed (issue #671). The stale proposal is cleared, so the
+    /// current admin must call `propose_admin` again.
+    AdminProposalExpired = 11,
     /// `reinstate` was called on an address that is not currently `Suspended`.
     NotSuspended = 8,
     /// `set_min_holding_period` was called with `min_ledgers` overflowing when
@@ -179,6 +187,17 @@ pub enum Error {
 const DAY_IN_LEDGERS: u32 = 17_280; // ~5s ledgers
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
+
+/// Number of ledgers a pending admin proposal stays acceptable (issue #671).
+///
+/// A proposal created at ledger `L` can be accepted while
+/// `current_ledger < L + ADMIN_PROPOSAL_TTL_LEDGERS`; at or after that
+/// ledger it is expired and `accept_admin` rejects it. This bounds the
+/// window in which a compromised successor key could take over the admin
+/// role without the current admin having to remember to cancel. Kept
+/// identical across the compliance, asset-token, dividend and registry
+/// contracts; see `docs/admin-handover.md`.
+pub const ADMIN_PROPOSAL_TTL_LEDGERS: u32 = 7 * DAY_IN_LEDGERS;
 #[cfg(test)]
 mod test_jhaydeeee_record_acquisition;
 
@@ -1227,6 +1246,18 @@ impl ComplianceContract {
     /// # Authority
     /// `admin` must be the stored admin and must sign the transaction.
     ///
+    /// The proposal expires [`ADMIN_PROPOSAL_TTL_LEDGERS`] ledgers after it
+    /// is made (issue #671): after that, [`Self::accept_admin`] rejects it
+    /// with [`Error::AdminProposalExpired`] and the current admin must
+    /// re-propose. Re-proposing always restarts the window.
+    ///
+    /// # Parameters
+    /// - `admin`: Current admin address.  Must authorize the call.
+    /// - `new_admin`: Address being nominated as successor.
+    ///
+    /// # Authority
+    /// `admin` must be the stored admin and must sign the transaction.
+    ///
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
@@ -1238,6 +1269,9 @@ impl ComplianceContract {
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdminLedger, &env.ledger().sequence());
         bump_instance(&env);
         env.events()
             .publish((symbol_short!("proposed"), admin), new_admin);
@@ -1266,6 +1300,9 @@ impl ComplianceContract {
             panic_with_error(&env, Error::NoPendingAdmin);
         }
         env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminLedger);
         bump_instance(&env);
         env.events()
             .publish((symbol_short!("cancelled"), admin), ());
@@ -1289,11 +1326,19 @@ impl ComplianceContract {
     /// # Authority
     /// `new_admin` must sign the transaction (`new_admin.require_auth()`).
     ///
+    /// The proposal must still be within its expiry window (issue #671): a
+    /// proposal made at ledger `L` is acceptable while
+    /// `current_ledger < L + ADMIN_PROPOSAL_TTL_LEDGERS`. Once expired, the
+    /// stale proposal is cleared and the call fails with
+    /// [`Error::AdminProposalExpired`]; the current admin must re-propose.
+    ///
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
     /// - [`Error::Unauthorized`] — `new_admin` does not match the pending
     ///   proposal.
+    /// - [`Error::AdminProposalExpired`] — the proposal's expiry window has
+    ///   elapsed.
     ///
     /// # Events
     /// Emits topic `("set_admin", old_admin)` with data `new_admin`.
@@ -1307,6 +1352,21 @@ impl ComplianceContract {
         if pending != new_admin {
             panic_with_error(&env, Error::Unauthorized);
         }
+        let proposed_at: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminLedger)
+            .unwrap_or(0);
+        let now = env.ledger().sequence();
+        if now >= proposed_at.saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS) {
+            // Clear the stale proposal so it can never be accepted later.
+            env.storage().instance().remove(&DataKey::PendingAdmin);
+            env.storage()
+                .instance()
+                .remove(&DataKey::PendingAdminLedger);
+            bump_instance(&env);
+            panic_with_error(&env, Error::AdminProposalExpired);
+        }
         let old_admin: Address = env
             .storage()
             .instance()
@@ -1314,6 +1374,9 @@ impl ComplianceContract {
             .unwrap_or_else(|| panic_with_error(&env, Error::NotInitialized));
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminLedger);
         bump_instance(&env);
         env.events()
             .publish((symbol_short!("set_admin"), old_admin), new_admin);
@@ -1341,6 +1404,27 @@ impl ComplianceContract {
         // fail with `NoPendingAdmin` (issue #673).
         bump_instance(&env);
         env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Returns the ledger sequence at which the pending admin proposal was
+    /// made, if any (issue #671).
+    ///
+    /// Together with [`ADMIN_PROPOSAL_TTL_LEDGERS`] this lets off-chain
+    /// tooling compute when a proposal stops being acceptable.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
+    pub fn get_pending_admin_ledger(env: Env) -> Option<u32> {
+        env.storage().instance().get(&DataKey::PendingAdminLedger)
     }
 
     // ---- minimum holding period (issue #454) ----

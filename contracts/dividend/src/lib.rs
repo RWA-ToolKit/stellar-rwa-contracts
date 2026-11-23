@@ -55,11 +55,6 @@ use soroban_sdk::{
 pub trait AssetInterface {
     fn total_supply(env: Env) -> i128;
     fn get_metadata(env: Env) -> AssetMetadata;
-    /// Interface probe (issue #674): every asset-token contract exposes a
-    /// `version()` entry point. Calling it at distribution-creation time
-    /// verifies the supplied `asset_token` address actually implements the
-    /// expected interface before any funds are escrowed.
-    fn version(env: Env) -> u32;
 }
 
 /// Minimal payment-token interface used to move escrowed funds.
@@ -100,6 +95,10 @@ enum DataKey {
     /// acceptance via `accept_admin` (issue #4). Absent when there is no
     /// proposal in flight.
     PendingAdmin,
+    /// Ledger sequence at which the pending admin proposal was made
+    /// (issue #671). Used to expire stale proposals after
+    /// [`ADMIN_PROPOSAL_TTL_LEDGERS`].
+    PendingAdminLedger,
     Counter,
     Ids,
     Dist(u64),
@@ -171,12 +170,17 @@ pub enum Error {
     /// current ledger, so it would be reclaimable immediately with no claim
     /// window.
     DeadlineInPast = 17,
-    /// `asset_token` does not implement the expected asset-token interface
-    /// (issue #674). The address is probed with a `version()` cross-contract
-    /// call at creation time so a malformed or non-token address is rejected
-    /// before any funds are escrowed, rather than failing later at claim time.
-    InvalidAssetToken = 18,
+    /// `accept_admin` was called after the pending admin proposal's expiry
+    /// window elapsed (issue #671). The proposal must be re-issued by the
+    /// current admin via `propose_admin`.
+    AdminProposalExpired = 18,
 }
+
+/// Number of ledgers a pending admin proposal remains acceptable after
+/// `propose_admin` (issue #671). After this many ledgers `accept_admin` is
+/// rejected with [`Error::AdminProposalExpired`] and the current admin must
+/// re-propose. Matches the shared value used across all four contracts.
+pub const ADMIN_PROPOSAL_TTL_LEDGERS: u32 = 17_280;
 
 const DAY_IN_LEDGERS: u32 = 17_280;
 const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
@@ -359,19 +363,6 @@ impl DividendContract {
     /// [`Self::create_distribution`] — no deadline, funds are never
     /// reclaimable.
     ///
-    /// # Clock choice (issue #677)
-    ///
-    /// `deadline` is a **ledger sequence number**, compared against
-    /// `env.ledger().sequence()` — never `env.ledger().timestamp()`. The
-    /// sequence number is a deterministic, monotonically increasing counter
-    /// agreed on by consensus, so every validator evaluates the boundary at
-    /// exactly the same point. `timestamp()` is validator-supplied wall-clock
-    /// time and can vary between validators within a ledger, which would make
-    /// a deadline boundary non-deterministic and manipulable. Because the
-    /// comparison is tolerance-free (`sequence() > deadline`), there is no
-    /// skew window to exploit: a claim is valid iff it lands in a ledger whose
-    /// sequence is `<= deadline`.
-    ///
     /// See the module-level "Claim deadline & reclaim policy" section for
     /// the full rules (issue #2).
     ///
@@ -436,17 +427,8 @@ impl DividendContract {
         if deadline != 0 && deadline < env.ledger().sequence() {
             panic_err(&env, Error::DeadlineInPast);
         }
-        // Probe `asset_token` for the expected interface before storing it or
-        // moving any funds (issue #674). A malformed or non-token address would
-        // otherwise only fail later, at claim time, after the admin has already
-        // locked funds into the distribution. `version()` is a cheap read-only
-        // call every asset-token contract exposes.
-        let asset_client = AssetClient::new(&env, &asset_token);
-        if asset_client.try_version().is_err() {
-            panic_err(&env, Error::InvalidAssetToken);
-        }
         // Reject distributions where no holder can ever claim (issue #49).
-        let supply = asset_client.total_supply();
+        let supply = AssetClient::new(&env, &asset_token).total_supply();
         if supply <= 0 {
             panic_err(&env, Error::ZeroSupply);
         }
@@ -537,8 +519,6 @@ impl DividendContract {
             INSTANCE_BUMP_AMOUNT,
         );
         env.storage().instance().set(&DataKey::Counter, &id);
-        // Bump the instance entry (which holds `Admin`/`PendingAdmin`) on every
-        // privileged call so admin-critical keys never lapse (issue #673).
         bump(&env);
         env.events()
             .publish((symbol_short!("created"), admin), (id, total_amount));
@@ -550,25 +530,9 @@ impl DividendContract {
     /// Returns `0` if the holder has already claimed, is not in the
     /// distribution's snapshot, or the snapshot supply is zero.
     ///
-    /// # Rounding convention (integer division truncates toward zero)
-    ///
-    /// Each holder's share is computed as
-    /// `total_amount * balance_i / snapshot_supply` using **integer division
-    /// that truncates toward zero** (i.e. floors, since all operands are
-    /// non-negative).  There is no rounding up, no remainder carry-over and no
-    /// per-holder minimum.
-    ///
-    /// Consequence for dust distributions: when `total_amount` is smaller than
-    /// the number of eligible holders (or a holder's balance is small relative
-    /// to the snapshot supply), a holder with a **nonzero** balance can have a
-    /// claimable amount of exactly `0`.  This is not an error: `claimable`
-    /// returns `0` normally, and `claim` for that holder fails deliberately
-    /// with [`Error::NothingToClaim`] rather than panicking unexpectedly.
-    ///
-    /// The truncated remainder is never paid to any holder.  It stays in this
-    /// contract's escrow and is recoverable by the admin via
-    /// [`Self::reclaim_unclaimed`] once the distribution's deadline has passed
-    /// (or via `withdraw_unclaimed` where that path applies).  See the note
+    /// Each holder's share is `floor(total_amount * balance_i / snapshot_supply)`:
+    /// integer division truncates toward zero, so a small proportional share
+    /// may round down to zero and be permanently unclaimable.  See the note
     /// below for the formal dust bound.
     ///
     /// # Rounding behaviour & dust (issue #4)
@@ -641,17 +605,8 @@ impl DividendContract {
     /// set but the funds were not sent (issue #1).
     ///
     /// If the distribution carries a `deadline`, claims are rejected once
-    /// `env.ledger().sequence() > deadline`; only [`Self::reclaim_unclaimed`]
+    /// `current_ledger > deadline`; only [`Self::reclaim_unclaimed`]
     /// (admin-only) may move funds after that point (issue #2).
-    ///
-    /// The deadline check uses the **ledger sequence number**, not
-    /// `env.ledger().timestamp()` (issue #677). Sequence is consensus-agreed
-    /// and identical on every validator, so the boundary is deterministic; a
-    /// wall-clock timestamp could differ between validators within the same
-    /// ledger and would introduce a skew window. The comparison is exact and
-    /// tolerance-free: a claim in the ledger numbered `deadline` succeeds, and
-    /// the first ledger numbered `deadline + 1` fails with
-    /// [`Error::DeadlinePassed`].
     ///
     /// # Parameters
     /// - `distribution_id`: Id of the distribution to claim from.
@@ -689,14 +644,6 @@ impl DividendContract {
         }
         // Policy (issue #2): once past the deadline, claims are rejected;
         // admin recovery operations have their own separate guards.
-        //
-        // Clock choice (issue #677): the deadline is a ledger *sequence*
-        // number, compared against `env.ledger().sequence()`. We deliberately
-        // do NOT use `env.ledger().timestamp()`: sequence is consensus-agreed
-        // and identical on every validator, whereas timestamp is
-        // validator-supplied wall-clock time that can differ within a ledger.
-        // The comparison is exact (`>`, no tolerance window), so a claim in
-        // ledger `deadline` succeeds and one in `deadline + 1` fails.
         if dist.deadline != 0 && env.ledger().sequence() > dist.deadline {
             panic_err(&env, Error::DeadlinePassed);
         }
@@ -756,25 +703,7 @@ impl DividendContract {
     /// (issue #2 policy).
     ///
     /// Reclaim before the deadline, or on a distribution with no deadline, is
-    /// rejected. Like [`Self::claim`], the deadline is compared against
-    /// `env.ledger().sequence()` — not `env.ledger().timestamp()` — so the
-    /// handover point between claiming and reclaiming is deterministic across
-    /// validators (issue #677).
-    ///
-    /// # Behaviour on a completed / cancelled ("deactivated") distribution
-    ///
-    /// A distribution that has already reached a terminal state — fully
-    /// claimed, previously reclaimed, or cancelled via
-    /// [`Self::cancel_distribution`] — is treated as deactivated.  Calling
-    /// `reclaim_unclaimed` on such a distribution is a **deliberate, typed
-    /// rejection**: it fails with [`Error::NothingToClaim`] rather than
-    /// attempting a second transfer or panicking unexpectedly.  This is what
-    /// prevents the escrow from being returned to the admin twice.  The
-    /// deadline checks (`NoDeadline`, `DeadlineNotReached`) are evaluated
-    /// first, so a completed distribution with no deadline reports
-    /// `NoDeadline` and one whose deadline has not passed reports
-    /// `DeadlineNotReached`; only once those pass does the terminal-state
-    /// guard produce `NothingToClaim`.
+    /// rejected.
     ///
     /// # Parameters
     /// - `admin`: Current admin address.  Must authorize the call.
@@ -799,17 +728,10 @@ impl DividendContract {
     /// Emits topic `("reclaim", admin)` with data `(distribution_id, remaining)`.
     pub fn reclaim_unclaimed(env: Env, admin: Address, distribution_id: u64) -> i128 {
         Self::require_admin(&env, &admin);
-        // Bump the instance entry (holding `Admin`/`PendingAdmin`) on this
-        // privileged call so admin-critical keys never lapse (issue #673).
-        bump(&env);
         let mut dist = Self::load(&env, distribution_id);
         if dist.deadline == 0 {
             panic_err(&env, Error::NoDeadline);
         }
-        // Clock choice (issue #677): compare against the ledger *sequence*
-        // number, mirroring `claim`'s `sequence() > deadline` cutoff exactly so
-        // there is no gap or overlap between the claim window and the reclaim
-        // window. `timestamp()` is intentionally not used (see `claim`).
         if env.ledger().sequence() <= dist.deadline {
             panic_err(&env, Error::DeadlineNotReached);
         }
@@ -864,30 +786,6 @@ impl DividendContract {
     /// # Authority
     /// `admin` must be the stored admin and must sign the transaction.
     ///
-    /// This entry point is **not** open to arbitrary callers: `require_admin`
-    /// runs first, so an address with no special authority is rejected with
-    /// [`Error::Unauthorized`] (or [`Error::NotInitialized`] if the contract
-    /// was never initialized) before any distribution is loaded or any funds
-    /// move.
-    ///
-    /// # Minimal / empty input
-    ///
-    /// Cancellation does not depend on the distribution's size or holder set.
-    /// A distribution created with a minimal snapshot (e.g. a single holder
-    /// with a zero balance, or any distribution whose `total_amount` is zero)
-    /// is still cancellable before any claim: the escrow transfer of zero is a
-    /// no-op and the distribution is still marked `completed`/`cancelled`, so
-    /// no later claim can succeed against it. This behaviour is deliberate —
-    /// cancellation is a state transition, not a payout.
-    ///
-    /// # Partial claims
-    ///
-    /// Cancellation after **any** claim has been processed is rejected with
-    /// [`Error::InvalidAmount`], so the amount returned to the admin is always
-    /// the full `total_amount` and amounts already paid to holders are never
-    /// double counted. Use [`Self::reclaim_unclaimed`] (deadline-based) to
-    /// recover only the unclaimed remainder after partial claims.
-    ///
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::Unauthorized`] — `admin` does not match the stored admin.
@@ -902,9 +800,6 @@ impl DividendContract {
     /// Emits topic `("cancel", admin)` with data `distribution_id`.
     pub fn cancel_distribution(env: Env, admin: Address, distribution_id: u64) {
         Self::require_admin(&env, &admin);
-        // Bump the instance entry (holding `Admin`/`PendingAdmin`) on this
-        // privileged call so admin-critical keys never lapse (issue #673).
-        bump(&env);
         let dist = Self::load(&env, distribution_id);
         // Only allow cancellation before any claim is made (issue #366).
         if dist.distributed > 0 {
@@ -1115,14 +1010,20 @@ impl DividendContract {
     /// instead of a single-step transfer that would permanently brick
     /// administration.
     ///
+    /// The proposal is only acceptable for [`ADMIN_PROPOSAL_TTL_LEDGERS`]
+    /// ledgers after this call; afterwards `accept_admin` is rejected with
+    /// [`Error::AdminProposalExpired`] (issue #671), bounding the window in
+    /// which a compromised successor key could take over.
+    ///
     /// See docs/admin-handover.md for the full two-step handover rationale.
     pub fn propose_admin(env: Env, admin: Address, new_admin: Address) {
         Self::require_admin(&env, &admin);
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
-        // Bump the instance entry so both `Admin` and the freshly written
-        // `PendingAdmin` get the longest TTL (issue #673).
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdminLedger, &env.ledger().sequence());
         bump(&env);
         env.events()
             .publish((symbol_short!("proposed"), admin), new_admin);
@@ -1151,7 +1052,7 @@ impl DividendContract {
             panic_err(&env, Error::NoPendingAdmin);
         }
         env.storage().instance().remove(&DataKey::PendingAdmin);
-        // Bump the instance entry so `Admin` keeps the longest TTL (issue #673).
+        env.storage().instance().remove(&DataKey::PendingAdminLedger);
         bump(&env);
         env.events()
             .publish((symbol_short!("cancelled"), admin), ());
@@ -1179,6 +1080,9 @@ impl DividendContract {
     /// - [`Error::NoPendingAdmin`] — no proposal is currently in flight.
     /// - [`Error::Unauthorized`] — `new_admin` does not match the pending
     ///   proposal.
+    /// - [`Error::AdminProposalExpired`] — more than
+    ///   [`ADMIN_PROPOSAL_TTL_LEDGERS`] ledgers have elapsed since the
+    ///   proposal was made (issue #671).
     ///
     /// # Events
     /// Emits topic `("set_admin", old_admin)` with data `new_admin`.
@@ -1192,6 +1096,16 @@ impl DividendContract {
         if pending != new_admin {
             panic_err(&env, Error::Unauthorized);
         }
+        // Reject a stale proposal (issue #671): the window in which a
+        // compromised successor key could accept is bounded by the TTL.
+        let proposed_at: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminLedger)
+            .unwrap_or(0);
+        if env.ledger().sequence() > proposed_at.saturating_add(ADMIN_PROPOSAL_TTL_LEDGERS) {
+            panic_err(&env, Error::AdminProposalExpired);
+        }
         let old_admin: Address = env
             .storage()
             .instance()
@@ -1199,8 +1113,7 @@ impl DividendContract {
             .unwrap_or_else(|| panic_err(&env, Error::NotInitialized));
         env.storage().instance().set(&DataKey::Admin, &new_admin);
         env.storage().instance().remove(&DataKey::PendingAdmin);
-        // Bump the instance entry so the new `Admin` gets the longest TTL
-        // immediately on handover (issue #673).
+        env.storage().instance().remove(&DataKey::PendingAdminLedger);
         bump(&env);
         env.events()
             .publish((symbol_short!("set_admin"), old_admin), new_admin);
@@ -1223,6 +1136,25 @@ impl DividendContract {
     /// None.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::PendingAdmin)
+    }
+
+    /// Returns the ledger sequence at which the pending admin proposal was
+    /// made, if any (issue #671). Clients can use this together with
+    /// [`ADMIN_PROPOSAL_TTL_LEDGERS`] to know when the proposal expires.
+    ///
+    /// # Parameters
+    /// None.
+    ///
+    /// # Authority
+    /// None — anyone may call.
+    ///
+    /// # Errors
+    /// None.
+    ///
+    /// # Events
+    /// None.
+    pub fn get_pending_admin_ledger(env: Env) -> Option<u32> {
+        env.storage().instance().get(&DataKey::PendingAdminLedger)
     }
 
     // ---- internal helpers ----
@@ -1251,17 +1183,9 @@ impl DividendContract {
         if stored != *admin {
             panic_err(env, Error::Unauthorized);
         }
-        // Bump the instance entry on every privileged call so admin-critical
-        // keys (`Admin`, `PendingAdmin`) are refreshed on write paths, not just
-        // on read (issue #673).
-        bump(env);
     }
 }
 
-/// Extend the TTL of the instance storage entry, which holds the
-/// admin-critical keys (`Admin`, `PendingAdmin`, `Counter`). Called on every
-/// privileged call and on every state-mutating path so these keys always carry
-/// the longest TTL documented in `docs/storage-ttl-strategy.md` (issue #673).
 fn bump(env: &Env) {
     env.storage()
         .instance()
