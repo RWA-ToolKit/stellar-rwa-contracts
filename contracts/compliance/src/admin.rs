@@ -5,7 +5,16 @@ use soroban_sdk::{Address, Env};
 use crate::{internal::panic_with_error, DataKey, Error, KycRecord};
 
 /// Verify that `admin` matches the stored admin and has authorized the call.
+///
+/// Admin-critical instance keys (`Admin`, `PendingAdmin`, compliance contract
+/// address) must never lapse. Every privileged call funnels through this
+/// helper, so we bump the instance TTL here to guarantee the admin entries are
+/// refreshed on each privileged call — not only on read or initialize.
 pub(crate) fn require_admin(env: &Env, admin: &Address) {
+    // Refresh instance TTL before reading admin-critical keys so they cannot
+    // expire between privileged calls (see docs/storage-ttl-strategy.md).
+    bump_instance(env);
+
     let stored: Address = env
         .storage()
         .instance()

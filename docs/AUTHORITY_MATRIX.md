@@ -40,7 +40,7 @@ any caller — no auth gate, no privileged check:
 | `initialize` | `("init",)` | `admin: Address` | Emitted once at deploy time. |
 | `add_to_allowlist` / `add_to_allowlist_batch` | `("approved", address)` | `(jurisdiction, expires_at, prev_jurisdiction, prev_expires_at, was_suspended)` | Emitted per address; payload carries before/after state for audit. |
 | `suspend` | `("suspend", address)` | `()` | |
-| `reinstate` | `("reinstat", address)` | `()` | Emitted after the status flip to `Approved` is persisted. Confirmed by `test_reinstate_emits_event`. `reinstate` does **not** renew `expires_at`; an expired-but-suspended record will be flipped to `Approved` in storage yet still fail `is_allowed` — see `test_reinstate_while_record_expired_is_deliberate_not_panic`. |
+| `reinstate` | `("reinstate", address)` | `()` | Emitted after the status flip to `Approved` is persisted. Confirmed by `test_reinstate_emits_event`. `reinstate` does **not** renew `expires_at`; an expired-but-suspended record will be flipped to `Approved` in storage yet still fail `is_allowed` — see `test_reinstate_while_record_expired_is_deliberate_not_panic`. |
 | `remove` | `("removed", address)` | `()` | |
 | `block_jurisdiction` | `("blockjur",)` | `jurisdiction: String` | Idempotent; event only on first block. |
 | `unblock_jurisdiction` | `("unblkjur",)` | `jurisdiction: String` | |
@@ -82,12 +82,13 @@ any caller — no auth gate, no privileged check:
 | `snapshot` | Admin | `Error::Unauthorized` (#3) |
 | `mint_batch` | Admin | `Error::Unauthorized` (#3) |
 | `burn` | Self (the `from` address) | `require_auth` failure if `from` did not authorize |
-| `pause` | Admin | `Error::Unauthorized` (#3) |
-| `unpause` | Admin | `Error::Unauthorized` (#3) |
-| `update_valuation` | Admin | `Error::Unauthorized` (#3) |
-| `set_compliance` | Admin | `Error::Unauthorized` (#3) |
-| `propose_admin` | Admin | `Error::Unauthorized` (#3) |
-| `cancel_admin_proposal` | Admin | `Error::Unauthorized` (#3); `Error::NoPendingAdmin` (#12) if no proposal |
+| `pause` | Admin **or** Guardian | `Error::Unauthorized` (#3) if the caller is neither the stored admin nor the stored guardian. The guardian is permitted to call **only** `pause`; every other admin-only function below rejects a guardian-only signature with `Error::Unauthorized` (#3). See `test_guardian_scope.rs`. |
+| `unpause` | Admin | `Error::Unauthorized` (#3); a guardian-only signature is rejected |
+| `update_valuation` | Admin | `Error::Unauthorized` (#3); a guardian-only signature is rejected |
+| `set_compliance` | Admin | `Error::Unauthorized` (#3); a guardian-only signature is rejected |
+| `set_guardian` | Admin | `Error::Unauthorized` (#3); a guardian-only signature is rejected (the guardian cannot rotate itself) |
+| `propose_admin` | Admin | `Error::Unauthorized` (#3); a guardian-only signature is rejected |
+| `cancel_admin_proposal` | Admin | `Error::Unauthorized` (#3); `Error::NoPendingAdmin` (#12) if no proposal; a guardian-only signature is rejected |
 | `accept_admin` | Pending admin (self) | `Error::Unauthorized` (#3) if not the proposed successor; `Error::NoPendingAdmin` (#12) if no proposal |
 
 ## dividend (`contracts/dividend`)
@@ -131,3 +132,9 @@ Whenever a new `pub fn` is added to a contract in `contracts/*/src/lib.rs`
 that takes an `admin: Address` argument, calls `require_auth()` on a
 caller-supplied address, or otherwise gates behavior by identity, add a row
 here in the same commit.
+
+A checked-in test (`contracts/*/src/test_authority_matrix.rs`, driven by the
+shared checker) cross-checks every privileged `pub fn` against this document
+and fails CI when a privileged function has no row here. If CI reports a
+missing row, add it to the appropriate contract table above rather than
+suppressing the check.

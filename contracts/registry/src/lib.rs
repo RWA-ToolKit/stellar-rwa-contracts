@@ -118,6 +118,15 @@ pub const MAX_PAGE_SIZE: u32 = 100;
 /// limit with only 32 visible glyphs.
 pub const MAX_NAME_LEN: u32 = 64;
 
+/// Maximum byte length for an `asset_type` string (issue #675).
+///
+/// The longest canonical type in `VALID_ASSET_TYPES` is `"real_estate"`
+/// (11 bytes), so 32 bytes leaves ample headroom while still bounding the
+/// storage and resource cost of the `TypeIndex` key and the stored entry.
+/// `register_asset` rejects any `asset_type` outside `1..=MAX_ASSET_TYPE_LEN`
+/// bytes with [`Error::InvalidInput`] before the allow-list check runs.
+pub const MAX_ASSET_TYPE_LEN: u32 = 32;
+
 /// Contract ABI/behavior version. Bump on any change to storage layout or
 /// externally observable behavior so clients and the indexer can detect it.
 pub const VERSION: u32 = 3;
@@ -200,10 +209,12 @@ impl RegistryContract {
     /// - `issuer`: Address of the asset issuer.  Must authorize the call.
     /// - `token_contract`: On-chain address of the asset-token contract.  Must
     ///   not already be registered.
-    /// - `name`: Human-readable name of the asset.  Must be non-empty.
+    /// - `name`: Human-readable name of the asset.  Must be non-empty and at
+    ///   most [`MAX_NAME_LEN`] (64) bytes.
     /// - `asset_type`: Category from the allowed list (`"real_estate"`,
     ///   `"invoice"`, `"commodity"`, `"bond"`, `"equity"`, `"fund"`).
-    ///   Case-sensitive, no leading/trailing whitespace.
+    ///   Case-sensitive, no leading/trailing whitespace.  Must be between 1
+    ///   and [`MAX_ASSET_TYPE_LEN`] (32) bytes inclusive.
     /// - `valuation`: Initial USD-cent valuation.  Must be ≥ 0.
     ///
     /// # Authority
@@ -212,8 +223,9 @@ impl RegistryContract {
     /// # Errors
     /// - [`Error::NotInitialized`] — contract not yet initialized.
     /// - [`Error::InvalidValuation`] — `valuation` < 0.
-    /// - [`Error::InvalidInput`] — `name` is empty or `asset_type` is not in
-    ///   the allowed list.
+    /// - [`Error::InvalidInput`] — `name` is empty or longer than
+    ///   [`MAX_NAME_LEN`] bytes; `asset_type` is empty, longer than
+    ///   [`MAX_ASSET_TYPE_LEN`] bytes, or not in the allowed list.
     /// - [`Error::DuplicateAsset`] — `token_contract` is already registered.
     /// - [`Error::Overflow`] — TVL would overflow `i128`.
     ///
@@ -250,6 +262,18 @@ impl RegistryContract {
         // Delegates to the shared rwa-common guard so the cap stays consistent
         // with the asset-token contract automatically.
         common_check_str(&env, &name, 1, MAX_NAME_LEN, Error::InvalidInput);
+        // Bound asset_type before the allow-list check (issue #675): an
+        // unbounded string would bloat the stored entry and the TypeIndex key,
+        // enabling storage-spam DoS. The allow-list check below already
+        // rejects anything that is not a canonical type, but the explicit
+        // length cap keeps the guard independent of that list.
+        common_check_str(
+            &env,
+            &asset_type,
+            1,
+            MAX_ASSET_TYPE_LEN,
+            Error::InvalidInput,
+        );
         validate_asset_type(&env, &asset_type);
         // Reject re-registering the same token contract under a new id
         // (issue #308): otherwise TVL and the explore page would double-count
@@ -615,6 +639,10 @@ impl RegistryContract {
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
         Self::require_admin_or_asset_admin(&env, &admin, &entry.token_contract);
+        // Issue #673: bump the instance TTL (covering the admin-critical
+        // `Admin`/`PendingAdmin`/`Oracle` keys) on every privileged call, even
+        // the idempotent no-op path, so admin state can never lapse.
+        bump(&env);
         let was_active = entry.active;
         if !was_active {
             return;
@@ -725,6 +753,9 @@ impl RegistryContract {
     /// # Events
     /// None.
     pub fn get_oracle(env: Env) -> Option<Address> {
+        // Issue #673: `Oracle` is admin-critical instance state; bump on read
+        // so a read-only workload cannot let it lapse.
+        bump(&env);
         env.storage().instance().get(&DataKey::Oracle)
     }
 
@@ -803,6 +834,9 @@ impl RegistryContract {
             .get(&DataKey::Asset(asset_id))
             .unwrap_or_else(|| panic_err(&env, Error::AssetNotFound));
         Self::require_admin_or_asset_admin(&env, &admin, &entry.token_contract);
+        // Issue #673: bump the instance TTL on every privileged call, including
+        // the idempotent no-op path, so admin-critical keys never lapse.
+        bump(&env);
         if entry.active {
             return;
         }
@@ -1123,6 +1157,8 @@ impl RegistryContract {
     /// # Events
     /// None.
     pub fn get_admin(env: Env) -> Address {
+        // Issue #673: `Admin` is admin-critical instance state; bump on read.
+        bump(&env);
         env.storage()
             .instance()
             .get(&DataKey::Admin)
@@ -1252,6 +1288,9 @@ impl RegistryContract {
     /// # Events
     /// None.
     pub fn get_pending_admin(env: Env) -> Option<Address> {
+        // Issue #673: `PendingAdmin` is admin-critical instance state; bump on
+        // read so an in-flight handover proposal cannot silently expire.
+        bump(&env);
         rwa_common::admin::get_pending(&env, &DataKey::PendingAdmin)
     }
 
@@ -1332,6 +1371,10 @@ impl RegistryContract {
         if stored != *admin {
             panic_err(env, Error::Unauthorized);
         }
+        // Issue #673: admin-critical instance keys (`Admin`, `PendingAdmin`,
+        // `Oracle`) share the instance TTL, so bump it on every privileged
+        // call rather than only on registration.
+        bump(env);
     }
 
     fn require_admin_or_asset_admin(env: &Env, admin: &Address, asset_token: &Address) {
@@ -1342,6 +1385,9 @@ impl RegistryContract {
             .unwrap_or_else(|| panic_err(env, Error::NotInitialized));
         admin.require_auth();
         if *admin == stored {
+            // Issue #673: keep admin-critical instance keys alive on every
+            // privileged call.
+            bump(env);
             return;
         }
         let asset_admin = AssetClient::new(env, asset_token).get_metadata().admin;
@@ -1468,3 +1514,5 @@ mod test_ochedev6789_issuer_page_events;
 mod test_ochedev6789_issuer_page_resource_cost;
 #[cfg(test)]
 mod test_ochedev6789_issuer_page_zero_empty;
+#[cfg(test)]
+mod test_admin_ttl_extension;

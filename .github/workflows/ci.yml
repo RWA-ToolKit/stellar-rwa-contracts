@@ -47,6 +47,50 @@ jobs:
       - uses: actions/checkout@v7
       - name: Check table formatting
         run: python3 scripts/check_authority_matrix.py
+      # Cross-check every privileged `pub fn` in the four contracts against a
+      # row in docs/AUTHORITY_MATRIX.md, so a newly added admin-gated function
+      # can't silently drift out of the documentation (#669).
+      - name: Check matrix covers all privileged functions
+        run: python3 scripts/check_authority_matrix.py --check-code
+
+  audit:
+    # Dependency vulnerability scan (issue #679). Checks Cargo.lock against the
+    # RustSec advisory database on every push and PR, so a known-vulnerable
+    # direct or transitive dependency (e.g. under the pinned ed25519-dalek or
+    # soroban-sdk) can't slip in unnoticed.
+    #
+    # Accepted risks are allowlisted in `audit.toml` at the repo root, where
+    # each ignored advisory ID must be documented inline with a justification.
+    # Anything not listed there fails the job, so unaddressed high/critical
+    # advisories block the merge.
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-audit-${{ hashFiles('**/Cargo.lock') }}
+
+      # Pinned so a new cargo-audit release can't change CI behaviour
+      # unexpectedly; bump deliberately when adopting new advisory handling.
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit --version 0.21.2
+
+      # `cargo audit` exits non-zero on any unignored advisory. The allowlist
+      # lives in audit.toml (auto-discovered from the repo root), so this step
+      # fails on unaddressed high/critical advisories while accepted risks
+      # (e.g. advisories tied to the pinned ed25519-dalek 2.2 version) are
+      # documented and skipped.
+      - name: Run cargo audit
+        run: cargo audit --deny warnings
 
   test:
     runs-on: ubuntu-latest

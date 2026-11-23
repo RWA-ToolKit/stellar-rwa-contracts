@@ -72,6 +72,24 @@ mechanisms that can recover stranded funds, and
 2. `create_distribution_deadline(..., deadline)` sets a ledger sequence
    number after which `claim` is rejected with `DeadlinePassed (#13)`. Up to
    and including that ledger, claiming works normally.
+
+   **Clock choice:** the deadline is a **ledger sequence number**, compared
+   against `env.ledger().sequence()` — never against
+   `env.ledger().timestamp()`. Ledger sequence numbers are assigned by
+   consensus and are identical for every validator, so the boundary is
+   deterministic: a claim in ledger `L` succeeds iff `deadline == 0 ||
+   L <= deadline`, and fails with `DeadlinePassed (#13)` once `L > deadline`.
+   Wall-clock timestamps, by contrast, are validator-supplied and can drift
+   by a few seconds between nodes; a timestamp-based deadline would let a
+   claim land on either side of the boundary depending on which validator
+   closed the ledger. Because no timestamp is consulted, there is no
+   tolerance window to tune and no clock-skew manipulation surface. The same
+   rule applies to `reclaim_unclaimed` and to the deadline check in
+   `withdraw_unclaimed`: recovery is permitted only once
+   `env.ledger().sequence() > deadline`. The exact boundary is covered by
+   `test_claim_at_exact_deadline_ledger` and
+   `test_claim_one_ledger_after_deadline` in `contracts/dividend/src/test.rs`.
+=======
 3. After the deadline passes, and **only** the contract **admin** (not the
    issuer, not any holder) may call `reclaim_unclaimed(admin, distribution_id)`
    to sweep `total_amount - distributed` out of escrow to the admin. This is
@@ -246,6 +264,23 @@ distributions per asset token (issue #166).
   non-negative (issue #291) and no address may appear twice (issue #290) — a
   duplicate would otherwise be counted in the denominator but be unclaimable,
   permanently stranding that slice of the escrow.
+- **`asset_token` validation (issue #674):** `create_distribution` (and
+  `create_distribution_deadline`) performs an early sanity cross-contract call
+  to the supplied `asset_token` — it invokes `version()` on the token before
+  any funds are escrowed. If the address does not implement the expected
+  asset-token interface (e.g. it is an EOA, an unrelated contract, or a
+  malformed address), the probe fails and the whole `create_distribution` call
+  is rejected, so no distribution is stored and no funds move. This turns what
+  would otherwise be a deferred failure into a fail-fast check at creation
+  time. Note that this is only a *sanity* check: it confirms the address
+  responds to the asset-token interface, not that its balances are meaningful
+  or that the admin picked the intended token. Choosing the correct
+  `asset_token` remains the admin's responsibility. If validation were ever
+  bypassed or the token later became unreachable, the failure would surface at
+  `claim` time (the `balance`/`total_supply` cross-contract calls would trap),
+  potentially after funds were already locked into the distribution — which is
+  exactly the failure mode this early probe is meant to prevent.
+=======
 
 ## Holder-snapshot scaling limits (issue #429)
 
