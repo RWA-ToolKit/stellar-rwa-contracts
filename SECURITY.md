@@ -17,10 +17,18 @@ Include:
 
 ## Response Timeline
 
-- **48 hours**: Acknowledgement
-- **7 days**: Initial assessment and timeline
-- **30 days**: Target patch for critical severity
-- **90 days**: Public disclosure coordination
+These are targets, not guarantees. The clock starts when the report is submitted
+through the private channel above.
+
+| Stage | Target |
+|-------|--------|
+| Initial response (acknowledgement that a maintainer has seen the report) | within **48 hours** |
+| Initial assessment: severity, whether it is accepted, and a fix timeline | within **7 days** |
+| Patch for critical severity | within **30 days** |
+| Public disclosure, coordinated with the reporter | within **90 days** |
+
+If you have not received an initial response within the target, please add a
+comment on your advisory to ping the maintainers again.
 
 ## Scope
 
@@ -31,6 +39,16 @@ Include:
 - Deployed contract instances listed in [`DEPLOYMENTS.md`](DEPLOYMENTS.md), including the named Testnet contracts. No Mainnet contract ids are currently published.
 
 ## Supported Versions
+
+Security fixes are made on the default branch and released from it. There are
+no long-lived release branches and no tagged releases yet, so only the latest
+source receives fixes.
+
+| Version / branch | Supported for security fixes |
+|------------------|------------------------------|
+| `main` (latest source) | Yes |
+| Any other branch, fork or older commit | No: please reproduce against `main` first |
+| Deployed contract instances in [`DEPLOYMENTS.md`](DEPLOYMENTS.md) | In scope for reports (see below); a fix means a new deployment of the patched source |
 
 All deployed contract ids listed in [`DEPLOYMENTS.md`](DEPLOYMENTS.md) are in
 scope, including an instance whose deployed version predates the current source
